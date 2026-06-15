@@ -20,41 +20,29 @@ Requires the [pi](https://pi.dev) CLI.
 
 ```bash
 # Global (user) install — available in every project
-pi install npm:pi-thinking-ui
+pi install npm:@fyeeme/pi-thinking-ui
 
 # Project-local — written to .pi/settings.json, shareable with your team
-pi install -l npm:pi-thinking-ui
+pi install -l npm:@fyeeme/pi-thinking-ui
 
 # Pinned version — skipped by `pi update`
-pi install npm:pi-thinking-ui@1.0.0
+pi install npm:@fyeeme/pi-thinking-ui@1.0.0
 
 # Try it once without saving (current run only)
-pi -e npm:pi-thinking-ui
+pi -e npm:@fyeeme/pi-thinking-ui
 ```
 
 ### From GitHub
 
-This extension lives in the [`pi-mono`](https://github.com/earendil-works/pi-mono) monorepo under `packages/extensions/pi-thinking-ui/`. Pi's git source clones a whole repository root (no subdirectory support), so choose the flow that matches your setup:
-
-**Option A — monorepo checkout + local path** (works today):
-
-```bash
-git clone https://github.com/earendil-works/pi-mono
-# Global install from the checked-out subdirectory
-pi install ./pi-mono/packages/extensions/pi-thinking-ui
-# Or project-local
-pi install -l ./pi-mono/packages/extensions/pi-thinking-ui
-```
-
-**Option B — direct `git:` source** (requires a standalone repo for this package):
+Source: [`fyeeme/pi-packages`](https://github.com/fyeeme/pi-packages).
 
 ```bash
 # HTTPS shorthand
-pi install git:github.com/<owner>/pi-thinking-ui
+pi install git:github.com/fyeeme/pi-packages
 # Pin to a tag or commit (skipped by `pi update`)
-pi install git:github.com/<owner>/pi-thinking-ui@v1.0.0
+pi install git:github.com/fyeeme/pi-packages@v1.0.0
 # Raw URL form
-pi install https://github.com/<owner>/pi-thinking-ui
+pi install https://github.com/fyeeme/pi-packages
 ```
 
 See the Pi Packages guide on [pi.dev](https://pi.dev) for the full list of source types, scopes, and `pi update` behavior.
