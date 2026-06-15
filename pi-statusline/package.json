@@ -1,0 +1,60 @@
+{
+  "name": "pi-statusline",
+  "version": "1.0.0",
+  "description": "Rich custom status bar for pi with token usage, cost, DeepSeek balance, context window, timing, and MCP connection status.",
+  "type": "module",
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "bugs": {
+    "url": ""
+  },
+  "homepage": "",
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "status-line",
+    "statusline",
+    "deepseek",
+    "tokens",
+    "cost",
+    "mcp",
+    "balance",
+    "footer"
+  ],
+  "files": [
+    "*.ts",
+    "providers/*.ts",
+    "quota/*.ts",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest --run",
+    "typecheck": "tsc"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.77.0",
+    "@earendil-works/pi-ai": ">=0.77.0",
+    "@earendil-works/pi-tui": ">=0.77.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.77.0",
+    "@earendil-works/pi-ai": "0.77.0",
+    "@earendil-works/pi-tui": "0.77.0",
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
+  }
+}
