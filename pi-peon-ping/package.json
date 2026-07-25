@@ -1,0 +1,54 @@
+{
+  "name": "@fyeeme/pi-peon-ping",
+  "version": "1.0.0",
+  "description": "peon-ping adapter for pi — routes lifecycle events through peon.sh for sound packs, notifications, and trainer reminders.",
+  "type": "module",
+  "license": "MIT",
+  "author": "fyeeme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fyeeme/pi-packages"
+  },
+  "bugs": {
+    "url": "https://github.com/fyeeme/pi-packages/issues"
+  },
+  "homepage": "https://github.com/fyeeme/pi-packages#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "peon-ping",
+    "sounds",
+    "notifications",
+    "lifecycle",
+    "omp"
+  ],
+  "files": [
+    "index.ts",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest --run",
+    "typecheck": "tsc"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.77.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.77.0",
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,28 @@
+{
+	"name": "@fyeeme/pi-session-name",
+	"version": "1.0.0",
+	"description": "Auto-name pi sessions with a short LLM-generated title so --resume lists are easy to scan. Supports first (once) and auto (content-aware rename) modes; never overwrites manual names.",
+	"type": "module",
+	"license": "MIT",
+	"author": "fyeeme",
+	"publishConfig": { "access": "public" },
+	"repository": { "type": "git", "url": "https://github.com/fyeeme/pi-packages" },
+	"bugs": { "url": "https://github.com/fyeeme/pi-packages/issues" },
+	"homepage": "https://github.com/fyeeme/pi-packages#readme",
+	"engines": { "node": ">=18" },
+	"keywords": ["pi-package", "pi", "session", "auto-name", "rename", "resume"],
+	"files": ["index.ts", "README.md", "LICENSE", "CHANGELOG.md"],
+	"pi": { "extensions": ["./index.ts"] },
+	"scripts": { "test": "vitest --run", "typecheck": "tsc" },
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.80.0",
+		"@earendil-works/pi-ai": ">=0.80.0"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "0.80.10",
+		"@earendil-works/pi-ai": "0.80.10",
+		"@types/node": "22.19.19",
+		"typescript": "5.9.3",
+		"vitest": "3.2.7"
+	}
+}
