@@ -97,9 +97,9 @@ pi-peon-ping auto-discovers the installed `peon.sh` with the following priority 
 
 When a `.ps1` file is found, it is automatically run with `powershell` instead of `bash`.
 
-### peon-ping 配置
+### peon-ping configuration
 
-所有 peon-ping 的功能配置通过 `peon` CLI 进行：
+All peon-ping feature configuration is done through the `peon` CLI:
 
 ```bash
 peon packs use glados          # Switch sound pack
