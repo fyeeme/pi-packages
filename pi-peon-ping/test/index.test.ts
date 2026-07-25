@@ -11,9 +11,8 @@
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawn, execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 // Import under test
@@ -604,8 +603,8 @@ describe("peonPingExtension", () => {
 			writeSpy.mockRestore();
 		});
 
-		it("registers all 5 event handlers and 2 commands", () => {
-			expect(pi.on).toHaveBeenCalledTimes(5);
+		it("registers all 7 event handlers and 2 commands", () => {
+			expect(pi.on).toHaveBeenCalledTimes(7);
 			expect(pi.registerCommand).toHaveBeenCalledTimes(2);
 		});
 
@@ -613,16 +612,24 @@ describe("peonPingExtension", () => {
 			expect(pi.on).toHaveBeenCalledWith("session_start", expect.any(Function));
 		});
 
-		it("registers turn_start handler", () => {
-			expect(pi.on).toHaveBeenCalledWith("turn_start", expect.any(Function));
+		it("registers before_agent_start handler", () => {
+			expect(pi.on).toHaveBeenCalledWith("before_agent_start", expect.any(Function));
 		});
 
-		it("registers turn_end handler", () => {
-			expect(pi.on).toHaveBeenCalledWith("turn_end", expect.any(Function));
+		it("registers agent_end handler", () => {
+			expect(pi.on).toHaveBeenCalledWith("agent_end", expect.any(Function));
+		});
+
+		it("registers session_before_compact handler", () => {
+			expect(pi.on).toHaveBeenCalledWith("session_before_compact", expect.any(Function));
 		});
 
 		it("registers tool_result handler", () => {
 			expect(pi.on).toHaveBeenCalledWith("tool_result", expect.any(Function));
+		});
+
+		it("registers tool_call handler", () => {
+			expect(pi.on).toHaveBeenCalledWith("tool_call", expect.any(Function));
 		});
 
 		it("registers session_shutdown handler", () => {
@@ -657,10 +664,10 @@ describe("peonPingExtension", () => {
 			});
 		});
 
-		describe("turn_start handler", () => {
+		describe("before_agent_start handler", () => {
 			it("sets tab title to working state and fires UserPromptSubmit", async () => {
 				const handler = pi.on.mock.calls.find(
-					(c: unknown[]) => c[0] === "turn_start",
+					(c: unknown[]) => c[0] === "before_agent_start",
 				)![1] as Function;
 				const ctx = { hasUI: true, sessionManager: { getSessionFile: () => "sess-2" } };
 
@@ -673,10 +680,10 @@ describe("peonPingExtension", () => {
 			});
 		});
 
-		describe("turn_end handler", () => {
+		describe("agent_end handler", () => {
 			it("sets tab title to done state and fires Stop", async () => {
 				const handler = pi.on.mock.calls.find(
-					(c: unknown[]) => c[0] === "turn_end",
+					(c: unknown[]) => c[0] === "agent_end",
 				)![1] as Function;
 				const ctx = { hasUI: true, sessionManager: { getSessionFile: () => "sess-3" } };
 
@@ -685,6 +692,21 @@ describe("peonPingExtension", () => {
 				expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("done"));
 				expect(mockProc.stdin.write).toHaveBeenCalledWith(
 					expect.stringContaining("Stop"),
+				);
+			});
+		});
+
+		describe("session_before_compact handler", () => {
+			it("fires PreCompact", async () => {
+				const handler = pi.on.mock.calls.find(
+					(c: unknown[]) => c[0] === "session_before_compact",
+				)![1] as Function;
+				const ctx = { hasUI: true, sessionManager: { getSessionFile: () => "sess-4" } };
+
+				await handler({}, ctx);
+
+				expect(mockProc.stdin.write).toHaveBeenCalledWith(
+					expect.stringContaining("PreCompact"),
 				);
 			});
 		});
@@ -715,6 +737,33 @@ describe("peonPingExtension", () => {
 				await handler({ isError: false }, ctx);
 
 				expect(writeSpy).not.toHaveBeenCalled();
+				expect(mockProc.stdin.write).not.toHaveBeenCalled();
+			});
+		});
+
+		describe("tool_call handler", () => {
+			it("fires PermissionRequest for ask_user_question", async () => {
+				const handler = pi.on.mock.calls.find(
+					(c: unknown[]) => c[0] === "tool_call",
+				)![1] as Function;
+				const ctx = { hasUI: true, sessionManager: { getSessionFile: () => "sess-6" } };
+
+				await handler({ toolName: "ask_user_question" }, ctx);
+
+				expect(mockProc.stdin.write).toHaveBeenCalledWith(
+					expect.stringContaining("PermissionRequest"),
+				);
+			});
+
+			it("does not fire for other tools", async () => {
+				const handler = pi.on.mock.calls.find(
+					(c: unknown[]) => c[0] === "tool_call",
+				)![1] as Function;
+				const ctx = { hasUI: true, sessionManager: { getSessionFile: () => "sess-7" } };
+				mockProc.stdin.write.mockClear();
+
+				await handler({ toolName: "bash" }, ctx);
+
 				expect(mockProc.stdin.write).not.toHaveBeenCalled();
 			});
 		});

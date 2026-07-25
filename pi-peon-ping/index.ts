@@ -37,7 +37,7 @@
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 // ============================================================================
@@ -157,12 +157,18 @@ export function getSessionId(ctx: ExtensionContext): string {
 // Peon-ping config (categories)
 // ============================================================================
 
-/** Event → peon-ping category key mapping (mirrors peon.sh's routing). */
+/**
+ * Event → peon-ping category key mapping (mirrors peon.sh's routing).
+ * SessionEnd is intentionally unmapped so it always fires regardless of
+ * category toggles (peon.sh has no matching category for session teardown).
+ */
 export const EVENT_CATEGORY: Record<string, string> = {
 	SessionStart: "session.start",
 	UserPromptSubmit: "task.acknowledge",
 	Stop: "task.complete",
 	PostToolUseFailure: "task.error",
+	PreCompact: "resource.limit",
+	PermissionRequest: "input.required",
 };
 
 /**
@@ -181,8 +187,8 @@ export function resolveConfigPath(peonPath: string): string | null {
 	const openpeonCfg = join(homedir(), ".openpeon", "config.json");
 	if (existsSync(openpeonCfg)) return openpeonCfg;
 
-	// 3. Install-level ($PEON_DIR/config.json)
-	const peonDir = resolve(dirname(peonPath));
+	// 3. Install-level (same directory as peon.sh)
+	const peonDir = dirname(peonPath);
 	const installCfg = join(peonDir, "config.json");
 	if (existsSync(installCfg)) return installCfg;
 
@@ -236,7 +242,8 @@ export function firePeon(
 	config?: PeonConfig | null,
 ): void {
 	const category = EVENT_CATEGORY[event];
-	if (category && !isCategoryEnabled(config ?? null, category)) return;
+	const enabled = !category || isCategoryEnabled(config ?? null, category);
+	if (!enabled) return;
 
 	const payload = JSON.stringify({
 		hook_event_name: event,
@@ -264,17 +271,14 @@ export function firePeon(
 // peon CLI invocation (for commands)
 // ============================================================================
 
-export function findPeonCli(): string | null {
-	const peonPath = findPeonSh();
-	if (!peonPath) return null;
+export function findPeonCli(peonPath?: string | null): string | null {
 	// peon.sh accepts CLI args too — just use it directly
-	return peonPath;
+	return peonPath ?? findPeonSh();
 }
 
 export async function execPeonCli(
 	cliPath: string,
 	args: string[],
-	ctx?: ExtensionContext,
 ): Promise<{ stdout: string; exitCode: number | null }> {
 	return new Promise((resolve) => {
 		const { shell, script } = resolveShellAndScript(cliPath);
@@ -283,9 +287,7 @@ export async function execPeonCli(
 		});
 
 		let stdout = "";
-		let stderr = "";
 		proc.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-		proc.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
 
 		proc.on("close", (code) => {
 			resolve({ stdout: stdout.trim(), exitCode: code });
@@ -308,28 +310,38 @@ export default function peonPingExtension(pi: ExtensionAPI): void {
 		return;
 	}
 
-	const cliPath = findPeonCli();
+	const cliPath = findPeonCli(peonPath);
 	const cwd = process.cwd();
 	const projectName = basename(cwd) || "pi";
-	const config = readPeonConfig(peonPath);
 
 	// -----------------------------------------------------------------------
 	// Lifecycle event forwarding (respect peon-ping category toggles)
+	// Config is re-read on each event so runtime category changes (via
+	// `peon notifications`) take effect without a pi restart.
 	// -----------------------------------------------------------------------
 
 	pi.on("session_start", async (_event, ctx) => {
+		const config = readPeonConfig(peonPath);
 		const sessionId = getSessionId(ctx);
 		if (ctx.hasUI) setTabTitle(`● ${projectName}: ready`);
 		firePeon(peonPath, "SessionStart", cwd, sessionId, config);
 	});
 
-	pi.on("turn_start", async (_event, ctx) => {
+	pi.on("before_agent_start", async (_event, ctx) => {
+		const config = readPeonConfig(peonPath);
 		const sessionId = getSessionId(ctx);
 		if (ctx.hasUI) setTabTitle(`● ${projectName}: working...`);
 		firePeon(peonPath, "UserPromptSubmit", cwd, sessionId, config);
 	});
 
-	pi.on("turn_end", async (_event, ctx) => {
+	pi.on("session_before_compact", async (_event, ctx) => {
+		const config = readPeonConfig(peonPath);
+		const sessionId = getSessionId(ctx);
+		firePeon(peonPath, "PreCompact", cwd, sessionId, config);
+	});
+
+	pi.on("agent_end", async (_event, ctx) => {
+		const config = readPeonConfig(peonPath);
 		const sessionId = getSessionId(ctx);
 		if (ctx.hasUI) setTabTitle(`✓ ${projectName}: done`);
 		firePeon(peonPath, "Stop", cwd, sessionId, config);
@@ -337,12 +349,23 @@ export default function peonPingExtension(pi: ExtensionAPI): void {
 
 	pi.on("tool_result", async (event, ctx) => {
 		if (!event.isError) return;
+		const config = readPeonConfig(peonPath);
 		const sessionId = getSessionId(ctx);
 		if (ctx.hasUI) setTabTitle(`✗ ${projectName}: error`);
 		firePeon(peonPath, "PostToolUseFailure", cwd, sessionId, config);
 	});
 
+	// Agent is asking the user a question (e.g. ask_user_question tool) →
+	// peon-ping "input.required" category. Fires before the tool runs.
+	pi.on("tool_call", async (event, ctx) => {
+		if (event.toolName !== "ask_user_question") return;
+		const config = readPeonConfig(peonPath);
+		const sessionId = getSessionId(ctx);
+		firePeon(peonPath, "PermissionRequest", cwd, sessionId, config);
+	});
+
 	pi.on("session_shutdown", async (_event, ctx) => {
+		const config = readPeonConfig(peonPath);
 		const sessionId = getSessionId(ctx);
 		firePeon(peonPath, "SessionEnd", cwd, sessionId, config);
 	});
@@ -356,8 +379,12 @@ export default function peonPingExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("peon-ping-toggle", {
 		description: "Toggle peon-ping mute on/off",
 		handler: async (_args, ctx) => {
-			const result = await execPeonCli(cliPath, ["toggle"], ctx);
-			ctx.ui.notify(result.stdout || "toggled", "info");
+			const result = await execPeonCli(cliPath, ["toggle"]);
+			if (result.exitCode !== 0) {
+				ctx.ui.notify(result.stdout || "toggle failed", "error");
+			} else {
+				ctx.ui.notify(result.stdout || "toggled", "info");
+			}
 		},
 	});
 
@@ -369,8 +396,12 @@ export default function peonPingExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Usage: /peon-ping-use <pack-name>", "warning");
 				return;
 			}
-			const result = await execPeonCli(cliPath, ["packs", "use", "--install", name], ctx);
-			ctx.ui.notify(result.stdout || `Switched to ${name}`, "info");
+			const result = await execPeonCli(cliPath, ["packs", "use", "--install", name]);
+			if (result.exitCode !== 0) {
+				ctx.ui.notify(result.stdout || `Failed to switch to ${name}`, "error");
+			} else {
+				ctx.ui.notify(result.stdout || `Switched to ${name}`, "info");
+			}
 		},
 	});
 }

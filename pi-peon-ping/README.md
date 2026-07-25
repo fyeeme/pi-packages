@@ -49,13 +49,30 @@ ln -s $(pwd)/packages/extensions/pi-peon-ping ~/.pi/agent/extensions/pi-peon-pin
 
 ## Event Mapping
 
-| pi event                     | peon-ping event        | Occurs when                     |
-|------------------------------|------------------------|---------------------------------|
-| `session_start`              | `SessionStart`         | Pi starts or resumes a session  |
-| `turn_start`                 | `UserPromptSubmit`     | You submit a prompt             |
-| `turn_end`                   | `Stop`                 | Agent finishes responding       |
-| `tool_result` (isError)      | `PostToolUseFailure`   | A tool call fails               |
-| `session_shutdown`           | `SessionEnd`           | Session ends                    |
+Each pi event is mapped to a peon-ping event, which peon-ping routes to a sound
+**category** — the keys under `categories` in `~/.openpeon/config.json`. Toggle a
+category off there to silence just that event without touching the others.
+
+| pi event | peon-ping event | category | Occurs when |
+|---|---|---|---|
+| `session_start` | `SessionStart` | `session.start` | Pi starts or resumes a session |
+| `before_agent_start` | `UserPromptSubmit` | `task.acknowledge` | You submit a prompt (once per agent run) |
+| `agent_end` | `Stop` | `task.complete` | An agent run finishes (once per prompt) |
+| `tool_result` (isError) | `PostToolUseFailure` | `task.error` | A tool call fails |
+| `tool_call` (`ask_user_question`) | `PermissionRequest` | `input.required` | Agent asks you a question |
+| `session_before_compact` | `PreCompact` | `resource.limit` | Context is about to be compacted |
+| `session_shutdown` | `SessionEnd` | — | Session ends (always fires) |
+
+> **Why `agent_end` / `before_agent_start` instead of `turn_*`?**
+> A single agent run spans multiple turns (e.g. several tool calls in a row).
+> Mapping `turn_end` → `Stop` would fire the completion sound on every turn;
+> `agent_end` fires once per prompt, which is what the completion sound should
+> mean. Same reasoning for `before_agent_start` vs `turn_start`.
+
+> **`input.required` needs the `ask_user_question` tool**, provided by an
+> extension such as [@juicesharp/rpiv-ask-user-question](https://github.com/juicesharp/rpiv-ask-user-question).
+> It listens for the `tool_call` event with `toolName === "ask_user_question"`.
+> Without such a tool installed, this category never fires.
 
 ## Configuration
 
@@ -67,18 +84,18 @@ ln -s $(pwd)/packages/extensions/pi-peon-ping ~/.pi/agent/extensions/pi-peon-pin
 
 ### peon.sh Discovery
 
-pi-peon-ping 自动查找已安装的 `peon.sh`，优先级如下（高 → 低）：
+pi-peon-ping auto-discovers the installed `peon.sh` with the following priority (high → low):
 
-| 优先级 | 来源 | 路径 |
-|--------|------|------|
-| 1 | `$PEON_SH` 环境变量 | 用户指定 |
+| Priority | Source | Path |
+|----------|--------|------|
+| 1 | `$PEON_SH` env var | User-specified |
 | 2 | Homebrew (macOS) | `$(brew --prefix peon-ping)/libexec/peon.sh` |
-| 3 | curl 安装 (Linux/macOS) | `~/.claude/hooks/peon-ping/peon.sh` |
-| 4 | `--openpeon` 模式 | `~/.openpeon/hooks/peon-ping/peon.sh` |
-| 5 | OpenClaw 安装 | `~/.openclaw/hooks/peon-ping/peon.sh` |
-| 6 | Windows/Git Bash WSL2 回退 | `~/.claude/hooks/peon-ping/peon.ps1` |
+| 3 | curl install (Linux/macOS) | `~/.claude/hooks/peon-ping/peon.sh` |
+| 4 | `--openpeon` mode | `~/.openpeon/hooks/peon-ping/peon.sh` |
+| 5 | OpenClaw install | `~/.openclaw/hooks/peon-ping/peon.sh` |
+| 6 | Windows/Git Bash WSL2 fallback | `~/.claude/hooks/peon-ping/peon.ps1` |
 
-当找到 `.ps1` 文件时，自动使用 `powershell` 而非 `bash` 执行。
+When a `.ps1` file is found, it is automatically run with `powershell` instead of `bash`.
 
 ### peon-ping 配置
 
@@ -89,6 +106,7 @@ peon packs use glados          # Switch sound pack
 peon packs install --all       # Install all packs
 peon trainer on                # Enable trainer mode
 peon notifications off         # Mute popups but keep sounds
+peon mute                      # Mute all sounds (toggle back with `peon toggle`)
 peon mobile ntfy my-topic      # Push notifications to phone
 peon ssh-audio relay           # Route audio for remote sessions
 ```
@@ -103,7 +121,7 @@ rm -rf ~/.pi/agent/extensions/pi-peon-ping
 
 This is a thin adapter — it does not play sounds or send notifications directly. Instead, it finds `peon.sh` (from the peon-ping install) and spawns it with a JSON payload on each lifecycle event. `peon.sh` handles all sound selection, playback, notifications, and trainer logic.
 
-The tab title is updated to reflect current agent state: `● working...` during a turn, `✓ done` on completion, `✗ error` on tool failures.
+The tab title reflects agent state: `● working...` when an agent run starts, `✓ done` when it finishes, `✗ error` on tool failures.
 
 ## Credits
 
