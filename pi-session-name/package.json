@@ -1,6 +1,6 @@
 {
 	"name": "@fyeeme/pi-session-name",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Auto-name pi sessions with a short LLM-generated title so --resume lists are easy to scan. Supports first (once) and auto (content-aware rename) modes; never overwrites manual names.",
 	"type": "module",
 	"license": "MIT",

@@ -231,6 +231,10 @@ export default function (pi: ExtensionAPI): void {
 			}
 			if (!title) return;
 
+			// Re-check after async gap: manual rename or external setSessionName
+			// may have fired while generateTitle was in flight.
+			if (manuallyLocked || pi.getSessionName() !== currentName) return;
+
 			lastAutoName = title;
 			pi.setSessionName(title);
 		} catch {
