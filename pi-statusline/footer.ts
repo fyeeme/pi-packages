@@ -75,7 +75,6 @@ export function buildStatLine(
 	providers: Record<string, UsageProvider>,
 	getElapsedSec: () => number,
 	lastTps: number,
-	mcpStatuses: Map<string, { connected: boolean; toolCount: number }>,
 ): string {
 	const mods: string[] = [];
 
@@ -122,24 +121,17 @@ export function buildStatLine(
 		);
 	}
 
-	// timing: 2m30s 39.5 tok/s
+	// timing: 2m30s 39.5tok/s
 	{
 		const t: string[] = [];
 		const elapsed = getElapsedSec();
 		if (elapsed > 0) t.push(formatDuration(elapsed));
-		if (lastTps > 0) t.push(`${lastTps.toFixed(1)} tok/s`);
+		if (lastTps > 0) t.push(`${lastTps.toFixed(1)}tok/s`);
 		if (t.length) mods.push(t.join(" "));
 	}
 
-	// MCP: MCP:2(15) or MCP:0
-	{
-		const entries = Array.from(mcpStatuses.entries());
-		if (entries.length) {
-			const connected = entries.filter(([, s]) => s.connected).length;
-			const tools = entries.reduce((sum, [, s]) => sum + s.toolCount, 0);
-			mods.push(connected > 0 ? `MCP:${connected}(${tools})` : "MCP:0");
-		}
-	}
+	// MCP status: no pi version emits mcp:status/mcp:disconnect events.
+	// The segment is disabled until a documented event source exists.
 
 	return mods.join(" · ");
 }

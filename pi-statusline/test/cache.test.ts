@@ -22,7 +22,6 @@ function makeProvider(fetchResult: ProviderUsageResult): UsageProvider {
 		fetchUsage: vi.fn(async () => fetchResult),
 		formatForFooter: vi.fn(() => ""),
 		debugDump: vi.fn(),
-		quotaCalculator: {} as any,
 	};
 }
 

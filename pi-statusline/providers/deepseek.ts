@@ -1,13 +1,10 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DeepSeekResult, ProviderUsageResult } from "../types.ts";
 import type { UsageProvider } from "./types.ts";
-import type { QuotaCalculator } from "../quota/types.ts";
-import { DeepSeekQuotaCalculator } from "../quota/deepseek.ts";
 import { scanWeeklyTokens } from "../session-scanner.ts";
 import { fmt } from "../footer.ts";
 
 export class DeepSeekUsageProvider implements UsageProvider {
-	quotaCalculator: QuotaCalculator = new DeepSeekQuotaCalculator();
 
 	async fetchUsage(
 		modelRegistry: ExtensionContext["modelRegistry"],

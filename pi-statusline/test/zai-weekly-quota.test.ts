@@ -4,13 +4,6 @@ import { ZaiUsageProvider } from "../providers/zai.ts";
 import type { ProviderUsageResult, ZaiResult } from "../types.ts";
 
 // ---------------------------------------------------------------------------
-// Mock session-scanner
-// ---------------------------------------------------------------------------
-vi.mock("../session-scanner.ts", () => ({
-	scanWeeklyTokens: vi.fn(() => 42_000),
-}));
-
-// ---------------------------------------------------------------------------
 // Helpers to build mock context
 // ---------------------------------------------------------------------------
 
@@ -162,6 +155,11 @@ describe("ZaiUsageProvider", () => {
 						// No unit:6 entry
 					]),
 				}],
+				["model-usage", {
+					ok: true,
+					status: 200,
+					json: usageResponse(500_000),
+				}],
 			])));
 
 			const result = await provider.fetchUsage(
@@ -173,7 +171,7 @@ describe("ZaiUsageProvider", () => {
 			const zai = result as ZaiResult;
 			expect(zai.isNaturalWeek).toBe(true);
 			expect(zai.weeklyPct).toBe(0);
-			expect(zai.weeklyTokens).toBe(42_000); // from mocked scanWeeklyTokens
+			expect(zai.weeklyTokens).toBe(500_000); // from model-usage API
 			// weeklyResetAt should be next Monday 00:00 UTC
 			expect(zai.weeklyResetAt).toBeGreaterThan(now);
 		});
@@ -190,6 +188,11 @@ describe("ZaiUsageProvider", () => {
 						tokenLimit(3, { percentage: 0, nextResetTime: fiveHourReset }),
 						tokenLimit(6, { percentage: 5, nextResetTime: 0 }),
 					]),
+				}],
+				["model-usage", {
+					ok: true,
+					status: 200,
+					json: usageResponse(500_000),
 				}],
 			])));
 
@@ -253,7 +256,7 @@ describe("ZaiUsageProvider", () => {
 			expect(out).toContain(" · ");
 		});
 
-		it("shows natural week format: 7d:tokens", () => {
+		it("shows natural week format: W:tokens", () => {
 			const result: NonNullable<ProviderUsageResult> = {
 				provider: "zai",
 				tokensLimitPct: 0,
@@ -267,8 +270,10 @@ describe("ZaiUsageProvider", () => {
 
 			const out = provider.formatForFooter(result, 0, "$");
 			expect(out).toMatch(/Usage 0%\(\d+h\d+m\)/);
-			expect(out).toContain("7d:42k");
-			expect(out).not.toContain("W:");
+			expect(out).toContain("W:42k");
+			expect(out).not.toContain("7d:");
+			// natural-week format has no percentage/countdown after W:
+			expect(out).not.toMatch(/W:\d+%/);
 		});
 
 		it("hides natural week when weeklyTokens is 0", () => {

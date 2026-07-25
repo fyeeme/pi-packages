@@ -1,10 +1,8 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ZaiResult, ProviderUsageResult } from "../types.ts";
 import type { UsageProvider } from "./types.ts";
-import type { QuotaCalculator } from "../quota/types.ts";
-import { ZaiQuotaCalculator } from "../quota/zai.ts";
 import { fmt, formatCountdown, formatWeeklyCountdown } from "../footer.ts";
-import { scanWeeklyTokens } from "../session-scanner.ts";
+import { startOfCurrentWeekLocal, startOfNextWeekLocal } from "../week.ts";
 
 /** Check if the provider name is a ZAI/GLM variant. */
 function isZaiProvider(provider: string): boolean {
@@ -12,7 +10,6 @@ function isZaiProvider(provider: string): boolean {
 }
 
 export class ZaiUsageProvider implements UsageProvider {
-	quotaCalculator: QuotaCalculator = new ZaiQuotaCalculator();
 
 	async fetchUsage(
 		modelRegistry: ExtensionContext["modelRegistry"],
@@ -75,16 +72,15 @@ export class ZaiUsageProvider implements UsageProvider {
 				const cycleStart = weeklyResetAt - 7 * 24 * 60 * 60 * 1000;
 				weeklyTokens = await this.fetchCycleUsage(origin, headers, cycleStart, now);
 			} else {
-				// No unit:6 — natural week fallback, same as DeepSeek
+				// No unit:6 — natural week fallback. Fetch real usage from the
+				// model-usage API for the current natural week (Mon 00:00 local → now)
+				// so the figure matches the backend's per-week tally instead of
+				// only counting tokens from local session files.
 				isNaturalWeek = true;
-				weeklyTokens = scanWeeklyTokens(model.provider);
-
 				const d = new Date(now);
-				const dayOfWeek = d.getUTCDay();
-				const daysUntilMonday = dayOfWeek === 0 ? 1 : 8 - dayOfWeek;
-				weeklyResetAt = Date.UTC(
-					d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + daysUntilMonday, 0, 0, 0, 0,
-				);
+				const cycleStart = startOfCurrentWeekLocal(d);
+				weeklyResetAt = startOfNextWeekLocal(d);
+				weeklyTokens = await this.fetchCycleUsage(origin, headers, cycleStart, now);
 			}
 
 			return {
@@ -114,7 +110,7 @@ export class ZaiUsageProvider implements UsageProvider {
 		// Weekly quota
 		if (zai.isNaturalWeek) {
 			if (zai.weeklyTokens > 0) {
-				parts.push(`7d:${fmt(zai.weeklyTokens)}`);
+				parts.push(`W:${fmt(zai.weeklyTokens)}`);
 			}
 		} else if (zai.weeklyTokens > 0 || zai.weeklyPct > 0) {
 			const weeklyCountdown = formatWeeklyCountdown(zai.weeklyResetAt);

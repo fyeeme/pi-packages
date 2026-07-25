@@ -1,6 +1,6 @@
 {
   "name": "@fyeeme/pi-statusline",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Rich custom status bar for pi with token usage, cost, DeepSeek balance, context window, timing, and MCP connection status.",
   "type": "module",
   "license": "MIT",
@@ -34,7 +34,6 @@
   "files": [
     "*.ts",
     "providers/*.ts",
-    "quota/*.ts",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"

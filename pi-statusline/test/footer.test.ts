@@ -177,13 +177,11 @@ function makeProvider(formatResult: string): UsageProvider {
 		fetchUsage: async () => null,
 		formatForFooter: () => formatResult,
 		debugDump: () => {},
-		quotaCalculator: {} as any,
 	};
 }
 
 describe("buildStatLine", () => {
 	const noopElapsed = () => 0;
-	const emptyMcp = new Map<string, { connected: boolean; toolCount: number }>();
 
 	it("returns empty string when no data", () => {
 		const result = buildStatLine(
@@ -193,7 +191,6 @@ describe("buildStatLine", () => {
 			{},
 			noopElapsed,
 			0,
-			emptyMcp,
 		);
 		expect(result).toBe("");
 	});
@@ -206,7 +203,6 @@ describe("buildStatLine", () => {
 			{},
 			noopElapsed,
 			0,
-			emptyMcp,
 		);
 		expect(result).toContain("tokens 7.0k(in 5.0k, out 2.0k)");
 	});
@@ -219,7 +215,6 @@ describe("buildStatLine", () => {
 			{},
 			noopElapsed,
 			0,
-			emptyMcp,
 		);
 		expect(result).toContain("cache 1.5k");
 	});
@@ -232,7 +227,6 @@ describe("buildStatLine", () => {
 			{},
 			noopElapsed,
 			0,
-			emptyMcp,
 		);
 		expect(result).toContain("cache 1.5k,33.0%");
 	});
@@ -245,7 +239,6 @@ describe("buildStatLine", () => {
 			{},
 			noopElapsed,
 			0,
-			emptyMcp,
 		);
 		expect(result).toContain("$0.05");
 	});
@@ -259,7 +252,6 @@ describe("buildStatLine", () => {
 			providers,
 			noopElapsed,
 			0,
-			emptyMcp,
 		);
 		expect(result).toContain("DS: ¥100.00");
 	});
@@ -272,7 +264,6 @@ describe("buildStatLine", () => {
 			{},
 			noopElapsed,
 			0,
-			emptyMcp,
 		);
 		expect(result).toContain("43.8%/16k");
 	});
@@ -285,7 +276,6 @@ describe("buildStatLine", () => {
 			{},
 			noopElapsed,
 			0,
-			emptyMcp,
 		);
 		expect(result).toContain("?/16k");
 	});
@@ -298,18 +288,12 @@ describe("buildStatLine", () => {
 			{},
 			() => 150,
 			39.5,
-			emptyMcp,
 		);
 		expect(result).toContain("2m30s");
-		expect(result).toContain("39.5 tok/s");
+		expect(result).toContain("39.5tok/s");
 	});
 
-	it("shows MCP with connected servers", () => {
-		const mcp = new Map<string, { connected: boolean; toolCount: number }>();
-		mcp.set("server1", { connected: true, toolCount: 10 });
-		mcp.set("server2", { connected: true, toolCount: 5 });
-		mcp.set("server3", { connected: false, toolCount: 3 });
-
+	it("MCP segment is absent (no pi version emits mcp:status/mcp:disconnect)", () => {
 		const result = buildStatLine(
 			makeStats(),
 			undefined,
@@ -317,25 +301,8 @@ describe("buildStatLine", () => {
 			{},
 			noopElapsed,
 			0,
-			mcp,
 		);
-		expect(result).toContain("MCP:2(18)");
-	});
-
-	it("shows MCP:0 when no connected servers", () => {
-		const mcp = new Map<string, { connected: boolean; toolCount: number }>();
-		mcp.set("server1", { connected: false, toolCount: 0 });
-
-		const result = buildStatLine(
-			makeStats(),
-			undefined,
-			null,
-			{},
-			noopElapsed,
-			0,
-			mcp,
-		);
-		expect(result).toContain("MCP:0");
+		expect(result).not.toContain("MCP");
 	});
 
 	it("joins sections with separator", () => {
@@ -346,7 +313,6 @@ describe("buildStatLine", () => {
 			{},
 			noopElapsed,
 			0,
-			emptyMcp,
 		);
 		expect(result).toContain(" · ");
 	});

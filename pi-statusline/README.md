@@ -59,7 +59,7 @@ See the Pi Packages guide on [pi.dev](https://pi.dev) for the full list of sourc
 
 ```
 ~/projects/my-repo (main)                    deepseek-v3 · xhigh
-in 12k, out 8k, cache 45k, total 65k · ¥0.12/50.00 · 12.3%/64k · 45s 38.2 tok/s · MCP:2(15)
+in 12k, out 8k, cache 45k, total 65k · ¥0.12/50.00 · 12.3%/64k · 45s 38.2tok/s · MCP:2(15)
 ```
 
 Line 1: cwd + git branch (left) | model + thinking level (right)

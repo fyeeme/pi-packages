@@ -47,8 +47,6 @@ let lastElapsedSec = 0;
 let lastTps = 0;
 let currencyOverride: "¥" | "$" | undefined = undefined;
 
-const mcpStatuses = new Map<string, { connected: boolean; toolCount: number }>();
-
 const tokenCalculator = new SessionTokenUsageCalculator(() => currencyOverride);
 
 // ---------------------------------------------------------------------------
@@ -97,14 +95,6 @@ export default function (pi: ExtensionAPI) {
 		if (lastCtx && lastModel) {
 			void refreshUsage(providers, lastCtx.modelRegistry, lastModel);
 		}
-	});
-
-	pi.events.on("mcp:status", (raw) => {
-		const data = raw as { id: string; connected: boolean; toolCount: number };
-		mcpStatuses.set(data.id, { connected: data.connected, toolCount: data.toolCount });
-	});
-	pi.events.on("mcp:disconnect", (raw) => {
-		mcpStatuses.delete((raw as { id: string }).id);
 	});
 
 	// ---- /status-debug ----
@@ -235,7 +225,7 @@ export default function (pi: ExtensionAPI) {
 
 					// Line 1: tokens + cost + provider usage + context + elapsed + tps + mcp
 					lines.push(truncateToWidth(
-						dim(buildStatLine(stats, cu, providerResult, providers, getElapsedSec, lastTps, mcpStatuses)),
+						dim(buildStatLine(stats, cu, providerResult, providers, getElapsedSec, lastTps)),
 						width,
 						dim("..."),
 					));

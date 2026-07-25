@@ -12,9 +12,13 @@ interface CacheEntry {
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 let usageCache: CacheEntry | null = null;
+let refreshInFlight: Promise<ProviderUsageResult> | null = null;
+let refreshGeneration = 0;
 
 export function resetUsageCache(): void {
 	usageCache = null;
+	refreshInFlight = null;
+	refreshGeneration += 1;
 }
 
 export function getUsageCache(): CacheEntry | null {
@@ -33,13 +37,22 @@ export async function refreshUsage(
 		return null;
 	}
 
-	const result = await provider.fetchUsage(modelRegistry, model);
-	if (result) {
-		usageCache = { result, fetchedAt: Date.now() };
-	} else {
-		usageCache = null;
+	const gen = ++refreshGeneration;
+	try {
+		const result = await provider.fetchUsage(modelRegistry, model);
+		// Drop stale responses from older generations
+		if (gen !== refreshGeneration) return usageCache?.result ?? null;
+		if (result) {
+			usageCache = { result, fetchedAt: Date.now() };
+		} else {
+			usageCache = null;
+		}
+		return result;
+	} catch {
+		// Total catch: fire-and-forget callers must never see an unhandled rejection
+		if (gen === refreshGeneration) usageCache = null;
+		return null;
 	}
-	return result;
 }
 
 export function getUsageCacheAge(): number | null {
@@ -53,11 +66,22 @@ export function getCachedUsage(
 	lastModel: ExtensionContext["model"] | undefined,
 ): ProviderUsageResult {
 	if (!usageCache) return null;
-	if (Date.now() - usageCache.fetchedAt > CACHE_TTL_MS) {
-		// TTL expired: return stale data but trigger background refresh
+	// Capture local snapshot before triggering background refresh: refreshUsage
+	// may synchronously set usageCache = null when the provider is not found,
+	// which would make the eventual `return cache.result` throw on null.
+	const cache = usageCache;
+	if (Date.now() - cache.fetchedAt > CACHE_TTL_MS) {
+		// TTL expired: return stale data but trigger background refresh.
+		// Memoize inflight promise so concurrent callers share one fetch.
 		if (lastCtx && lastModel) {
-			void refreshUsage(providers, lastCtx.modelRegistry, lastModel);
+			if (!refreshInFlight) {
+				const promise = refreshUsage(providers, lastCtx.modelRegistry, lastModel);
+				refreshInFlight = promise;
+				promise.finally(() => {
+					if (refreshInFlight === promise) refreshInFlight = null;
+				});
+			}
 		}
 	}
-	return usageCache.result;
+	return cache.result;
 }
