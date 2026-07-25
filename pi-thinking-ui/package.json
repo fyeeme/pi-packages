@@ -1,6 +1,6 @@
 {
   "name": "@fyeeme/pi-thinking-ui",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Faithful, terminal-native three-mode thinking visualization for Pi.",
   "type": "module",
   "license": "MIT",

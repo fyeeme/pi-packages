@@ -271,6 +271,10 @@ async function installPatch(): Promise<() => void> {
 
 	const patchedUpdateContent = function patchedUpdateContent(this: AssistantMessageComponentPrototype, message: AssistantMessage): void {
 		this.lastMessage = message;
+		if (this.hideThinkingBlock) {
+			fallbackToOriginalUpdateContent(this, message, "updateContent");
+			return;
+		}
 		if (!hasPatchableContentContainer(this)) {
 			fallbackToOriginalUpdateContent(this, message, "updateContent");
 			return;
@@ -333,7 +337,7 @@ async function installPatch(): Promise<() => void> {
 			return;
 		}
 
-		this.hideThinkingBlock = false;
+		this.hideThinkingBlock = hide;
 		if (!this.lastMessage) return;
 		try {
 			this.updateContent(this.lastMessage);

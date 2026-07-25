@@ -54,7 +54,7 @@ function normalizeThinkingScopeKey(scopeKey?: string): string {
 }
 
 function normalizeThinkingMode(mode: unknown): ThinkingUIMode {
-	return mode === "collapsed" || mode === "summary" || mode === "expanded" ? mode : "summary";
+	return mode === "collapsed" || mode === "summary" || mode === "expanded" ? mode : "collapsed";
 }
 
 function normalizeActiveThinkingState(value: unknown): ActiveThinkingState {
@@ -167,7 +167,7 @@ const globalState = (() => {
 	}
 	const created: ThinkingUIGlobalState = {
 		currentScopeKey: DEFAULT_SCOPE_KEY,
-		modeByScopeKey: { [DEFAULT_SCOPE_KEY]: "summary" },
+		modeByScopeKey: { [DEFAULT_SCOPE_KEY]: "collapsed" },
 		activeByScopeKey: { [DEFAULT_SCOPE_KEY]: {} },
 		lastActiveByScopeKey: { [DEFAULT_SCOPE_KEY]: { active: false } },
 		refreshToggleByScope: {},
@@ -183,7 +183,7 @@ const globalState = (() => {
 
 function ensureScopeState(scopeKey: string): void {
 	if (!(scopeKey in globalState.modeByScopeKey)) {
-		globalState.modeByScopeKey[scopeKey] = "summary";
+		globalState.modeByScopeKey[scopeKey] = "collapsed";
 	}
 	if (!(scopeKey in globalState.activeByScopeKey)) {
 		globalState.activeByScopeKey[scopeKey] = {};
@@ -215,7 +215,7 @@ export function setCurrentThinkingScopeKey(scopeKey: string): void {
 export function getThinkingUIMode(scopeKey?: string): ThinkingUIMode {
 	const normalizedScopeKey = normalizeThinkingScopeKey(scopeKey ?? globalState.currentScopeKey);
 	ensureScopeState(normalizedScopeKey);
-	return globalState.modeByScopeKey[normalizedScopeKey] ?? "summary";
+	return globalState.modeByScopeKey[normalizedScopeKey] ?? "collapsed";
 }
 
 export function setThinkingUIMode(mode: ThinkingUIMode, scopeKey?: string): void {
@@ -370,7 +370,7 @@ export function resetThinkingUIViewState(scopeKey?: string): void {
 	if (scopeKey !== undefined) {
 		const normalizedScopeKey = normalizeThinkingScopeKey(scopeKey);
 		globalState.currentScopeKey = normalizedScopeKey;
-		globalState.modeByScopeKey[normalizedScopeKey] = "summary";
+		globalState.modeByScopeKey[normalizedScopeKey] = "collapsed";
 		globalState.refreshToggleByScope[normalizedScopeKey] = false;
 		globalState.activeByScopeKey[normalizedScopeKey] = {};
 		globalState.lastActiveByScopeKey[normalizedScopeKey] = { active: false };
@@ -379,7 +379,7 @@ export function resetThinkingUIViewState(scopeKey?: string): void {
 	}
 
 	globalState.currentScopeKey = DEFAULT_SCOPE_KEY;
-	globalState.modeByScopeKey = { [DEFAULT_SCOPE_KEY]: "summary" };
+	globalState.modeByScopeKey = { [DEFAULT_SCOPE_KEY]: "collapsed" };
 	globalState.activeByScopeKey = { [DEFAULT_SCOPE_KEY]: {} };
 	globalState.lastActiveByScopeKey = { [DEFAULT_SCOPE_KEY]: { active: false } };
 	globalState.refreshToggleByScope = {};

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	deriveStepCore,
 	deriveThinkingUI,
 	iconForThinkingRole,
 	inferThinkingRole,
@@ -217,5 +218,58 @@ describe("deriveThinkingUI", () => {
 		expect(typeof step.challengerSummary).toBe("string");
 		expect(Array.isArray(step.summaryEvents)).toBe(true);
 		expect(typeof step.collapsedPriority).toBe("number");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// deriveStepCore + caching resolver contract
+// ---------------------------------------------------------------------------
+
+describe("deriveStepCore + caching resolver", () => {
+	const BLOCKS = [
+		{ contentIndex: 0, text: "I need to read packages/foo.ts.\n\nThe npm test failed with exit code 1." },
+	];
+
+	it("is a pure function: identical input yields identical output", () => {
+		const a = deriveStepCore("I need to read packages/foo.ts.");
+		const b = deriveStepCore("I need to read packages/foo.ts.");
+		expect(a).toEqual(b);
+	});
+
+	it("a caching resolver produces identical steps to the default resolver", () => {
+		const cache = new Map<string, ReturnType<typeof deriveStepCore>>();
+		const cachingResolver = (stepText: string) => {
+			const cached = cache.get(stepText);
+			if (cached) return cached;
+			const core = deriveStepCore(stepText);
+			cache.set(stepText, core);
+			return core;
+		};
+
+		const cached = deriveThinkingUI(BLOCKS, cachingResolver);
+		const fresh = deriveThinkingUI(BLOCKS);
+
+		expect(cached).toEqual(fresh);
+	});
+
+	it("a caching resolver avoids recomputation for identical step texts", () => {
+		const cache = new Map<string, ReturnType<typeof deriveStepCore>>();
+		let computeCalls = 0;
+		const cachingResolver = (stepText: string) => {
+			const cached = cache.get(stepText);
+			if (cached) return cached;
+			computeCalls += 1;
+			const core = deriveStepCore(stepText);
+			cache.set(stepText, core);
+			return core;
+		};
+
+		const first = deriveThinkingUI(BLOCKS, cachingResolver);
+		const firstCalls = computeCalls;
+		const second = deriveThinkingUI(BLOCKS, cachingResolver);
+
+		// Without content-addressed caching, calls would double.
+		expect(second).toEqual(first);
+		expect(computeCalls).toBe(firstCalls);
 	});
 });

@@ -1,6 +1,7 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { deriveThinkingUI } from "./parse.ts";
+import { deriveStepCore, deriveThinkingUI } from "./parse.ts";
+import type { DerivedStepCore } from "./parse.ts";
 import { getActiveThinkingState, getCurrentThinkingScopeKey, getThinkingUIMode } from "./state.ts";
 import type { DerivedThinkingStep, ThinkingSemanticRole, ThinkingSourceBlock, ThinkingThemeLike } from "./types.ts";
 
@@ -357,8 +358,81 @@ export function renderThinkingUILines(theme: ThinkingThemeLike, width: number, o
 	return renderSummary(theme, width, options.steps, options.activeStepId);
 }
 
+// Throttle: during active streaming, skip re-derivation unless the total
+// character change across blocks exceeds this threshold. This keeps the
+// spinner and input responsive during deep thinking while still updating
+// the summary at a visible cadence.
+const MIN_DELTA_CHARS_FOR_REDERIVE = 200;
+const THROTTLE_CACHE_LIMIT = 4;
+const throttleCache = new Map<number, { lengths: number[]; steps: DerivedThinkingStep[] }>();
+
+// Step-core cache: thinking text is append-only, so completed step texts are
+// byte-stable across re-derivations. Caching the expensive core (summary +
+// role) by step text avoids re-summarizing N-1 unchanged steps on each
+// throttle-miss derive, linearizing the per-derive summarization cost.
+const STEP_CORE_CACHE_LIMIT = 500;
+const stepCoreCache = new Map<string, DerivedStepCore>();
+
+function cachingCoreResolver(stepText: string): DerivedStepCore {
+	const cached = stepCoreCache.get(stepText);
+	if (cached) {
+		stepCoreCache.delete(stepText);
+		stepCoreCache.set(stepText, cached);
+		return cached;
+	}
+	const core = deriveStepCore(stepText);
+	if (stepCoreCache.size >= STEP_CORE_CACHE_LIMIT) {
+		const oldestKey = stepCoreCache.keys().next().value;
+		if (oldestKey !== undefined) {
+			stepCoreCache.delete(oldestKey);
+		}
+	}
+	stepCoreCache.set(stepText, core);
+	return core;
+}
+
+function totalLengthDelta(current: number[], previous: number[]): number {
+	let delta = 0;
+	for (let index = 0; index < Math.max(current.length, previous.length); index += 1) {
+		delta += Math.abs((current[index] ?? 0) - (previous[index] ?? 0));
+	}
+	return delta;
+}
+
+function deriveOrReuseSteps(
+	messageTimestamp: number,
+	scopeKey: string,
+	blocks: ThinkingSourceBlock[],
+): DerivedThinkingStep[] {
+	const active = getActiveThinkingState(messageTimestamp, scopeKey);
+	const lengths = blocks.map((block) => block.text.length);
+	const cached = throttleCache.get(messageTimestamp);
+
+	// During active streaming, skip re-derivation when only a few chars were appended.
+	if (active.active && cached) {
+		const delta = totalLengthDelta(lengths, cached.lengths);
+		if (delta < MIN_DELTA_CHARS_FOR_REDERIVE) {
+			return cached.steps;
+		}
+	}
+
+	const steps = deriveThinkingUI(blocks, cachingCoreResolver);
+
+	if (active.active) {
+		if (throttleCache.size >= THROTTLE_CACHE_LIMIT && !throttleCache.has(messageTimestamp)) {
+			const oldestKey = throttleCache.keys().next().value;
+			if (oldestKey !== undefined) {
+				throttleCache.delete(oldestKey);
+			}
+		}
+		throttleCache.set(messageTimestamp, { lengths, steps });
+	}
+
+	return steps;
+}
+
 export class ThinkingUIComponent implements Component {
-	private steps: DerivedThinkingStep[];
+	private readonly steps: DerivedThinkingStep[];
 	private cacheKey?: string;
 	private cachedLines?: string[];
 	private readonly scopeKey: string;
@@ -373,8 +447,8 @@ export class ThinkingUIComponent implements Component {
 	) {
 		this.theme = theme;
 		this.messageTimestamp = messageTimestamp;
-		this.steps = deriveThinkingUI(blocks);
 		this.scopeKey = scopeKey ?? getCurrentThinkingScopeKey();
+		this.steps = deriveOrReuseSteps(messageTimestamp, this.scopeKey, blocks);
 	}
 
 	render(width: number): string[] {

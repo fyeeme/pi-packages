@@ -33,8 +33,8 @@ describe("thinking-ui state — scope key + default mode", () => {
 		expect(getCurrentThinkingScopeKey()).toBe("__default__");
 	});
 
-	it("defaults to summary mode", () => {
-		expect(getThinkingUIMode()).toBe("summary");
+	it("defaults to collapsed mode", () => {
+		expect(getThinkingUIMode()).toBe("collapsed");
 	});
 
 	it("set/get round-trips the mode for the current scope", () => {
@@ -44,10 +44,10 @@ describe("thinking-ui state — scope key + default mode", () => {
 		expect(getThinkingUIMode()).toBe("collapsed");
 	});
 
-	it("switching scope resets to summary for that scope", () => {
+	it("switching scope resets to collapsed for that scope", () => {
 		setThinkingUIMode("expanded");
 		setCurrentThinkingScopeKey("/proj/a");
-		expect(getThinkingUIMode()).toBe("summary");
+		expect(getThinkingUIMode()).toBe("collapsed");
 		expect(getThinkingUIMode("__default__")).toBe("expanded");
 	});
 
@@ -161,11 +161,11 @@ describe("thinking-ui state — patch release stack", () => {
 });
 
 describe("thinking-ui state — full reset", () => {
-	it("restores the default scope and summary mode", () => {
+	it("restores the default scope and collapsed mode", () => {
 		setCurrentThinkingScopeKey("/proj/a");
 		setThinkingUIMode("expanded", "/proj/a");
 		resetThinkingUIViewState();
 		expect(getCurrentThinkingScopeKey()).toBe("__default__");
-		expect(getThinkingUIMode()).toBe("summary");
+		expect(getThinkingUIMode()).toBe("collapsed");
 	});
 });

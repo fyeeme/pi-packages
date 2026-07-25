@@ -1086,7 +1086,38 @@ export function iconForThinkingRole(role: ThinkingSemanticRole): string {
 	}
 }
 
-export function deriveThinkingUI(blocks: ThinkingSourceBlock[]): DerivedThinkingStep[] {
+export interface DerivedStepCore {
+	summary: string;
+	baselineSummary: string;
+	challengerSummary: string;
+	summaryEvents: ThinkingSummaryEvent[];
+	collapsedPriority: number;
+	hasExplicitFailure: boolean;
+	hasExplicitSuccess: boolean;
+	role: ThinkingSemanticRole;
+	icon: string;
+}
+
+export function deriveStepCore(stepText: string): DerivedStepCore {
+	const summaryDetails = summarizeThinkingTextDetailed(stepText);
+	const role = inferThinkingRole(`${summaryDetails.summary}\n${stepText}`);
+	return {
+		summary: summaryDetails.summary,
+		baselineSummary: summaryDetails.baselineSummary,
+		challengerSummary: summaryDetails.challengerSummary,
+		summaryEvents: summaryDetails.events,
+		collapsedPriority: summaryDetails.collapsedPriority,
+		hasExplicitFailure: summaryDetails.hasExplicitFailure,
+		hasExplicitSuccess: summaryDetails.hasExplicitSuccess,
+		role,
+		icon: iconForThinkingRole(role),
+	};
+}
+
+export function deriveThinkingUI(
+	blocks: ThinkingSourceBlock[],
+	resolveCore: (stepText: string) => DerivedStepCore = deriveStepCore,
+): DerivedThinkingStep[] {
 	const steps: DerivedThinkingStep[] = [];
 	blocks.forEach((block, blockIndex) => {
 		if (block.redacted && !block.text.trim()) {
@@ -1112,23 +1143,22 @@ export function deriveThinkingUI(blocks: ThinkingSourceBlock[]): DerivedThinking
 
 		const stepTexts = splitThinkingIntoStepTexts(block.text);
 		stepTexts.forEach((stepText, stepIndex) => {
-			const summaryDetails = summarizeThinkingTextDetailed(stepText);
-			const role = inferThinkingRole(`${summaryDetails.summary}\n${stepText}`);
+			const core = resolveCore(stepText);
 			steps.push({
 				id: `${block.contentIndex}-${stepIndex}`,
 				contentIndex: block.contentIndex,
 				blockIndex,
 				stepIndex,
-				summary: summaryDetails.summary,
+				summary: core.summary,
 				body: stepText.trim(),
-				role,
-				icon: iconForThinkingRole(role),
-				baselineSummary: summaryDetails.baselineSummary,
-				challengerSummary: summaryDetails.challengerSummary,
-				summaryEvents: summaryDetails.events,
-				collapsedPriority: summaryDetails.collapsedPriority,
-				hasExplicitFailure: summaryDetails.hasExplicitFailure,
-				hasExplicitSuccess: summaryDetails.hasExplicitSuccess,
+				role: core.role,
+				icon: core.icon,
+				baselineSummary: core.baselineSummary,
+				challengerSummary: core.challengerSummary,
+				summaryEvents: core.summaryEvents,
+				collapsedPriority: core.collapsedPriority,
+				hasExplicitFailure: core.hasExplicitFailure,
+				hasExplicitSuccess: core.hasExplicitSuccess,
 			});
 		});
 	});

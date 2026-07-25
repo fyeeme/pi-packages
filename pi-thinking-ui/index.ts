@@ -63,7 +63,7 @@ async function restoreMode(ctx: ExtensionContext): Promise<ThinkingUIMode> {
 	if (projectMode) return projectMode;
 
 	const globalMode = await readRestoredModePreference(ctx, "global");
-	return globalMode ?? "summary";
+	return globalMode ?? "collapsed";
 }
 
 function refreshThinkingUI(ctx: ExtensionContext): void {
