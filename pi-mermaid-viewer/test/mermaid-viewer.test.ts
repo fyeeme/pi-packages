@@ -283,8 +283,89 @@ describe("quoteBareLabels", () => {
 		expect(result.code).toContain("A[被测代码]");
 		expect(result.code).toContain("IT[需要集成测试]");
 		expect(result.code).toContain("MOCK[Mock 单测足够]");
-		// Edge labels are untouched
+		// Edge labels without special chars stay bare
 		expect(result.code).toContain("B -->|是| IT");
+	});
+
+	// --- edge labels: pipe |..| / dotted -. .-> / dash -- --> ---
+
+	it("quotes a pipe edge label containing '@'", () => {
+		const result = quoteBareLabels("API -->|@HttpExchange| DEVICE");
+		expect(result.code).toBe('API -->|"@HttpExchange"| DEVICE');
+		expect(result.fixes).toEqual(["edge |@HttpExchange|"]);
+	});
+
+	it("quotes a pipe edge label containing '/'", () => {
+		const result = quoteBareLabels("A -->|GET /user| B");
+		expect(result.code).toBe('A -->|"GET /user"| B');
+		expect(result.fixes).toEqual(["edge |GET /user|"]);
+	});
+
+	it("quotes a pipe edge label with parens without mistaking it for a node shape", () => {
+		// |foo(x)| must NOT be rewritten into a node `foo"(x)"` by the shape pass.
+		const result = quoteBareLabels("A -->|foo(x)| B");
+		expect(result.code).toBe('A -->|"foo(x)"| B');
+		expect(result.fixes).toEqual(["edge |foo(x)|"]);
+	});
+
+	it("leaves a pipe edge label without special chars untouched", () => {
+		const result = quoteBareLabels("B -->|是| IT[需要集成测试]");
+		expect(result.code).toBe("B -->|是| IT[需要集成测试]");
+		expect(result.fixes).toEqual([]);
+	});
+
+	it("leaves an already-quoted pipe edge label untouched", () => {
+		const result = quoteBareLabels('A -->|"@x"| B');
+		expect(result.code).toBe('A -->|"@x"| B');
+		expect(result.fixes).toEqual([]);
+	});
+
+	it("heals multiple pipe labels on one line", () => {
+		const result = quoteBareLabels("A -->|@a| B -->|@b| C");
+		expect(result.code).toBe('A -->|"@a"| B -->|"@b"| C');
+		expect(result.fixes).toEqual(["edge |@a|", "edge |@b|"]);
+	});
+
+	it("quotes a dotted edge label containing a special char", () => {
+		const result = quoteBareLabels("A -. @x .-> B");
+		expect(result.code).toBe('A -. "@x" .-> B');
+		expect(result.fixes).toEqual(["edge -. @x .->"]);
+	});
+
+	it("quotes a dash edge label containing a special char (arrow form)", () => {
+		const result = quoteBareLabels("A -- @x --> B");
+		expect(result.code).toBe('A -- "@x" --> B');
+		expect(result.fixes).toEqual(["edge -- @x -->"]);
+	});
+
+	it("quotes a dash edge label (no-arrow form ---)", () => {
+		const result = quoteBareLabels("A -- @x --- B");
+		expect(result.code).toBe('A -- "@x" --- B');
+		expect(result.fixes).toEqual(["edge -- @x ---"]);
+	});
+
+	it("does not mistake a plain arrow for a dash label", () => {
+		const result = quoteBareLabels("A --> B");
+		expect(result.code).toBe("A --> B");
+		expect(result.fixes).toEqual([]);
+	});
+
+	it("does not mistake a plain dotted link for a dotted label", () => {
+		const result = quoteBareLabels("A -.-> B");
+		expect(result.code).toBe("A -.-> B");
+		expect(result.fixes).toEqual([]);
+	});
+
+	it("does not mistake a plain --- link for a dash label", () => {
+		const result = quoteBareLabels("A --- B");
+		expect(result.code).toBe("A --- B");
+		expect(result.fixes).toEqual([]);
+	});
+
+	it("heals node labels on a line that also has a healed edge label", () => {
+		const result = quoteBareLabels('A[foo@bar] -->|@x| B[qux@z]');
+		expect(result.code).toBe('A["foo@bar"] -->|"@x"| B["qux@z"]');
+		expect(result.fixes).toEqual(["edge |@x|", "A […]", "B […]"]);
 	});
 
 	it("returns empty string unchanged", () => {
@@ -836,6 +917,7 @@ describe("quoteBareLabels.toString() survives template-literal injection", () =>
 		expect(src).toContain("\\w");   // lost \w → backslashes corrupted
 		expect(src).toContain("\\s");   // lost \s → backslashes corrupted
 		expect(src).toContain("\\[");   // lost \[ → backslashes corrupted
+		expect(src).toContain("\\|");   // PIPE_RE \| — lost \| → edge labels break
 	});
 
 	it("serializes to a syntactically valid named function declaration", () => {
@@ -855,6 +937,9 @@ describe("quoteBareLabels.toString() survives template-literal injection", () =>
 			"B{注解?}",
 			"subgraph 裸?",
 			"A[plain] --> B[x?]",
+			"A -->|@HttpExchange| B",
+			"A -. @x .-> B",
+			"A -- @x --> B",
 		];
 		for (const c of cases) {
 			expect(reimpl(c)).toEqual(quoteBareLabels(c));
