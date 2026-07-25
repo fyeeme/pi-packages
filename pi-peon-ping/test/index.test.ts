@@ -13,6 +13,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { existsSync } from "node:fs";
 import { spawn, execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 // Import under test
@@ -26,6 +27,10 @@ import peonPingExtension, {
 	firePeon,
 	findPeonCli,
 	execPeonCli,
+	EVENT_CATEGORY,
+	resolveConfigPath,
+	readPeonConfig,
+	isCategoryEnabled,
 	PEON_SH_TEMPLATES,
 } from "../index.ts";
 
@@ -38,6 +43,7 @@ vi.mock("node:fs", async () => {
 	return {
 		...(actual as object),
 		existsSync: vi.fn(),
+		readFileSync: vi.fn(),
 	};
 });
 
@@ -336,6 +342,215 @@ describe("firePeon", () => {
 			throw new Error("ENOENT");
 		});
 		expect(() => firePeon("/peon.sh", "SessionStart", "/cwd", "sess-1")).not.toThrow();
+	});
+
+	describe("category suppression", () => {
+		it("skips spawn when category is disabled in config", () => {
+			const config = {
+				categories: { "session.start": false },
+			};
+
+			firePeon("/peon.sh", "SessionStart", "/cwd", "sess-1", config);
+
+			expect(spawn).not.toHaveBeenCalled();
+		});
+
+		it("spawns when category is enabled in config", () => {
+			const mockProc = {
+				stdin: { write: vi.fn(), end: vi.fn() },
+				unref: vi.fn(),
+			};
+			vi.mocked(spawn).mockReturnValue(mockProc as unknown as ReturnType<typeof spawn>);
+
+			firePeon("/peon.sh", "Stop", "/cwd", "sess-1", {
+				categories: { "task.complete": true },
+			});
+
+			expect(spawn).toHaveBeenCalled();
+		});
+
+		it("allows events with no category mapping (e.g. SessionEnd)", () => {
+			const mockProc = {
+				stdin: { write: vi.fn(), end: vi.fn() },
+				unref: vi.fn(),
+			};
+			vi.mocked(spawn).mockReturnValue(mockProc as unknown as ReturnType<typeof spawn>);
+
+			firePeon("/peon.sh", "SessionEnd", "/cwd", "sess-1", null);
+
+			expect(spawn).toHaveBeenCalled();
+		});
+
+		it("defaults to true when config has no categories", () => {
+			const mockProc = {
+				stdin: { write: vi.fn(), end: vi.fn() },
+				unref: vi.fn(),
+			};
+			vi.mocked(spawn).mockReturnValue(mockProc as unknown as ReturnType<typeof spawn>);
+
+			firePeon("/peon.sh", "SessionStart", "/cwd", "sess-1", {});
+
+			expect(spawn).toHaveBeenCalled();
+		});
+	});
+});
+
+// ============================================================================
+// EVENT_CATEGORY
+// ============================================================================
+
+describe("EVENT_CATEGORY", () => {
+	it("maps SessionStart to session.start", () => {
+		expect(EVENT_CATEGORY.SessionStart).toBe("session.start");
+	});
+
+	it("maps UserPromptSubmit to task.acknowledge", () => {
+		expect(EVENT_CATEGORY.UserPromptSubmit).toBe("task.acknowledge");
+	});
+
+	it("maps Stop to task.complete", () => {
+		expect(EVENT_CATEGORY.Stop).toBe("task.complete");
+	});
+
+	it("maps PostToolUseFailure to task.error", () => {
+		expect(EVENT_CATEGORY.PostToolUseFailure).toBe("task.error");
+	});
+
+	it("SessionEnd has no category (always fires)", () => {
+		expect(EVENT_CATEGORY.SessionEnd).toBeUndefined();
+	});
+});
+
+// ============================================================================
+// resolveConfigPath
+// ============================================================================
+
+describe("resolveConfigPath", () => {
+	beforeEach(() => {
+		vi.mocked(existsSync).mockReset();
+		vi.mocked(readFileSync).mockReset();
+	});
+
+	it("returns project-local config when it exists", () => {
+		// existsSync called for local config path → true
+		vi.mocked(existsSync).mockReturnValueOnce(true);
+
+		const result = resolveConfigPath("/opt/peon.sh");
+
+		expect(result).toContain(".claude/hooks/peon-ping/config.json");
+	});
+
+	it("returns ~/.openpeon/config.json when project-local config does not exist", () => {
+		// local config → false, ~/.openpeon → true
+		vi.mocked(existsSync).mockReturnValueOnce(false).mockReturnValueOnce(true);
+
+		const result = resolveConfigPath("/opt/peon.sh");
+
+		expect(result).toContain(".openpeon/config.json");
+	});
+
+	it("returns install-level config when project-local and openpeon do not exist", () => {
+		// local → false, openpeon → false, install → true
+		vi.mocked(existsSync)
+			.mockReturnValueOnce(false)
+			.mockReturnValueOnce(false)
+			.mockReturnValueOnce(true);
+
+		const result = resolveConfigPath("/opt/peon.sh");
+
+		expect(result).toContain("/opt/config.json");
+	});
+
+	it("returns null when no config file exists", () => {
+		vi.mocked(existsSync).mockReturnValue(false);
+
+		expect(resolveConfigPath("/opt/peon.sh")).toBeNull();
+	});
+});
+
+// ============================================================================
+// readPeonConfig
+// ============================================================================
+
+describe("readPeonConfig", () => {
+	beforeEach(() => {
+		vi.mocked(existsSync).mockReset();
+		vi.mocked(readFileSync).mockReset();
+	});
+
+	it("returns parsed config from the resolved path", () => {
+		vi.mocked(existsSync).mockReturnValueOnce(true);
+		vi.mocked(readFileSync).mockReturnValue(
+			JSON.stringify({ categories: { "session.start": false } }),
+		);
+
+		const config = readPeonConfig("/opt/peon.sh");
+
+		expect(config).toEqual({ categories: { "session.start": false } });
+	});
+
+	it("returns null when no config file is found", () => {
+		vi.mocked(existsSync).mockReturnValue(false);
+
+		expect(readPeonConfig("/opt/peon.sh")).toBeNull();
+	});
+
+	it("returns null when config file contains invalid JSON", () => {
+		vi.mocked(existsSync).mockReturnValueOnce(true);
+		vi.mocked(readFileSync).mockReturnValue("not json");
+
+		expect(readPeonConfig("/opt/peon.sh")).toBeNull();
+	});
+
+	it("returns null when readFileSync throws", () => {
+		vi.mocked(existsSync).mockReturnValueOnce(true);
+		vi.mocked(readFileSync).mockImplementation(() => {
+			throw new Error("EACCES");
+		});
+
+		expect(readPeonConfig("/opt/peon.sh")).toBeNull();
+	});
+});
+
+// ============================================================================
+// isCategoryEnabled
+// ============================================================================
+
+describe("isCategoryEnabled", () => {
+	it("returns true when config is null", () => {
+		expect(isCategoryEnabled(null, "session.start")).toBe(true);
+	});
+
+	it("returns true when config has no categories", () => {
+		expect(isCategoryEnabled({}, "session.start")).toBe(true);
+	});
+
+	it("returns true when category is explicitly enabled", () => {
+		expect(isCategoryEnabled(
+			{ categories: { "session.start": true } },
+			"session.start",
+		)).toBe(true);
+	});
+
+	it("returns false when category is explicitly disabled", () => {
+		expect(isCategoryEnabled(
+			{ categories: { "session.start": false } },
+			"session.start",
+		)).toBe(false);
+	});
+
+	it("defaults task.acknowledge to false (matches peon.sh)", () => {
+		expect(isCategoryEnabled(
+			{ categories: {} },
+			"task.acknowledge",
+		)).toBe(false);
+	});
+
+	it("defaults other categories to true when missing from config", () => {
+		expect(isCategoryEnabled(
+			{ categories: {} },
+			"session.start",
+		)).toBe(true);
 	});
 });
 
