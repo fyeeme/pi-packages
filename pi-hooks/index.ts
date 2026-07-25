@@ -110,27 +110,44 @@ async function runCommand(command: string, cwd: string, stdinJson: unknown): Pro
 		});
 
 		let stdout = "";
+		let settled = false;
+		const finish = (result: HookOutput | null) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(sigtermTimer);
+			clearTimeout(sigkillTimer);
+			resolve(result);
+		};
+
 		proc.stdout?.on("data", (chunk: Buffer) => {
 			stdout += chunk.toString();
 		});
 
-		const timer = setTimeout(() => proc.kill("SIGTERM"), 10_000);
+		let sigkillTimer: NodeJS.Timeout | undefined;
+
+		const sigtermTimer = setTimeout(() => {
+			try { proc.kill("SIGTERM"); } catch { /* already dead */ }
+			// escalate to SIGKILL after a 5s grace window
+			sigkillTimer = setTimeout(() => {
+				try { proc.kill("SIGKILL"); } catch { /* already dead */ }
+				// force-resolve: a process that survives SIGKILL is unrecoverable
+				finish(null);
+			}, 5_000);
+		}, 10_000);
 
 		proc.on("close", (code) => {
-			clearTimeout(timer);
 			if (code !== 0) console.error(`[hooks] exited ${code}: ${command}`);
 			try {
 				const trimmed = stdout.trim();
-				resolve(trimmed ? (JSON.parse(trimmed) as HookOutput) : null);
+				finish(trimmed ? (JSON.parse(trimmed) as HookOutput) : null);
 			} catch {
-				resolve(null);
+				finish(null);
 			}
 		});
 
 		proc.on("error", (err) => {
-			clearTimeout(timer);
 			console.error(`[hooks] spawn error: ${command}: ${err}`);
-			resolve(null);
+			finish(null);
 		});
 
 		try {

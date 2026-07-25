@@ -1,6 +1,6 @@
 {
   "name": "@fyeeme/pi-hooks",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Claude Code-compatible hooks runner for pi. Reads .pi/hooks.json and maps SessionStart, PreToolUse, and Stop events to pi lifecycle events.",
   "type": "module",
   "license": "MIT",

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2025-07-15
+
+### Fixed
+
+- Process hang when hook command ignores SIGTERM: added SIGKILL escalation after 5s grace window
+- Race condition between `close` and `error` events: added `finish()` guard to prevent double-resolve
+
 ## [1.0.0] - 2025-05-31
 
 ### Added
