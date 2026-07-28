@@ -23,10 +23,10 @@ import {
 	assertBatchSize,
 	assertLifetimeAgents,
 	BudgetExceededError,
-	type BudgetPool,
+	BudgetPool,
 } from "../budget/index.ts";
 import { computeCacheKey, type Journal } from "../cache/index.ts";
-import type { AgentLifecycleListeners } from "../lifecycle.ts";
+import { type AgentLifecycleListeners, notifyCacheHit } from "../lifecycle.ts";
 import { parseFirstJson } from "../outcomes.ts";
 import type {
 	AdversarialStep,
@@ -35,6 +35,8 @@ import type {
 	AgentStep,
 	ClassifyRouteStep,
 	CodeStep,
+	LoopUntilDryStep,
+	SubWorkflowStep,
 	FanOutStep,
 	LoopUntilStep,
 	RunStatus,
@@ -105,6 +107,10 @@ export async function executeStep(
 			return execTournament(step, ctx, exec);
 		case "classify_route":
 			return execClassifyRoute(step, ctx, exec);
+		case "sub_workflow":
+			return execSubWorkflow(step, ctx, exec);
+		case "loop_until_dry":
+			return execLoopUntilDry(step, ctx, exec);
 	}
 }
 
@@ -128,6 +134,7 @@ async function dispatchAgentCall(
 
 	const cached = exec.journal.lookup(key);
 	if (cached?.type === "result" && cached.ok) {
+		notifyCacheHit(exec.listeners, callId);
 		return { value: cached.value as string, ok: true, aborted: false, cached: true, stats: zeroStats };
 	}
 
@@ -154,9 +161,28 @@ const releaseSpawn = guardSpawn(exec, 1);
 	const value = finalText(res);
 	const ok = !res.aborted && res.exitCode === 0 && res.stopReason !== "error" && res.stopReason !== "aborted";
 	const stats = usageStats(res, durationMs, ok);
-	await exec.journal.append({ type: "result", key, at: exec.now, ok, value });
+	// On failure with no assistant output, surface the subprocess stderr /
+	// errorMessage / exitCode so the caller can diagnose WHY it failed
+	// (unknown model, missing provider, bad PATH, …). Without this the
+	// step result is just "" and the error is invisible.
+	const diag = ok || value ? value : diagnoseFailure(res);
+	await exec.journal.append({ type: "result", key, at: exec.now, ok, value: diag });
 	notifyEnd(exec, callId, ok, stats);
-	return { value, ok, aborted: res.aborted, cached: false, stats };
+	return { value: diag, ok, aborted: res.aborted, cached: false, stats };
+}
+
+/** Build a human-readable failure reason from a subprocess result that
+ *  produced no assistant text. Surfaces stderr / errorMessage / exitCode. */
+function diagnoseFailure(res: AgentSpawnResult): string {
+	const parts: string[] = ["[agent failed"];
+	if (res.exitCode !== 0) parts.push(`exit ${res.exitCode}`);
+	if (res.stopReason) parts.push(`stop:${res.stopReason}`);
+	if (res.errorMessage) parts.push(res.errorMessage);
+	// Last few non-empty stderr lines are usually the real cause.
+	const stderrTail = res.stderr.trim().split("\n").filter(Boolean).slice(-4).join(" | ");
+	if (stderrTail) parts.push(stderrTail);
+	parts.push("]");
+	return parts.join(" ");
 }
 
 // ---------------------------------------------------------------------------
@@ -186,8 +212,11 @@ async function execCode(step: CodeStep, ctx: StepContext): Promise<StepResult> {
 			agents: 0,
 			failures: 0,
 		});
-	} catch {
-		return stepResult(step.id, "code", "failed", undefined, {
+	} catch (e) {
+		const msg = e instanceof Error ? e.message : String(e);
+		// Surface the error message (runStepSequence only appends sr.results when
+		// it's a non-empty string); a bare catch left the failure cause invisible.
+		return stepResult(step.id, "code", "failed", `code error: ${msg}`, {
 			tokens: 0,
 			cost: 0,
 			durationMs: Date.now() - start,
@@ -387,6 +416,110 @@ async function execClassifyRoute(step: ClassifyRouteStep, ctx: StepContext, exec
 }
 
 // ---------------------------------------------------------------------------
+// sub_workflow (nested child workflow — CC's workflow() pattern)
+// ---------------------------------------------------------------------------
+
+async function execSubWorkflow(step: SubWorkflowStep, ctx: StepContext, exec: StepExecContext): Promise<StepResult> {
+	const start = Date.now();
+	// Resolve the child's input: static value or function of parent ctx.
+	const childInput = typeof step.input === "function" ? (step.input as (c: StepContext) => unknown)(ctx) : step.input ?? ctx.input;
+
+	// Child shares parent's journal, pool, registry, and signal by default.
+	// inheritBudget: false means the child uses its own BudgetPool (isolated caps).
+	// Override workflowName with the CHILD's name so cache keys are scoped to the
+	// child workflow — otherwise two sibling sub_workflows whose agents share a
+	// prompt+signature collide on the parent's name and replay each other's cache.
+	const childExec: StepExecContext = step.inheritBudget === false
+		? { ...exec, workflowName: step.workflow.name, depth: exec.depth + 1, pool: new BudgetPool(step.workflow.budget ?? {}, exec.now) }
+		: { ...exec, workflowName: step.workflow.name, depth: exec.depth + 1 };
+
+	let sub: SequenceOutcome;
+	if (childExec.depth > MAX_ROUTE_DEPTH) {
+		sub = { steps: [], status: "failed", error: `sub_workflow nesting exceeded depth ${MAX_ROUTE_DEPTH}` };
+	} else {
+		sub = await runStepSequence(step.workflow.steps, childInput, childExec);
+	}
+	// Propagate the child's lifetime counter back to the parent: childExec is a
+	// spread copy, so without this sync the parent's `spawned` undercounts every
+	// agent the child spawned (callId numbering + the assertLifetimeAgents backstop
+	// in guardSpawn both depend on this being run-cumulative, per its docstring).
+	exec.spawned = childExec.spawned;
+
+	const status: StepResult["status"] = sub.status === "completed" ? "done"
+		: sub.status === "aborted" ? "skipped"
+		: "failed";
+
+	return stepResult(
+		step.id,
+		"sub_workflow",
+		status,
+		{ steps: sub.steps, status: sub.status, workflowName: step.workflow.name, error: sub.error },
+		withDuration(aggregateStats(sub.steps.map((s) => s.stats), 0), start),
+	);
+}
+
+// ---------------------------------------------------------------------------
+// loop_until_dry (keep discovering until K rounds return nothing new)
+// ---------------------------------------------------------------------------
+
+async function execLoopUntilDry(step: LoopUntilDryStep, ctx: StepContext, exec: StepExecContext): Promise<StepResult> {
+	const maxRounds = step.maxRounds ?? 10;
+	const dryThreshold = step.dryThreshold ?? 2;
+	const keyOf = step.keyOf;
+	const merge = step.merge ?? ((known: unknown[], fresh: unknown[]) => known.concat(fresh));
+	const start = Date.now();
+	let known: unknown[] = [];
+	let stats = zeroStats;
+	let dry = 0;
+	let round = 0;
+	let status: StepResult["status"] = "done";
+
+	while (round < maxRounds) {
+		if (exec.signal?.aborted) { status = "skipped"; break; }
+		const prompt = await step.prompt(ctx, known);
+		const outcome = await dispatchAgentCall(`${step.id}#r${round + 1}`, prompt, {}, exec);
+		stats = addStats(stats, outcome.stats);
+		if (!outcome.ok) {
+			status = outcome.aborted ? "skipped" : "failed";
+			break;
+		}
+		const parsed = parseFirstJson(outcome.value) as unknown;
+		const freshItems: unknown[] = Array.isArray(parsed) ? parsed : parsed !== undefined && parsed !== null ? [parsed] : [];
+		const seen = new Set(known.map(keyOf));
+		const novel = freshItems.filter((item) => !seen.has(keyOf(item)));
+		if (novel.length === 0) {
+			dry++;
+			if (dry >= dryThreshold) {
+				// Completeness critic: ask "what's missing?" one last time.
+				if (step.critic) {
+					const criticPrompt = await step.critic.prompt(ctx, known);
+					const criticOutcome = await dispatchAgentCall(`${step.id}#critic`, criticPrompt, {}, exec);
+					stats = addStats(stats, criticOutcome.stats);
+					if (criticOutcome.ok) {
+						const criticParsed = parseFirstJson(criticOutcome.value) as unknown;
+						const criticItems: unknown[] = Array.isArray(criticParsed) ? criticParsed : [];
+						const criticNovel = criticItems.filter((item) => !seen.has(keyOf(item)));
+						if (criticNovel.length > 0) {
+							known = merge(known, criticNovel);
+							dry = 0; // reset dry counter and keep going
+							round++;
+							continue;
+						}
+					}
+				}
+				break;
+			}
+		} else {
+			dry = 0;
+			known = merge(known, novel);
+		}
+		round++;
+	}
+
+	return stepResult(step.id, "loop_until_dry", status, known, withDuration(stats, start), round);
+}
+
+// ---------------------------------------------------------------------------
 // runStepSequence — run a list of steps (top-level workflow OR a classify route)
 // ---------------------------------------------------------------------------
 
@@ -428,7 +561,10 @@ export async function runStepSequence(
 		// Post-step signal check: a run aborted mid-step (e.g. a fan_out whose
 		// items all aborted) must never report "completed".
 		if (exec.signal?.aborted) return { steps: out, status: "aborted", error: "aborted by signal" };
-		if (sr.status === "failed") return { steps: out, status: "failed", error: `step "${step.id}" failed` };
+		if (sr.status === "failed") {
+			const why = typeof sr.results === "string" && sr.results ? `: ${sr.results}` : "";
+			return { steps: out, status: "failed", error: `step "${step.id}" failed${why}` };
+		}
 		if (sr.status === "skipped") {
 			const aborted = !!exec.signal?.aborted;
 			return { steps: out, status: aborted ? "aborted" : "failed", error: aborted ? "aborted by signal" : `step "${step.id}" skipped` };
@@ -471,14 +607,23 @@ function rankPrompt(index: number, candidates: readonly string[]): string {
 
 /** LLMs sometimes stringify booleans/numbers ("true", "0"); coerce leniently. */
 function parsePassBool(v: unknown): boolean {
-	return v === true || v === 1 || v === "true" || v === "True" || v === "1";
+	if (typeof v === "string") {
+		const s = v.trim().toLowerCase();
+		return s === "true" || s === "yes" || s === "y" || s === "1";
+	}
+	return v === true || v === 1;
 }
 function parseWinnerNum(v: unknown): number | undefined {
-	const n = typeof v === "number" ? v : Number(v);
-	return Number.isFinite(n) ? n : undefined;
+	if (typeof v === "number") return Number.isFinite(v) ? Math.trunc(v) : undefined;
+	// Number("") / Number(null) === 0 would record a spurious vote for candidate 0.
+	if (typeof v !== "string" || !v.trim()) return undefined;
+	const n = Number(v);
+	return Number.isFinite(n) ? Math.trunc(n) : undefined;
 }
 function parseCategoryStr(v: unknown): string {
-	return typeof v === "string" ? v : v === undefined || v === null ? "" : String(v);
+	// Trim: LLMs often emit {"category": " bug"} with stray whitespace, which
+	// would silently miss the route key and fall through to fallback.
+	return typeof v === "string" ? v.trim() : v === undefined || v === null ? "" : String(v).trim();
 }
 function parseReason(v: unknown): string {
 	return typeof v === "string" ? v : "";
@@ -524,18 +669,34 @@ function guardBatch(exec: StepExecContext, total: number, label: string): void {
 }
 
 /** Reserve one agent slot and check token budget. Returns a release handle —
- *  call it ONLY if the dispatch never started (spawn threw). */
+ *  call it ONLY if the dispatch never started (spawn threw).
+ *
+ *  Lifetime accounting: `exec.spawned` is incremented SYNCHRONOUSLY here, before
+ *  the await on dispatch, so that concurrent fan_out workers each see an accurate
+ *  count when they reach assertLifetimeAgents. (Previously it was incremented in
+ *  applyOutcome, after the dispatch settled — so N concurrent workers all read the
+ *  pre-flight count and a single batch with parallelism > MAX_LIFETIME_AGENTS
+ *  could bust the runaway backstop before any settle.) The release handle rolls
+ *  the increment back so a failed dispatch doesn't consume a lifetime slot, which
+ *  also preserves callId numbering across retries. */
 function guardSpawn(exec: StepExecContext, n: number): () => void {
+	exec.spawned += n;
 	assertLifetimeAgents(exec.spawned);
 	// isExhausted enforces maxTokens (and maxAgents) before committing.
 	if (exec.pool.isExhausted(exec.now)) {
+		exec.spawned -= n;
 		throw new BudgetExceededError("agent spawn refused — budget exhausted");
 	}
-	return exec.pool.reserve(n);
+	const releasePool = exec.pool.reserve(n);
+	return () => {
+		exec.spawned -= n;
+		releasePool();
+	};
 }
 
 function applyOutcome(exec: StepExecContext, res: AgentSpawnResult): void {
-	exec.spawned++;
+	// `spawned` was incremented synchronously in guardSpawn; a settled agent keeps
+	// its slot, so don't touch it here — only record token spend.
 	exec.pool.track({ tokens: res.usage.input + res.usage.output });
 }
 

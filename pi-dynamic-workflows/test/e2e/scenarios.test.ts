@@ -223,4 +223,63 @@ describe("e2e scenarios", () => {
 		expect((sr.results as string[])[0]).toBe("out:item:x");
 		expect((sr.results as string[])[2]).toBe("out:item:z");
 	});
-});
+
+		it("8. sub_workflow — nested child workflow shares parent budget/journal", async () => {
+			const wf = defineWorkflow({
+				name: "parent",
+				budget: { maxAgents: 3 },
+				steps: [
+					{ id: "outer", type: "agent", prompt: "parent agent" },
+					{
+						id: "inner",
+						type: "sub_workflow",
+						workflow: defineWorkflow({
+							name: "child",
+							steps: [
+								{ id: "c1", type: "agent", prompt: "child agent 1" },
+								{ id: "c2", type: "agent", prompt: "child agent 2" },
+							],
+						}),
+					},
+				],
+			});
+			const { dispatch, calls } = countingDispatch(makeFakeDispatch());
+			const res = await runWorkflow({ workflow: wf, cwd: dir, now: 1000, dispatch });
+
+			expect(res.status).toBe("completed");
+			expect(calls()).toBe(3); // outer + 2 child agents
+			expect(res.steps).toHaveLength(2);
+			const sub = res.steps[1].results as { steps: { id: string }[]; status: string; workflowName: string };
+			expect(sub.status).toBe("completed");
+			expect(sub.workflowName).toBe("child");
+			expect(sub.steps).toHaveLength(2);
+		});
+
+		it("9. sub_workflow exceeding parent budget — fails the step", async () => {
+			const wf = defineWorkflow({
+				name: "parent-capped",
+				budget: { maxAgents: 1 },
+				steps: [
+					{
+						id: "inner",
+						type: "sub_workflow",
+						workflow: defineWorkflow({
+							name: "child",
+							steps: [
+								{ id: "c1", type: "agent", prompt: "first" },
+								{ id: "c2", type: "agent", prompt: "second" },
+							],
+						}),
+					},
+				],
+			});
+			const { dispatch } = countingDispatch(makeFakeDispatch());
+			const res = await runWorkflow({ workflow: wf, cwd: dir, now: 1000, dispatch });
+
+			expect(res.status).toBe("failed");
+			// Parent runStepSequence wraps the sub_workflow failure as step-failed;
+			// the child's internal budget error is preserved in the step result.
+			const subErr = res.steps[0].results as { error?: string };
+			expect(subErr.error).toMatch(/budget|exhausted/i);
+		});
+	});

@@ -17,6 +17,8 @@
  * transitive imports pre-load is not exposed by the loader API.)
  */
 import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti/static";
 import { assertDeterministic } from "./determinism/ast-guard.ts";
 
@@ -33,8 +35,16 @@ export interface LoadWorkflowOptions {
  * (e.g. `mod.workflow` or `mod.default`, a WorkflowDefinition).
  */
 export async function loadWorkflowModule<T = unknown>(opts: LoadWorkflowOptions): Promise<T> {
-	const source = await fs.promises.readFile(opts.filePath, "utf-8");
+	const baseUrl = opts.baseUrl ?? import.meta.url;
+	// Resolve the path ONCE so readFile and jiti.import load the same file. A
+	// relative path is baseUrl-relative (per LoadWorkflowOptions); previously
+	// readFile resolved it against cwd while jiti resolved it against baseUrl,
+	// so the guard could scan one file while jiti executed another.
+	const resolved = path.isAbsolute(opts.filePath)
+		? opts.filePath
+		: path.resolve(path.dirname(fileURLToPath(baseUrl)), opts.filePath);
+	const source = await fs.promises.readFile(resolved, "utf-8");
 	assertDeterministic(source, opts.filePath);
-	const jiti = createJiti(opts.baseUrl ?? import.meta.url, { moduleCache: false });
-	return (await jiti.import(opts.filePath)) as T;
+	const jiti = createJiti(baseUrl, { moduleCache: false });
+	return (await jiti.import(resolved)) as T;
 }

@@ -5,29 +5,20 @@
  * workflow from within pi. The engine (src/runner) does the work; this entry
  * only adapts the agent's JSON args into the code-form WorkflowDefinition and
  * runs it with the default dispatch (real `pi --mode json` subprocesses).
- *
- * Tool args are JSON, so the function-based step kinds (code, loop_until) and
- * function prompts are not expressible here. To stay useful over pure data we
- * support the serializable step subset (agent / fan_out / adversarial /
- * tournament / classify_route) plus a tiny template syntax in string prompts:
- *   {{input}}         — the run's initial input
- *   {{step.<id>}}     — a prior step's results
- *   {{item}}          — the current fan_out item
- * For arbitrary transforms/dynamic conditions, use the code API (runWorkflow)
- * directly or load a `.ts` workflow file via loadWorkflowModule.
- *
- * Default dispatch spawns real pi subprocesses, so the tool needs `pi` on PATH
- * with a configured provider — same requirement as the engine itself.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { defineWorkflow, runWorkflow } from "./src/index.ts";
-import type { AgentCallId, Budget, RunResult, StepContext, StepDefinition, WorkflowDefinition } from "./src/types.ts";
+import type { AgentCallId, Budget, RunResult, StageType, StepContext, StepDefinition, StepResult, StepStats, WorkflowDefinition } from "./src/types.ts";
 import type { AgentLifecycleListeners } from "./src/lifecycle.ts";
 import { WorkflowInspect } from "./src/inspect.ts";
 
 /** Last completed run, exposed to /wf-inspect for interactive review. */
 let lastRunResult: RunResult | null = null;
+
+/** Active widget during a run — lets /wf-inspect show a live snapshot
+ *  before the run completes (lastRunResult is only set post-run). */
+let activeWidget: { snapshot(): RunResult } | null = null;
 
 // ---------------------------------------------------------------------------
 // Parameter schema (the JSON-serializable workflow subset)
@@ -38,7 +29,7 @@ const StepSchema = Type.Union([
 		id: Type.String({ description: "Step id; referenceable as {{step.<id>}} in later prompts" }),
 		type: Type.Literal("agent"),
 		prompt: Type.String({ description: "Prompt text; may use {{input}} / {{step.<id>}}" }),
-		model: Type.Optional(Type.String()),
+		model: Type.Optional(Type.String({ description: "Full model id from the session (e.g. claude-sonnet-5). Omit to use the default session model. Invalid ids are dropped." })),
 		systemPrompt: Type.Optional(Type.String()),
 	}),
 	Type.Object({
@@ -87,11 +78,18 @@ const BudgetSchema = Type.Object({
 	maxDurationMs: Type.Optional(Type.Number()),
 });
 
+const PhaseSchema = Type.Object({
+	title: Type.String({ description: "Phase display name" }),
+	detail: Type.Optional(Type.String({ description: "Short detail shown next to the phase title" })),
+	stepIds: Type.Array(Type.String(), { description: "Step ids belonging to this phase" }),
+});
+
 const WorkflowSchema = Type.Object({
 	name: Type.String(),
 	description: Type.Optional(Type.String()),
 	steps: Type.Array(StepSchema),
 	budget: Type.Optional(BudgetSchema),
+	phases: Type.Optional(Type.Array(PhaseSchema, { description: "Group steps into phases for progress-tree UI" })),
 });
 
 const RunWorkflowParams = Type.Object({
@@ -108,6 +106,7 @@ const RunWorkflowParams = Type.Object({
 const HAS_TEMPLATE = /\{\{[^}]+\}\}/;
 
 function fmt(value: unknown): string {
+	if (value === undefined || value === null) return "";
 	return typeof value === "string" ? value : JSON.stringify(value);
 }
 
@@ -212,12 +211,13 @@ type StepData =
 // Progress widget — bridges lifecycle events → TUI setWidget
 // ---------------------------------------------------------------------------
 
-type CallStatus = "running" | "done" | "failed" | "skipped" | "retried";
+type CallStatus = "running" | "done" | "failed" | "skipped" | "retried" | "cached";
 
 const GREEN = (s: string): string => `\x1b[32m${s}\x1b[0m`;
 const RED = (s: string): string => `\x1b[31m${s}\x1b[0m`;
 const YELLOW = (s: string): string => `\x1b[33m${s}\x1b[0m`;
 const DIM = (s: string): string => `\x1b[2m${s}\x1b[0m`;
+const CYAN = (s: string): string => `\x1b[36m${s}\x1b[0m`;
 
 interface CallInfo {
 	readonly stepId: string;
@@ -229,13 +229,16 @@ function buildProgressWidget(
 	steps: readonly { id: string; type: string }[],
 	setWidget: (lines: string[] | undefined) => void,
 	setStatus: (text: string | undefined) => void,
-): AgentLifecycleListeners & { cleanup(): void } {
+): AgentLifecycleListeners & { cleanup(): void; snapshot(): RunResult } {
 	const start = Date.now();
 	const calls = new Map<AgentCallId, CallInfo>();
-	// Non-fan_out steps have exactly 1 agent; fan_out totals emerge at runtime.
-	const expected = new Map(steps.map((s) => [s.id, s.type === "fan_out" ? 0 : 1]));
+	// Every step starts at 0 expected agents; onAgentStart/onAgentCacheHit
+	// increment as calls fire (fan_out totals emerge at runtime). Pre-seeding
+	// non-fan_out steps to 1 double-counted (1→2 on start), leaving completed
+	// single-agent steps stuck showing [1/2].
+	const expected = new Map(steps.map((s) => [s.id, 0]));
 
-	// callId format from stage-executor is `${stepId}#${n}` (e.g. "fan#2", "adv#produce").
+	// callId format: `${stepId}#${n}` (e.g. "fan#2", "adv#produce").
 	const stepIdOf = (callId: string): string => {
 		const sep = callId.lastIndexOf("#");
 		return sep >= 0 ? callId.slice(0, sep) : callId;
@@ -245,24 +248,48 @@ function buildProgressWidget(
 		return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 	}
 
+	function renderBudgetBar(label: string, spent: number, cap: number): string {
+		const w = 14;
+		const pct = Math.min(spent / cap, 1);
+		const filled = Math.round(pct * w);
+		const bar = CYAN("█".repeat(filled)) + DIM("░".repeat(w - filled));
+		return `  ${label.padEnd(7)} [${bar}] ${fmtTokens(spent)}/${fmtTokens(cap)}`;
+	}
+
 	function render(): void {
-		// Per-step status lines (one per declared step, in order).
-		const lines = steps.map((s) => {
+		const picons: Record<string, string> = {
+			done: GREEN("✓"),
+			failed: RED("✗"),
+			skipped: YELLOW("⏭"),
+			running: YELLOW("⏳"),
+			cached: GREEN("↻"),
+		};
+
+		const lines: string[] = [];
+		for (const s of steps) {
 			const total = expected.get(s.id) ?? 0;
 			const entries = [...calls.values()].filter((c) => c.stepId === s.id);
-			const done = entries.filter((c) => c.status === "done").length;
+			const running = entries.some((c) => c.status === "running");
 			const failed = entries.filter((c) => c.status === "failed").length;
 			const skipped = entries.filter((c) => c.status === "skipped").length;
-			const running = entries.some((c) => c.status === "running");
+			const done = entries.filter((c) => c.status === "done" || c.status === "cached").length;
+			const cached = entries.filter((c) => c.status === "cached").length;
 			const tokens = entries.reduce((sum, c) => sum + c.tokens, 0);
-			const icon = failed > 0 ? RED("✗") : skipped > 0 && done === 0 ? YELLOW("⏭") : total > 0 && done >= total ? GREEN("✓") : running ? YELLOW("⏳") : DIM("○");
+
+			const icon = failed > 0 ? picons.failed
+				: skipped > 0 && done === 0 ? picons.skipped
+				: total > 0 && done >= total ? (cached > 0 ? picons.cached : picons.done)
+				: running ? picons.running
+				: DIM("○");
+
 			const progress = total > 1 ? ` [${done}/${total}]` : "";
 			const tok = tokens > 0 ? ` · ${fmtTokens(tokens)} tok` : "";
-			return `  ${icon} ${s.id}${progress}${tok}`;
-		});
+			lines.push(`  ${icon} ${s.id}${progress}${tok}`);
+		}
+
+
 		setWidget(lines.length > 0 ? lines : void 0);
 
-		// Footer summary: agents done/total, tokens, elapsed.
 		const all = [...calls.values()];
 		const allDone = all.filter((c) => c.status !== "running").length;
 		const totalTokens = all.reduce((sum, c) => sum + c.tokens, 0);
@@ -281,8 +308,39 @@ function buildProgressWidget(
 			setWidget(void 0);
 			setStatus(void 0);
 		},
+		/** Build a synthetic RunResult from the live calls map, so /wf-inspect
+		 *  can show in-progress agents before the run finishes. */
+		snapshot(): RunResult {
+			const snapSteps: StepResult[] = steps.map((s) => {
+				const entries = [...calls.values()].filter((c) => c.stepId === s.id);
+				const total = expected.get(s.id) ?? 0;
+				const done = entries.filter((c) => c.status === "done" || c.status === "cached").length;
+				const failed = entries.filter((c) => c.status === "failed").length;
+				const running = entries.filter((c) => c.status === "running").length;
+				const cached = entries.filter((c) => c.status === "cached").length;
+				const tokens = entries.reduce((sum, c) => sum + c.tokens, 0);
+				const status: StepResult["status"] = failed > 0 ? "failed" : done >= total && total > 0 ? "done" : "skipped";
+				const tag = cached > 0 ? "cached" : running > 0 ? "running" : "";
+				const results = `[${done}/${total}]${tag ? " " + tag : ""}`;
+				return {
+					id: s.id,
+					type: s.type as StageType,
+					status,
+					results,
+					stats: { tokens, cost: 0, durationMs: 0, agents: entries.length, failures: failed },
+				};
+			});
+			const all = [...calls.values()];
+			const stats: StepStats = {
+				tokens: all.reduce((sum, c) => sum + c.tokens, 0),
+				cost: 0,
+				durationMs: Date.now() - start,
+				agents: all.length,
+				failures: all.filter((c) => c.status === "failed").length,
+			};
+			return { runId: "live", status: "completed", steps: snapSteps, stats };
+		},
 		onAgentStart(callId) {
-			// fan_out items reveal total at runtime — bump expected for the step.
 			const stepId = stepIdOf(callId);
 			expected.set(stepId, (expected.get(stepId) ?? 0) + 1);
 			record(callId, "running");
@@ -296,12 +354,26 @@ function buildProgressWidget(
 		onAgentRetry(callId) {
 			record(callId, "retried");
 		},
+		onAgentCacheHit(callId) {
+			const stepId = stepIdOf(callId);
+			expected.set(stepId, (expected.get(stepId) ?? 0) + 1);
+			record(callId, "cached");
+		},
 	};
 }
 
 // ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
+
+/** Drop a step/route model id that isn't in the session registry, recording it. */
+function dropInvalidModel(id: string, model: string | undefined, validIds: Set<string>, dropped: string[]): string | undefined {
+	if (model && !validIds.has(model)) {
+		dropped.push(`${id}→${model}`);
+		return undefined;
+	}
+	return model;
+}
 
 export default function (pi: ExtensionAPI): void {
 	pi.registerTool({
@@ -317,18 +389,46 @@ export default function (pi: ExtensionAPI): void {
 		parameters: RunWorkflowParams,
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			// Scoped-models: validate every step's model against the session's
+			// model registry. Invalid ids (e.g. "sonnet") are dropped so the
+			// subprocess uses the default session model instead of failing.
+			const validIds = new Set(ctx.modelRegistry.getAll().map((m) => m.id));
+			const dropped: string[] = [];
+			const sanitizedSteps = params.workflow.steps.map((s) => {
+				const model = dropInvalidModel(s.id, s.model, validIds, dropped);
+				if (s.type === "classify_route") {
+					// Route/fallback sub-step models must be sanitized too — the schema
+					// promises "Invalid ids are dropped", which routeStepToCode otherwise
+					// passes straight through to the subprocess.
+					const routes = Object.fromEntries(
+						Object.entries(s.routes).map(([cat, rs]) => [
+							cat,
+							rs.map((r) => ({ ...r, model: dropInvalidModel(`${s.id}.${r.id}`, r.model, validIds, dropped) })),
+						]),
+					) as typeof s.routes;
+					const fallback = s.fallback?.map((r) => ({ ...r, model: dropInvalidModel(`${s.id}.${r.id}`, r.model, validIds, dropped) }));
+					return { ...s, model, routes, fallback };
+				}
+				return { ...s, model };
+			});
+			if (dropped.length > 0) {
+				ctx.ui.notify(`Invalid model(s) dropped, using default: ${dropped.join(", ")}`, "warning");
+			}
+			const sanitizedWorkflow = { ...params.workflow, steps: sanitizedSteps };
 			const widget = buildProgressWidget(
-				params.workflow.steps,
+				sanitizedWorkflow.steps,
 				(lines) => ctx.ui.setWidget("wf:progress", lines),
 				(text) => ctx.ui.setStatus("wf:summary", text),
 			);
+			activeWidget = widget;
 			try {
-				const workflow = buildWorkflow(params.workflow);
+				const workflow = buildWorkflow(sanitizedWorkflow);
 				const listeners: AgentLifecycleListeners = {
 					onAgentStart: widget.onAgentStart,
 					onAgentEnd: widget.onAgentEnd,
 					onAgentSkip: widget.onAgentSkip,
 					onAgentRetry: widget.onAgentRetry,
+					onAgentCacheHit: widget.onAgentCacheHit,
 				};
 				const result = await runWorkflow({
 					workflow,
@@ -355,6 +455,7 @@ export default function (pi: ExtensionAPI): void {
 				const msg = e instanceof Error ? e.message : String(e);
 				return { content: [{ type: "text" as const, text: `run_workflow failed: ${msg}` }], details: { error: msg }, isError: true };
 			} finally {
+				activeWidget = null;
 				ctx.ui.setWidget("wf:progress", void 0);
 				widget.cleanup();
 			}
@@ -362,9 +463,11 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("wf-inspect", {
-		description: "Inspect the last workflow run (↑↓ select, enter detail, esc exit)",
+		description: "Inspect the current/last workflow run (↑↓ select, enter detail, esc exit)",
 		handler: async (_args, ctx) => {
-			const r = lastRunResult;
+			// Prefer a live snapshot while a run is in progress; fall back to
+			// the last completed result once the run has finished.
+			const r = activeWidget?.snapshot() ?? lastRunResult;
 			if (!r) {
 				ctx.ui.notify("No workflow run yet — run run_workflow first", "warning");
 				return;

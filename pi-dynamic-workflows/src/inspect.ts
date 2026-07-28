@@ -39,6 +39,19 @@ function fmtTokens(n: number): string {
 	return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
+const ANSI_SGR = /\x1b\[[0-9;]*m/g;
+
+/** Truncate a line to fit within `maxW - indent` VISIBLE columns; append … if cut.
+ *  Measures visible width (strips ANSI SGR codes) so colored headers/body that
+ *  visually fit aren't over-truncated, and avoids slicing off a closing reset
+ *  (which would leak BOLD/CYAN/DIM into every subsequent terminal line). */
+function clip(line: string, maxW: number, indent = 0): string {
+	const cap = maxW - indent;
+	const visible = line.replace(ANSI_SGR, "");
+	if (visible.length <= cap) return line; // fits → keep colors
+	return visible.slice(0, Math.max(0, cap - 1)) + "…";
+}
+
 export class WorkflowInspect {
 	private readonly result: RunResult;
 	private readonly tui: { requestRender(): void };
@@ -79,24 +92,26 @@ export class WorkflowInspect {
 		// No cached render state.
 	}
 
-	render(_width: number): string[] {
+	render(width: number): string[] {
 		const r = this.result;
+		const maxW = Math.max(width, 40);
 		const lines: string[] = [];
-		lines.push(BOLD(`workflow ${CYAN(r.runId)} → ${r.status}`));
-		lines.push(DIM(`  ${r.stats.agents} agents · ${fmtTokens(r.stats.tokens)} tok · ${(r.stats.durationMs / 1000).toFixed(1)}s`));
-		if (r.error) lines.push(RED(`  error: ${r.error}`));
-		lines.push(DIM(`  ↑↓ select · enter detail · esc exit`));
+
+		lines.push(clip(BOLD(`workflow ${CYAN(r.runId)} → ${r.status}`), maxW));
+		lines.push(clip(DIM(`  ${r.stats.agents} agents · ${fmtTokens(r.stats.tokens)} tok · ${(r.stats.durationMs / 1000).toFixed(1)}s`), maxW));
+		if (r.error) lines.push(clip(RED(`  error: ${r.error}`), maxW));
+		lines.push(DIM("  ↑↓ select · enter detail · esc exit"));
 		lines.push("");
 
 		r.steps.forEach((s, i) => {
 			const sel = i === this.selected;
 			const cursor = sel ? CYAN("▸") : " ";
 			const head = `${cursor} ${statusIcon(s.status)} ${s.id} ${DIM(`(${s.type})`)}`;
-			lines.push(sel ? BOLD(head) : head);
+			lines.push(clip(sel ? BOLD(head) : head, maxW));
 			if (sel && this.showDetail) {
 				const body = typeof s.results === "string" ? s.results : JSON.stringify(s.results, null, 2);
-				for (const ln of body.split("\n").slice(0, 8)) lines.push(`      ${DIM(ln)}`);
-				lines.push(`      ${DIM(`${fmtTokens(s.stats.tokens)} tok · ${s.stats.agents} agent(s) · ${s.stats.durationMs}ms`)}`);
+				for (const ln of body.split("\n").slice(0, 8)) lines.push(clip(`      ${DIM(ln)}`, maxW, 6));
+				lines.push(clip(`      ${DIM(`${fmtTokens(s.stats.tokens)} tok · ${s.stats.agents} agent(s) · ${s.stats.durationMs}ms`)}`, maxW, 6));
 			}
 		});
 		return lines;

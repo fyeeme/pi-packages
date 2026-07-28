@@ -20,7 +20,9 @@ export type StageType =
 	| "loop_until"
 	| "adversarial"
 	| "tournament"
-	| "classify_route";
+	| "classify_route"
+	| "sub_workflow"
+	| "loop_until_dry";
 
 // ---------------------------------------------------------------------------
 // Budget
@@ -168,6 +170,43 @@ export interface ClassifyRouteStep extends StepBase {
 	readonly fallback?: readonly StepDefinition[];
 }
 
+/** loop_until_dry: keep spawning discovery agents until K consecutive rounds
+ *  return nothing new. CC's "loop-until-dry" pattern for unknown-size discovery.
+ *  Each round's output is parsed via parseFirstJson and deduplicated via keyOf. */
+export interface LoopUntilDryStep extends StepBase {
+	readonly type: "loop_until_dry";
+	/** Agent prompt builder — receives the known set so it can ask for new items. */
+	readonly prompt: (ctx: StepContext, known: unknown[]) => string | Promise<string>;
+	/** Stable key for deduplication. */
+	readonly keyOf: (item: unknown) => string;
+	/** Merge fresh items into the known set (default = known.concat(fresh)). */
+	readonly merge?: (known: unknown[], fresh: unknown[]) => unknown[];
+	/** Consecutive dry rounds required to stop. Default 2. */
+	readonly dryThreshold?: number;
+	/** Hard cap on rounds. Default 10. */
+	readonly maxRounds?: number;
+	/** Optional completeness critic: after dryThreshold is reached, run one
+	 *  final critic agent asking "what's missing?". If the critic returns new
+	 *  items, the loop restarts; otherwise it stops. Mirrors CC's completeness-
+	 *  critic pattern (final agent asks "what's missing — modality not run,
+	 *  claim unverified, source unread?"). */
+	readonly critic?: {
+		readonly prompt: (ctx: StepContext, known: unknown[]) => string | Promise<string>;
+	};
+}
+
+/** sub_workflow: run a nested child workflow inline. Shares parent journal, budget, and registry.
+ *  CC's `workflow(nameOrRef, args)` pattern — one level of nesting supported. */
+export interface SubWorkflowStep extends StepBase {
+	readonly type: "sub_workflow";
+	/** The child workflow definition (inline or referenced). */
+	readonly workflow: WorkflowDefinition;
+	/** Input passed to the child workflow's ctx.input. If a function, called with parent ctx. */
+	readonly input?: unknown | ((ctx: StepContext) => unknown);
+	/** If true (default), child agents count against parent budget. If false, child has its own pool. */
+	readonly inheritBudget?: boolean;
+}
+
 export type StepDefinition =
 	| AgentStep
 	| CodeStep
@@ -175,7 +214,9 @@ export type StepDefinition =
 	| LoopUntilStep
 	| AdversarialStep
 	| TournamentStep
-	| ClassifyRouteStep;
+	| ClassifyRouteStep
+	| SubWorkflowStep
+	| LoopUntilDryStep;
 
 export interface StepRetry {
 	readonly maxRetries: number;
@@ -184,11 +225,23 @@ export interface StepRetry {
 	 * spec revision; add `retryStage` back with implementation when ready. */
 }
 
+/** A phase groups related steps for UI progress-tree rendering.
+ *  Steps not assigned to any phase render under an implicit default group. */
+export interface PhaseDefinition {
+	readonly title: string;
+	readonly detail?: string;
+	readonly stepIds: readonly string[];
+	/** Optional model override for all agents in this phase. */
+	readonly model?: string;
+}
+
 export interface WorkflowDefinition {
 	readonly name: string;
 	readonly description?: string;
 	readonly steps: readonly StepDefinition[];
 	readonly budget?: Budget;
+	/** Optional phase groupings for progress-tree UI rendering. */
+	readonly phases?: readonly PhaseDefinition[];
 }
 
 /** Typed identity helper: gives a workflow literal full union checking. */
@@ -211,6 +264,12 @@ export interface RunResult {
 	readonly stats: StepStats;
 	readonly journalFile?: string;
 	readonly error?: string;
+	/** Staged-resume info: how many agents hit the cache from a previous run. */
+	readonly resume?: {
+		readonly cachedHits: number;
+		readonly cachedTotal: number;
+		readonly previousRunId?: string;
+	};
 }
 
 // ---------------------------------------------------------------------------

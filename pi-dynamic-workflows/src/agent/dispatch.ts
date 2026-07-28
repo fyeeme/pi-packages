@@ -13,6 +13,7 @@
  * because abort is translated to a SIGTERM on exactly one process.
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -247,6 +248,7 @@ export async function spawnAgent(
 			registry.processes.set(callId, proc);
 
 			let buffer = "";
+			const decoder = new StringDecoder("utf8");
 
 			const processLine = (line: string) => {
 				if (!line.trim()) return;
@@ -283,7 +285,10 @@ export async function spawnAgent(
 			};
 
 			proc.stdout.on("data", (data) => {
-				buffer += data.toString();
+				// StringDecoder buffers incomplete multi-byte UTF-8 sequences across chunk
+				// boundaries so a CJK char split between two `data` events isn't replaced
+				// with U+FFFD (which would corrupt the line and silently drop the event).
+				buffer += decoder.write(data);
 				const lines = buffer.split("\n");
 				buffer = lines.pop() || "";
 				for (const line of lines) processLine(line);
@@ -294,11 +299,24 @@ export async function spawnAgent(
 			});
 
 			proc.on("close", (code) => {
+				const tail = decoder.end();
+				if (tail) buffer += tail;
 				if (buffer.trim()) processLine(buffer);
-				resolve(code ?? 0);
+				// code === null means the process was terminated by a signal (SIGTERM/SIGKILL
+				// from the OS, OOM killer, or our own abort path). Treat that as failure (1)
+				// rather than success (0): otherwise an externally-killed subprocess with no
+				// assistant output reports exitCode 0 and is misclassified as a successful
+				// empty-output run. Our own abort path already sets result.aborted = true, so
+				// the runner's `ok` check (`!res.aborted && exitCode === 0`) still classifies
+				// aborts correctly.
+				resolve(code ?? 1);
 			});
 
-			proc.on("error", () => {
+			proc.on("error", (err) => {
+				// Surface the spawn error (e.g. ENOENT when `pi` is not on PATH) instead
+				// of swallowing it — diagnoseFailure reads errorMessage/stderr.
+				result.errorMessage = err.message;
+				result.stderr += err.message;
 				resolve(1);
 			});
 

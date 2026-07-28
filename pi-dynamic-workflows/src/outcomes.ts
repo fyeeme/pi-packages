@@ -66,53 +66,47 @@ function urlList(text: string, pattern?: RegExp): string[] | undefined {
 }
 
 function extractJson(text: string): unknown {
-	const objStart = text.indexOf("{");
-	const arrStart = text.indexOf("[");
-	let start: number;
-	let openCh: string;
-	let closeCh: string;
-	if (objStart === -1 && arrStart === -1) return undefined;
-	if (objStart === -1) {
-		start = arrStart;
-		openCh = "[";
-		closeCh = "]";
-	} else if (arrStart === -1) {
-		start = objStart;
-		openCh = "{";
-		closeCh = "}";
-	} else {
-		if (objStart < arrStart) {
-			start = objStart;
-			openCh = "{";
-			closeCh = "}";
-		} else {
-			start = arrStart;
-			openCh = "[";
-			closeCh = "]";
-		}
-	}
-	let depth = 0;
-	let inStr = false;
-	let escape = false;
-	for (let i = start; i < text.length; i++) {
-		const ch = text[i];
-		if (inStr) {
-			if (escape) escape = false;
-			else if (ch === "\\") escape = true;
-			else if (ch === '"') inStr = false;
-			continue;
-		}
-		if (ch === '"') inStr = true;
-		else if (ch === openCh) depth++;
-		else if (ch === closeCh) {
-			depth--;
-			if (depth === 0) {
-				try {
-					return JSON.parse(text.slice(start, i + 1));
-				} catch {
-					return undefined;
-				}
+	// Scan for the earliest balanced {...} or [...]. If the first candidate
+	// fails JSON.parse (e.g. a "[8/10]" rating prefix before the real object),
+	// advance past it and try the next opener instead of giving up — LLM judges
+	// commonly prefix their JSON with prose or a rating.
+	let searchFrom = 0;
+	while (searchFrom < text.length) {
+		const objStart = text.indexOf("{", searchFrom);
+		const arrStart = text.indexOf("[", searchFrom);
+		let start: number;
+		let openCh: string;
+		let closeCh: string;
+		if (objStart === -1 && arrStart === -1) return undefined;
+		else if (objStart === -1) { start = arrStart; openCh = "["; closeCh = "]"; }
+		else if (arrStart === -1) { start = objStart; openCh = "{"; closeCh = "}"; }
+		else if (objStart < arrStart) { start = objStart; openCh = "{"; closeCh = "}"; }
+		else { start = arrStart; openCh = "["; closeCh = "]"; }
+
+		let depth = 0;
+		let inStr = false;
+		let escape = false;
+		let end = -1;
+		for (let i = start; i < text.length; i++) {
+			const ch = text[i];
+			if (inStr) {
+				if (escape) escape = false;
+				else if (ch === "\\") escape = true;
+				else if (ch === '"') inStr = false;
+				continue;
 			}
+			if (ch === '"') inStr = true;
+			else if (ch === openCh) depth++;
+			else if (ch === closeCh) {
+				depth--;
+				if (depth === 0) { end = i; break; }
+			}
+		}
+		if (end === -1) return undefined; // unbalanced — no complete value from here
+		try {
+			return JSON.parse(text.slice(start, end + 1));
+		} catch {
+			searchFrom = end + 1; // first candidate didn't parse; try the next opener
 		}
 	}
 	return undefined;

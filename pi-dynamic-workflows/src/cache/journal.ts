@@ -23,6 +23,17 @@ export type JournalEntry<T = unknown> =
 	| { readonly type: "started"; readonly key: CacheKey; readonly at: number }
 	| { readonly type: "result"; readonly key: CacheKey; readonly at: number; readonly ok: boolean; readonly value: T };
 
+/** Staged-resume manifest: records all cache keys from the last completed run
+ *  so the next run can predict cache-hit vs re-dispatch before starting. */
+export interface RunManifest {
+	/** Run ID that produced this manifest. */
+	readonly runId: string;
+	/** Inception timestamp. */
+	readonly at: number;
+	/** Ordered list of cache keys from the last run. */
+	readonly keys: readonly CacheKey[];
+}
+
 export interface JournalOptions {
 	/** Directory holding journal.jsonl (typically <cwd>/.pi/workflows/runs/<runId>). */
 	readonly dir: string;
@@ -106,6 +117,41 @@ export class Journal {
 	 * one entry may be in memory but not on disk → resume could lose it. */
 	get writeError(): unknown {
 		return this.lastWriteError;
+	}
+
+	/** Iterator over all entries in the in-memory cache. */
+	allEntries(): IterableIterator<JournalEntry> {
+		return this.results.values();
+	}
+
+	/** Write the staged-resume manifest for the next run to consume.
+	 *  Call after the run completes successfully. */
+	async writeManifest(manifest: RunManifest): Promise<void> {
+		const manifestPath = path.join(path.dirname(this.filePath), "manifest.json");
+		await fs.promises.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
+	}
+
+	/** Load the staged-resume manifest from the last completed run, if present. */
+	async loadManifest(): Promise<RunManifest | undefined> {
+		const manifestPath = path.join(path.dirname(this.filePath), "manifest.json");
+		try {
+			const raw = await fs.promises.readFile(manifestPath, "utf-8");
+			return JSON.parse(raw) as RunManifest;
+		} catch (e) {
+			if (!isENOENT(e)) throw e;
+			return undefined;
+		}
+	}
+
+	/** Compare a manifest against the current journal: how many of its keys
+	 *  would be cache-hits on a re-run. Returns {hits, total}. */
+	stagedHits(manifest: RunManifest): { hits: number; total: number } {
+		let hits = 0;
+		for (const key of manifest.keys) {
+			const entry = this.lookup(key);
+			if (entry?.type === "result" && entry.ok) hits++;
+		}
+		return { hits, total: manifest.keys.length };
 	}
 }
 

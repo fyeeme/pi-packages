@@ -21,6 +21,8 @@ export interface AgentLifecycleListeners {
 	onAgentEnd?(callId: string, ok: boolean, stats?: StepStats): void;
 	onAgentSkip?(callId: string): void;
 	onAgentRetry?(callId: string): void;
+	/** Fired when an agent call hits the journal cache (zero-dispatch resume). */
+	onAgentCacheHit?(callId: string): void;
 }
 
 export function notifySkip(listeners: AgentLifecycleListeners | undefined, callId: string): void {
@@ -36,6 +38,14 @@ export function notifyRetry(listeners: AgentLifecycleListeners | undefined, call
 		listeners?.onAgentRetry?.(callId);
 	} catch (e) {
 		warn("onAgentRetry", e);
+	}
+}
+
+export function notifyCacheHit(listeners: AgentLifecycleListeners | undefined, callId: string): void {
+	try {
+		listeners?.onAgentCacheHit?.(callId);
+	} catch (e) {
+		warn("onAgentCacheHit", e);
 	}
 }
 

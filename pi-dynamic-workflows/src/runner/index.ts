@@ -15,7 +15,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { BudgetPool } from "../budget/index.ts";
-import { Journal } from "../cache/index.ts";
+import { Journal, type RunManifest } from "../cache/index.ts";
 import type { AgentLifecycleListeners } from "../lifecycle.ts";
 import { generateRunId } from "../state/index.ts";
 import type { Budget, RunResult, WorkflowDefinition } from "../types.ts";
@@ -31,7 +31,10 @@ export { type AgentDispatch } from "./stage-executor.ts";
 /** Reject workflow names containing path traversal segments — journalDir is
  *  derived from the name and must stay within the workflow directory tree. */
 function sanitizeWorkflowName(name: string): string {
-	if (/\.\.\/|\.\.\\/.test(name) || /[<>:"|?*\x00-\x1f]/.test(name)) {
+	// The name becomes a path segment under <cwd>/.pi/workflows/<name>, so it must
+	// be a single segment (no separators) and not "." / ".." — otherwise it escapes
+	// the per-workflow dir (e.g. name ".." writes the journal into <cwd>/.pi).
+	if (name === "." || name === ".." || /[\\/]/.test(name) || /[<>:"|?*\x00-\x1f]/.test(name)) {
 		throw new Error(`workflow name contains invalid characters: ${JSON.stringify(name)}`);
 	}
 	return name;
@@ -72,6 +75,11 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunResult> 
 	await fs.promises.mkdir(journalDir, { recursive: true });
 	const journal = new Journal({ dir: journalDir });
 	await journal.load();
+
+	// Staged resume: load last run's manifest to predict cache hits.
+	const prevManifest = await journal.loadManifest();
+	const stagedInfo = prevManifest ? journal.stagedHits(prevManifest) : null;
+
 	const pool = new BudgetPool(budget, now);
 
 	const exec: StepExecContext = {
@@ -94,12 +102,31 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunResult> 
 		? `journal write error (entries may be missing from disk; resume could re-dispatch): ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`
 		: undefined;
 
+	const runId = generateRunId({ timestamp: now, sequence: opts.sequence ?? 0 });
+
+	// Write staged-resume manifest when the run completes (even partially —
+	// the manifest records whatever agent keys made it to the journal).
+	if (!writeErr) {
+		const allKeys: string[] = [];
+		for (const entry of journal.allEntries()) {
+			// Only successful results are cache-hits on resume (failed keys are
+			// re-dispatched); including them inflated cachedTotal and understated
+			// the real hit ratio.
+			if (entry.type === "result" && entry.ok) allKeys.push(entry.key);
+		}
+		const manifest: RunManifest = { runId, at: now, keys: allKeys };
+		await journal.writeManifest(manifest).catch(() => { /* best-effort */ });
+	}
+
 	return {
-		runId: generateRunId({ timestamp: now, sequence: opts.sequence ?? 0 }),
+		runId,
 		status: outcome.status,
 		steps: outcome.steps,
 		stats: aggregateStats(outcome.steps.map((s) => s.stats), 0),
 		journalFile: journal.file,
 		error: outcome.error ?? journalWarning,
+		resume: stagedInfo
+			? { cachedHits: stagedInfo.hits, cachedTotal: stagedInfo.total, previousRunId: prevManifest?.runId }
+			: undefined,
 	};
 }
