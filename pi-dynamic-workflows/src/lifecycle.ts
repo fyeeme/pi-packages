@@ -1,0 +1,45 @@
+/**
+ * Agent-level lifecycle events (Task 5 surface).
+ *
+ * Minimal: the four agent events. `retryAgent`/`skipAgent` fire onAgentRetry/
+ * onAgentSkip. onAgentStart/onAgentEnd are reserved for the spawn path to wire
+ * later — onAgentEnd takes a boolean `ok` rather than the full AgentSpawnResult
+ * so this module has no `src/agent/dispatch` import (avoids a circular type
+ * dependency: dispatch imports lifecycle for the listener type).
+ *
+ * Workflow/stage-level events (onWorkflowStart/onStageStart/...) join here
+ * when the runner module lands. Mirrors CC's LifecycleListeners shape: a
+ * per-call optional bundle; a throwing listener is caught and warned, never
+ * blocks the abort/retry path.
+ */
+
+import type { StepStats } from "./types.ts";
+
+export interface AgentLifecycleListeners {
+	onAgentStart?(callId: string): void;
+	/** `stats` carries per-call tokens/cost/duration so progress UIs can show spend live. */
+	onAgentEnd?(callId: string, ok: boolean, stats?: StepStats): void;
+	onAgentSkip?(callId: string): void;
+	onAgentRetry?(callId: string): void;
+}
+
+export function notifySkip(listeners: AgentLifecycleListeners | undefined, callId: string): void {
+	try {
+		listeners?.onAgentSkip?.(callId);
+	} catch (e) {
+		warn("onAgentSkip", e);
+	}
+}
+
+export function notifyRetry(listeners: AgentLifecycleListeners | undefined, callId: string): void {
+	try {
+		listeners?.onAgentRetry?.(callId);
+	} catch (e) {
+		warn("onAgentRetry", e);
+	}
+}
+
+function warn(event: string, e: unknown): void {
+	const msg = e instanceof Error ? e.message : String(e);
+	console.warn(`[pi-dynamic-workflows] lifecycle ${event} listener threw: ${msg}`);
+}

@@ -1,0 +1,105 @@
+/**
+ * Runner — the engine that wires the five CC-fusion modules into an executable
+ * workflow (Task 7).
+ *
+ * A workflow is a flat list of typed steps (types.ts discriminated union).
+ * runWorkflow prepares the run (deterministic runId, journal load for resume,
+ * budget pool, spawn registry) and delegates the step walk to runStepSequence.
+ * Per agent call the sequence consults the cache/journal (resume without
+ * re-dispatch), enforces the budget/caps, and routes abort/skip through the
+ * per-call registry. classify_route reuses runStepSequence for its sub-steps.
+ *
+ * `dispatch` is injectable (default = real spawnAgent) so the run is fully
+ * exercisable in tests with a fake dispatch — no `pi` binary, no provider API.
+ */
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { BudgetPool } from "../budget/index.ts";
+import { Journal } from "../cache/index.ts";
+import type { AgentLifecycleListeners } from "../lifecycle.ts";
+import { generateRunId } from "../state/index.ts";
+import type { Budget, RunResult, WorkflowDefinition } from "../types.ts";
+import {
+	createSpawnRegistry,
+	spawnAgent,
+	type AgentSpawnRegistry,
+} from "../agent/dispatch.ts";
+import { runStepSequence, aggregateStats, type AgentDispatch, type StepExecContext } from "./stage-executor.ts";
+
+export { type AgentDispatch } from "./stage-executor.ts";
+
+/** Reject workflow names containing path traversal segments — journalDir is
+ *  derived from the name and must stay within the workflow directory tree. */
+function sanitizeWorkflowName(name: string): string {
+	if (/\.\.\/|\.\.\\/.test(name) || /[<>:"|?*\x00-\x1f]/.test(name)) {
+		throw new Error(`workflow name contains invalid characters: ${JSON.stringify(name)}`);
+	}
+	return name;
+}
+
+export interface RunWorkflowOptions {
+	readonly workflow: WorkflowDefinition;
+	/** Initial input exposed as ctx.input to the first step. */
+	readonly input?: unknown;
+	/** Base directory for the journal (journalDir defaults under here). */
+	readonly cwd: string;
+	/** Deterministic run inception time (ms) — passed to generateRunId + BudgetPool. Required. */
+	readonly now: number;
+	/** Sequence disambiguator for same-timestamp runs. Default 0. */
+	readonly sequence?: number;
+	/** Overrides workflow.budget if set. */
+	readonly budget?: Budget;
+	/** Run-wide abort signal; aborts every in-flight agent. */
+	readonly signal?: AbortSignal;
+	readonly listeners?: AgentLifecycleListeners;
+	/** Injectable agent dispatch (default = real spawnAgent). */
+	readonly dispatch?: AgentDispatch;
+	/** Reuse an existing registry (e.g. to drive skip/retry from outside). */
+	readonly registry?: AgentSpawnRegistry;
+	/** Journal directory. Default <cwd>/.pi/workflows/<workflow.name> (per-workflow → cross-run cache). */
+	readonly journalDir?: string;
+}
+
+export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunResult> {
+	const { workflow, cwd, now } = opts;
+	const registry = opts.registry ?? createSpawnRegistry();
+	const dispatch = opts.dispatch ?? spawnAgent;
+	const budget = opts.budget ?? workflow.budget ?? {};
+	const journalDir =
+		opts.journalDir ??
+		path.join(cwd, ".pi", "workflows", sanitizeWorkflowName(workflow.name));
+
+	await fs.promises.mkdir(journalDir, { recursive: true });
+	const journal = new Journal({ dir: journalDir });
+	await journal.load();
+	const pool = new BudgetPool(budget, now);
+
+	const exec: StepExecContext = {
+		workflowName: workflow.name,
+		dispatch,
+		registry,
+		journal,
+		pool,
+		signal: opts.signal,
+		listeners: opts.listeners,
+		now,
+		spawned: 0,
+		depth: 0,
+	};
+
+	const outcome = await runStepSequence(workflow.steps, opts.input, exec);
+
+	const writeErr = journal.writeError;
+	const journalWarning: string | undefined = writeErr
+		? `journal write error (entries may be missing from disk; resume could re-dispatch): ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`
+		: undefined;
+
+	return {
+		runId: generateRunId({ timestamp: now, sequence: opts.sequence ?? 0 }),
+		status: outcome.status,
+		steps: outcome.steps,
+		stats: aggregateStats(outcome.steps.map((s) => s.stats), 0),
+		journalFile: journal.file,
+		error: outcome.error ?? journalWarning,
+	};
+}
