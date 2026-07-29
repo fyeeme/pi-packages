@@ -2,7 +2,7 @@
 
 Review & cleanup extension for [pi](https://github.com/earendil-works/pi).
 
-Registers two commands (`/code-review` and `/simplify`) and a general-purpose
+Registers two commands (`/code-review` and `/code-simplify`) and a general-purpose
 `subagent` tool that spawns parallel pi subprocesses — providing the **real
 fan-out capability** that the `code-review-v3` and `simplify-v2` skills
 (auto-loaded from `~/.pi/agent/skills/`) need for their multi-agent flows.
@@ -17,7 +17,7 @@ fan-out primitive: an LLM-callable `subagent` tool that spawns real
 
 This is the "tool + prompt" architecture: the **tool** provides deterministic
 dispatch (how many agents, parallelism, abort), the **skill** provides the
-review/cleanup semantics. CC's own `/code-review` and `/simplify` work the same
+review/cleanup semantics. CC's own `/code-review` and `/code-simplify` work the same
 way — one general Agent tool, prompt decides how to use it.
 
 ## Install
@@ -43,10 +43,10 @@ extensions directory.
 Parses args, then asks the agent to load `~/.pi/agent/skills/code-review-v3/SKILL.md`
 and follow it — using the `subagent` tool for any fan-out / verify / gap-hunt.
 
-### `/simplify` command
+### `/code-simplify` command
 
 ```
-/simplify [<target>]
+/code-simplify [<target>]
 ```
 
 Cleanup (reuse / simplification / efficiency / altitude) via the `simplify-v2`
@@ -89,8 +89,8 @@ pi-review/
 │   ├── tools/subagent.ts        defineTool("subagent") — generic capability layer
 │   └── commands/
 │       ├── code-review.ts       /code-review handler
-│       └── simplify.ts          /simplify handler + decideSimplifyMode (Jvo guard)
-└── test/                        dispatch + subagent + commands unit tests
+│       └── code-simplify.ts     /code-simplify handler + decideSimplifyMode (Jvo guard)
+└── test/                        commands unit tests
 ```
 
 The layout is deliberately layered: `src/tools/` is the **generic capability
