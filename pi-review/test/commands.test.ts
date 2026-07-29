@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideSimplifyMode } from "../src/commands/simplify.ts";
+import { decideSimplifyMode } from "../src/commands/code-simplify.ts";
 
 describe("decideSimplifyMode", () => {
 	const window = 100_000;

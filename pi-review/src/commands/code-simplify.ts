@@ -27,14 +27,14 @@ export function decideSimplifyMode(opts: {
 }
 
 /**
- * Register the /simplify command. The handler decides parallel vs single-pass from
+ * Register the /code-simplify command. The handler decides parallel vs single-pass from
  * ctx.getContextUsage() (real token count) + subagent tool availability — this is the
  * deterministic Jvo guard that a pure-prompt skill cannot reproduce.
  */
 export function registerSimplify(pi: ExtensionAPI): void {
-	pi.registerCommand("simplify", {
+	pi.registerCommand("code-simplify", {
 		description:
-			"Clean up the changed code (reuse/simplification/efficiency/altitude) using the simplify-v2 skill. Mode (parallel 4-agent vs single-pass) is decided by the handler from real context usage. Usage: /simplify [<target>]",
+			"Clean up the changed code (reuse/simplification/efficiency/altitude) using the simplify-v2 skill. Mode (parallel 4-agent vs single-pass) is decided by the handler from real context usage. Usage: /code-simplify [<target>]",
 		async handler(args, ctx) {
 			const usage = ctx.getContextUsage();
 			const hasSubagent = pi.getAllTools().some((t) => t.name === "subagent");
