@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DeepSeekResult, ProviderUsageResult } from "../types.ts";
 import type { UsageProvider } from "./types.ts";
+import { applyDeepSeekPricingPatch, setDetectedDeepSeekCurrency } from "../cost.ts";
 import { scanWeeklyTokens } from "../session-scanner.ts";
 import { fmt } from "../footer.ts";
 
@@ -38,6 +39,13 @@ export class DeepSeekUsageProvider implements UsageProvider {
 
 			const info = data.balance_infos?.[0];
 			if (!info) return null;
+
+			// 记录账户结算币种：CNY 账户按官方 ¥ 价计费；USD 账户保持 pi 内置 USD 价（不覆盖）
+			setDetectedDeepSeekCurrency(info.currency ?? null);
+			// 探测到币种后立即重新对齐注册表定价：session_start 时（detectedDeepSeekCurrency 尚为
+			// null）已按默认 CNY 覆盖过一次；此处按真实币种纠正，避免 USD 账户停在被高估约 7 倍的
+			// CNY 价上，直到下一次 model_select/​/currency 才修正。
+			applyDeepSeekPricingPatch(modelRegistry);
 
 			const weeklyTokens = scanWeeklyTokens("deepseek");
 

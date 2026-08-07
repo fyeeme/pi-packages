@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-07
+
+### Added
+
+- DeepSeek 结算币种感知定价（新模块 `cost.ts`）：CNY 计费账户按官方 ¥ 单价重算（flash ¥1/¥2/¥0.02、pro ¥3/¥6/¥0.025 每百万 tokens），修正 pi 内置 USD 价低估约 7 倍；USD 计费账户保持 pi 内置价。
+- balance API 自动探测账户结算币种；`/currency` 手动覆盖（auto/¥/$），切换后即时刷新注册表定价。
+- 币种判定后即时对齐运行时注册表定价（覆盖与还原均可逆、跟随结算币种）。
+
+### Fixed
+
+- USD 计费账户启动后不再整场会话停在 CNY 价：balance 探测到币种后立即重新应用定价补丁。
+- 会话内新增 deepseek 模型（编辑 `models.json` + reload）后再次应用定价补丁时，不再因陈旧快照 + `registerProvider` 整表替换丢弃新增模型。
+
 ## [1.0.2] - 2025-07-15
 
 ### Fixed
