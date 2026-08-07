@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs";
 
 // Keep the real mapWithConcurrencyLimit/createSpawnRegistry; only mock spawnAgent.
 const { spawnAgentMock } = vi.hoisted(() => ({ spawnAgentMock: vi.fn() }));
@@ -12,7 +13,13 @@ import { subagentTool } from "../src/tools/subagent.ts";
 
 function fakeResult(
 	text: string,
-	opts: { exitCode?: number; aborted?: boolean; errorMessage?: string; callId?: string } = {},
+	opts: {
+		exitCode?: number;
+		aborted?: boolean;
+		maxTurnsReached?: boolean;
+		errorMessage?: string;
+		callId?: string;
+	} = {},
 ): AgentSpawnResult {
 	return {
 		callId: opts.callId ?? "c",
@@ -21,6 +28,7 @@ function fakeResult(
 		stderr: "",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
 		aborted: opts.aborted ?? false,
+		maxTurnsReached: opts.maxTurnsReached ?? false,
 		errorMessage: opts.errorMessage,
 	};
 }
@@ -75,5 +83,57 @@ describe("subagent tool", () => {
 		const onUpdate = vi.fn();
 		await subagentTool.execute("t5", { mode: "parallel", prompts: ["a", "b"] }, undefined, onUpdate, fakeCtx);
 		expect(onUpdate).toHaveBeenCalledTimes(2);
+	});
+
+	it("chain mode stops on a failed step and does not spawn downstream agents", async () => {
+		spawnAgentMock
+			.mockResolvedValueOnce(fakeResult("", { exitCode: 2 }))
+			.mockResolvedValueOnce(fakeResult("should-not-run"));
+		await expect(
+			subagentTool.execute("t7", { mode: "chain", prompts: ["a", "b", "c"] }, undefined, undefined, fakeCtx),
+		).rejects.toThrow(/agent #1 failed/);
+		// Only the first step ran; the chain did not continue into b/c.
+		expect(spawnAgentMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("a maxTurns stop is reported as max-turns, not counted as aborted", async () => {
+		spawnAgentMock.mockResolvedValue(
+			fakeResult("partial work", { aborted: true, maxTurnsReached: true }),
+		);
+		const r = await subagentTool.execute("t8", { mode: "single", prompts: ["a"] }, undefined, undefined, fakeCtx);
+		expect(r.details.results[0]?.maxTurnsReached).toBe(true);
+		expect(r.details.stats.aborted).toBe(0);
+		expect(r.content[0]).toMatchObject({ type: "text" });
+		expect((r.content[0] as { text: string }).text).toContain("[max-turns]");
+	});
+
+	it("normal-size output is shown in full in the preview (not 200-char clipped)", async () => {
+		const report = Array.from({ length: 50 }, (_, i) => `finding ${i}: some candidate with file:line and scenario`).join("\n");
+		spawnAgentMock.mockResolvedValue(fakeResult(report, { callId: "t9#0" }));
+		const r = await subagentTool.execute("t9", { mode: "single", prompts: ["a"] }, undefined, undefined, fakeCtx);
+		const content = (r.content[0] as { text: string }).text;
+		expect(content).toContain("finding 0");
+		expect(content).toContain("finding 49"); // 完整内容可见,而非前 200 字符
+		// 总是写入转录文件并附路径(借鉴 tintinweb/pi-subagents)
+		const entry = r.details.results[0]!;
+		expect(entry.transcriptFile).toBeTruthy();
+		expect(content).toContain("完整转录:");
+		expect(content).toContain(entry.transcriptFile!);
+		expect(fs.readFileSync(entry.transcriptFile!, "utf-8")).toContain("finding 0");
+	});
+
+	it("oversized output is truncated with a readable temp-file path in the preview", async () => {
+		const huge = "x".repeat(100_000);
+		spawnAgentMock.mockResolvedValue(fakeResult(huge, { callId: "t10#0" }));
+		const r = await subagentTool.execute("t10", { mode: "single", prompts: ["a"] }, undefined, undefined, fakeCtx);
+		const entry = r.details.results[0]!;
+		const content = (r.content[0] as { text: string }).text;
+		expect(entry.transcriptFile).toBeTruthy();
+		expect(content).toContain("输出截断:");
+		expect(content).toContain(entry.transcriptFile!);
+		// 完整转录确实落盘,模型可经 read 工具读取(含 --- assistant --- 分段)
+		const transcript = fs.readFileSync(entry.transcriptFile!, "utf-8");
+		expect(transcript).toContain(huge);
+		expect(transcript).toContain("--- assistant ---");
 	});
 });

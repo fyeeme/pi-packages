@@ -1,7 +1,7 @@
 {
   "name": "@fyeeme/pi-review",
-  "version": "0.1.0",
-  "description": "Review & cleanup extension for pi. Registers /code-review and /simplify commands plus a general-purpose `subagent` tool that spawns parallel pi subprocesses — providing the real fan-out capability the code-review-v3 and simplify-v2 skills (auto-loaded from ~/.pi/agent/skills/) need for their multi-agent flows. The /simplify handler uses ctx.getContextUsage() to decide parallel vs single-pass mode deterministically.",
+  "version": "1.0.0",
+  "description": "Review & cleanup extension for pi. Registers /code-review and /code-simplify commands plus a general-purpose `subagent` tool that spawns parallel pi subprocesses — providing the real fan-out capability the code-review and simplify skills (bundled under `skills/`) need for their multi-agent flows. The /code-simplify handler uses ctx.getContextUsage() to decide parallel vs single-pass mode deterministically.",
   "type": "module",
   "license": "MIT",
   "author": "fyeeme",
@@ -21,6 +21,7 @@
   "files": [
     "*.ts",
     "src/**/*.ts",
+    "skills/**/*.md",
     "README.md",
     "LICENSE"
   ],

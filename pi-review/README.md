@@ -4,8 +4,8 @@ Review & cleanup extension for [pi](https://github.com/earendil-works/pi).
 
 Registers two commands (`/code-review` and `/code-simplify`) and a general-purpose
 `subagent` tool that spawns parallel pi subprocesses — providing the **real
-fan-out capability** that the `code-review-v3` and `simplify-v2` skills
-(auto-loaded from `~/.pi/agent/skills/`) need for their multi-agent flows.
+fan-out capability** that the `code-review` and `simplify` skills
+(bundled in this package under `skills/`) need for their multi-agent flows.
 
 ## Why
 
@@ -40,7 +40,7 @@ extensions directory.
 /code-review [low|medium|high|xhigh|max] [--fix] [--comment] [--share] [<target>]
 ```
 
-Parses args, then asks the agent to load `~/.pi/agent/skills/code-review-v3/SKILL.md`
+Parses args, then asks the agent to load the bundled `skills/code-review/SKILL.md`
 and follow it — using the `subagent` tool for any fan-out / verify / gap-hunt.
 
 ### `/code-simplify` command
@@ -49,7 +49,7 @@ and follow it — using the `subagent` tool for any fan-out / verify / gap-hunt.
 /code-simplify [<target>]
 ```
 
-Cleanup (reuse / simplification / efficiency / altitude) via the `simplify-v2`
+Cleanup (reuse / simplification / efficiency / altitude) via the `simplify`
 skill. **The handler decides parallel vs single-pass mode deterministically**
 from `ctx.getContextUsage()` (real token count) + whether the `subagent` tool is
 registered — mirroring CC's `Jvo` guard:
@@ -83,12 +83,14 @@ the agent loop marks the result `isError`.
 ```
 pi-review/
 ├── index.ts                     factory: registerTool(subagent) + 2 commands
+├── skills/                      bundled SKILL.md files (code-review, simplify)
 ├── src/
 │   ├── agent/dispatch.ts        spawnAgent + mapWithConcurrencyLimit (self-contained copy
 │   │                            from pi-dynamic-workflows; no external dep beyond node + pi-ai)
+│   ├── skills.ts                bundledSkillPath — resolve this extension's own skills/ dir
 │   ├── tools/subagent.ts        defineTool("subagent") — generic capability layer
 │   └── commands/
-│       ├── code-review.ts       /code-review handler
+│       ├── code-review.ts       /code-review handler + sticky last-used effort (CC 2.1.223)
 │       └── code-simplify.ts     /code-simplify handler + decideSimplifyMode (Jvo guard)
 └── test/                        commands unit tests
 ```
@@ -108,7 +110,7 @@ export, this file should be deleted in favor of that import.
 
 | layer | home | role |
 |---|---|---|
-| review/cleanup semantics (angles, verdicts, mode bodies) | `~/.pi/agent/skills/code-review-v3/` + `simplify-v2/SKILL.md` | what to look for |
+| review/cleanup semantics (angles, verdicts, mode bodies) | `skills/code-review/` + `skills/simplify/` (bundled in this package) | what to look for |
 | fan-out dispatch + mode decision | this extension (`subagent` tool + command handlers) | how to run sub-agents / which mode |
 
 Edit a skill to change *what* it hunts; edit this extension to change *how*

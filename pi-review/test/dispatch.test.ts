@@ -49,6 +49,35 @@ describe("mapWithConcurrencyLimit", () => {
 	it("returns [] for empty input", async () => {
 		expect(await mapWithConcurrencyLimit([], 4, async (n) => n)).toEqual([]);
 	});
+
+	it("stops dispatching new items after a rejection (no orphan workers)", async () => {
+		const seen: number[] = [];
+		let started = 0;
+		// 2 workers, 6 items. Park ONE worker on item 0 so the other is forced to
+		// advance to item 2 and fail. Releasing item 0 right before the throw keeps
+		// it deterministic (no deadlock: the parked worker is always unblocked).
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => (release = r));
+		await expect(
+			mapWithConcurrencyLimit([0, 1, 2, 3, 4, 5], 2, async (n) => {
+				started++;
+				seen.push(n);
+				if (n === 0) await gate; // park one worker on item 0
+				if (n === 2) {
+					release(); // unblock the parked worker first
+					throw new Error("boom"); // then fail → sets `failed`
+				}
+				await new Promise((r) => setTimeout(r, 5));
+			}),
+		).rejects.toThrow("boom");
+		// Worker A finished item 0 (released), worker B failed on item 2. Once
+		// `failed` is set, neither worker pulls 3/4/5 — a rejection must not leave
+		// siblings draining the rest of the queue.
+		expect(seen).toEqual(expect.arrayContaining([0, 1, 2]));
+		expect(started).toBeLessThanOrEqual(3);
+		expect(seen).not.toContain(4);
+		expect(seen).not.toContain(5);
+	});
 });
 
 describe("getPiInvocation", () => {

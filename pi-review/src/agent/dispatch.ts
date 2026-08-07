@@ -45,11 +45,20 @@ export async function mapWithConcurrencyLimit<TIn, TOut>(
 	const limit = Math.max(1, Math.min(concurrency, items.length));
 	const results: TOut[] = new Array(items.length);
 	let nextIndex = 0;
+	// Stop dispatching NEW items once any worker has errored, so a rejection
+	// doesn't leave sibling workers pulling more items and spawning unawaited
+	// subprocesses. In-flight calls finish; the failing worker rethrows.
+	let failed = false;
 	const workers = new Array(limit).fill(null).map(async () => {
-		while (true) {
+		while (!failed) {
 			const current = nextIndex++;
 			if (current >= items.length) return;
-			results[current] = await fn(items[current], current);
+			try {
+				results[current] = await fn(items[current], current);
+			} catch (err) {
+				failed = true;
+				throw err;
+			}
 		}
 	});
 	await Promise.all(workers);
@@ -125,6 +134,9 @@ export interface AgentSpawnResult {
 	errorMessage?: string;
 	/** True if aborted. exitCode may be null/non-zero. */
 	aborted: boolean;
+	/** True if killed because the caller's maxTurns budget was reached. Distinct
+	 *  from `aborted` (external cancel): the agent did useful bounded work. */
+	maxTurnsReached: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +207,7 @@ export async function spawnAgent(
 		stderr: "",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
 		aborted: false,
+		maxTurnsReached: false,
 	};
 
 	try {
@@ -235,8 +248,10 @@ export async function spawnAgent(
 					if (msg.role === "assistant") {
 						result.usage.turns++;
 						// Enforce maxTurns: abort the subprocess when the limit is reached.
-						// killProc handles the SIGTERM→SIGKILL escalation.
-						if (options.maxTurns && result.usage.turns >= options.maxTurns) {
+						// killProc handles the SIGTERM→SIGKILL escalation. Use `!= null` so an
+						// explicit maxTurns: 0 is honored (and marked) rather than treated as "unset".
+						if (options.maxTurns != null && result.usage.turns >= options.maxTurns) {
+							result.maxTurnsReached = true;
 							controller.abort();
 						}
 						const usage = msg.usage;
@@ -245,7 +260,7 @@ export async function spawnAgent(
 							result.usage.output += usage.output || 0;
 							result.usage.cacheRead += usage.cacheRead || 0;
 							result.usage.cacheWrite += usage.cacheWrite || 0;
-							result.usage.cost += usage.cost?.total || 0;
+							result.usage.cost += Number(usage.cost?.total) || 0;
 							result.usage.contextTokens = usage.totalTokens || 0;
 						}
 						if (!result.model && msg.model) result.model = msg.model;

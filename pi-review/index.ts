@@ -4,12 +4,12 @@
  * Registers:
  *   - the `subagent` tool — general-purpose parallel/sequential sub-agent fan-out
  *     via real pi subprocesses. Shared capability used by both skills below;
- *   - the `/code-review` command — effort-level review via the code-review-v3 skill;
- *   - the `/code-simplify` command — cleanup via the simplify-v2 skill; the handler
+ *   - the `/code-review` command — effort-level review via the code-review skill;
+ *   - the `/code-simplify` command — cleanup via the simplify skill; the handler
  *     decides parallel vs single-pass from ctx.getContextUsage(), mirroring CC's
  *     Jvo guard (a deterministic decision a pure-prompt skill cannot reproduce).
  *
- * Both skills are auto-loaded by pi from ~/.pi/agent/skills/ — this extension only
+ * Both skills ship bundled in this package under `skills/` — this extension
  * provides the entry commands + the fan-out capability they need.
  *
  * Layout (layered so the tool layer can be split into its own extension later):
