@@ -1,0 +1,42 @@
+{
+  "name": "@fyeeme/pi-mattpocock-skills",
+  "version": "1.0.0",
+  "description": "pi extension mapping mattpocock user-invoked skills to short slash commands (真等价 /skill:name via <skill> block injection), with opt-in ask-matt router bootstrap.",
+  "type": "module",
+  "license": "MIT",
+  "author": "fyeeme",
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "mattpocock",
+    "skills",
+    "slash-commands"
+  ],
+  "files": [
+    "*.ts",
+    "src/**/*.ts",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest --run",
+    "typecheck": "tsc"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": ">=0.77.0",
+    "@earendil-works/pi-coding-agent": ">=0.77.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "0.77.0",
+    "@earendil-works/pi-coding-agent": "0.77.0",
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
+  }
+}
