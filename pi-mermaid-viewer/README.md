@@ -2,6 +2,20 @@
 
 Render Mermaid diagrams found in the conversation as an HTML page opened in the default browser.
 
+### 与 pi 0.84.0 内置 TUI mermaid 的区别
+
+pi 0.84.0 起内置在终端内（TUI）渲染 Mermaid（`markdown.mermaid` 设置，默认 `streaming`）——适合**终端内速览**。本扩展与之**不是替代关系**，而是互补：
+
+| | 本扩展（pi-mermaid-viewer） | pi 内置 TUI mermaid |
+|---|---|---|
+| 查看方式 | 浏览器打开 HTML 页面 | 终端内联预览 |
+| 导出 | PNG / SVG 下载 | 无 |
+| 多图 | 多图 tab 导航 | 逐块内联 |
+| 解析失败 | try-first 修复器（仅当 Mermaid 解析失败时自动引号修复裸标签） | 直接显示解析错误 |
+| 适用场景 | 需要检查/导出/分享图时 | 对话中快速扫一眼 |
+
+两者可以共存：内置预览用于日常速览，需要细看或导出时再跑 `/mermaid`。
+
 ## Install
 
 Requires the [pi](https://pi.dev) CLI.

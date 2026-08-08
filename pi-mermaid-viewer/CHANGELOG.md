@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-06-15
+
 ### Fixed
 - **Format-switcher menu was invisible.** The `.dl-split` container had `overflow:hidden` (for rounded corners), which clipped the absolutely-positioned `.dl-pop` format menu — it existed in the DOM but was neither visible nor clickable (`elementFromPoint` hit the canvas behind it). Removed `overflow:hidden` and moved the rounding to the individual buttons. SVG/PNG export itself was unaffected.
 - **PNG export silently failed** (download never triggered). Root cause: the `EMOJI_RE` regex was authored inline inside the `renderHtml` template literal, whose backslash-eating corrupted `/[\p{Emoji...}]/gu` into `/[p{Emoji...}]/gu`. As a character class that matches the literal letters p/E/m/o/j/i/..., it stripped ~45% of every exported SVG, so the `<img>` used to rasterize failed to load (`onerror`), `img.onload` never fired, and PNG export hung forever. SVG export was unaffected (it serves the blob directly). Fixed by authoring the regex source at module scope and injecting it, like `quoteBareLabels`.
