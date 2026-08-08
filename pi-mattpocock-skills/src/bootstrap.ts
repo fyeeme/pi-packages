@@ -1,10 +1,12 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+/** Message type delivered by the `context` event (pi-ai `Message` + custom messages like compaction summaries). */
+type ContextMessage = ContextEvent["messages"][number];
 
 /** Unique marker carried by the bootstrap message; its presence blocks re-injection. */
 const BOOTSTRAP_MARKER = "mattpocock-skills-bootstrap-v1";
 
-const BOOTSTRAP_CONTENT = `${BOOTSTRAP_MARKER}
+export const BOOTSTRAP_CONTENT = `${BOOTSTRAP_MARKER}
 
 mattpocock skills are installed. /ask-matt is the router.
 
@@ -22,7 +24,7 @@ This is reference, not a mandate — reach for these when the user's task fits.`
 /** Whether a pending bootstrap injection is needed (set on start/compact). */
 let injectBootstrap = true;
 
-function messageContainsMarker(message: AgentMessage): boolean {
+function messageContainsMarker(message: ContextMessage): boolean {
 	const content = (message as { content?: unknown }).content;
 	if (typeof content === "string") return content.includes(BOOTSTRAP_MARKER);
 	if (!Array.isArray(content)) return false;
@@ -37,7 +39,19 @@ function messageContainsMarker(message: AgentMessage): boolean {
 	});
 }
 
-function firstNonCompactionSummaryIndex(messages: AgentMessage[]): number {
+/**
+ * Whether the full bootstrap message is already present in the transcript.
+ * Compaction summaries are excluded: a lossy summary that echoes the marker
+ * must not suppress re-injection of the full guidance after `session_compact`.
+ */
+function hasInjectedBootstrap(messages: ContextMessage[]): boolean {
+	return messages.some((message) => {
+		if ((message as { role?: string }).role === "compactionSummary") return false;
+		return messageContainsMarker(message);
+	});
+}
+
+function firstNonCompactionSummaryIndex(messages: ContextMessage[]): number {
 	let index = 0;
 	while ((messages[index] as { role?: string } | undefined)?.role === "compactionSummary") {
 		index += 1;
@@ -64,14 +78,14 @@ export function registerBootstrap(pi: ExtensionAPI): void {
 	});
 	pi.on("context", (event) => {
 		if (!injectBootstrap) return;
-		if (event.messages.some(messageContainsMarker)) return;
+		if (hasInjectedBootstrap(event.messages)) return;
 
 		const insertAt = firstNonCompactionSummaryIndex(event.messages);
 		const bootstrapMessage = {
 			role: "user",
 			content: [{ type: "text", text: BOOTSTRAP_CONTENT }],
 			timestamp: Date.now(),
-		} as AgentMessage;
+		} as ContextMessage;
 
 		injectBootstrap = false;
 		return {
@@ -83,6 +97,3 @@ export function registerBootstrap(pi: ExtensionAPI): void {
 		};
 	});
 }
-
-/** Exposed for tests to assert content without depending on the module-level flag. */
-export const BOOTSTRAP_CONTENT_FOR_TEST = BOOTSTRAP_CONTENT;

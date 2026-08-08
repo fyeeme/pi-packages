@@ -20,6 +20,15 @@ describe("stripFrontmatter", () => {
 	it("returns content unchanged when no frontmatter present", () => {
 		expect(stripFrontmatter("plain text")).toBe("plain text");
 	});
+
+	it("normalizes CRLF line endings before stripping (locks pi parity)", () => {
+		const content = "---\r\nname: x\r\n---\r\n# Body\r\nline";
+		expect(stripFrontmatter(content)).toBe("# Body\nline");
+	});
+
+	it("returns CRLF-normalized content when the closing fence is missing (locks pi parity)", () => {
+		expect(stripFrontmatter("---\nname: x\r\nno close")).toBe("---\nname: x\nno close");
+	});
 });
 
 describe("buildSkillBlock", () => {
