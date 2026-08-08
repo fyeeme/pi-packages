@@ -139,6 +139,54 @@ The `additionalContext` is injected into the pi conversation (appended to the la
 
 Pi names MCP tools as `<serverName>_<toolName>` (not `mcp__server__tool` like Claude Code), so target them with regex like `plugin_serena_serena_.*`. Check your actual tool names with `/mcp` in pi to set the correct `matcher`.
 
+## Using pi-hooks with Serena
+
+[Serena](https://github.com/oraios/serena) ships a `serena-hooks` CLI (Claude Code compatible) whose four subcommands map cleanly onto pi-hooks events. With Serena's MCP server running in pi (confirm with `/mcp` — you should see a `serena` server), drop this into your project's `.pi/hooks.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": "serena-hooks activate --client=claude-code" }]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": "serena-hooks remind --client=claude-code" }]
+      },
+      {
+        "matcher": "serena_.*",
+        "hooks": [{ "type": "command", "command": "serena-hooks auto-approve --client=claude-code" }]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": "serena-hooks cleanup --client=claude-code" }]
+      }
+    ]
+  }
+}
+```
+
+What each hook does:
+
+| Event | Command | Role |
+|---|---|---|
+| `SessionStart` | `activate` | Prompts the agent to activate the project and read Serena's instructions at session start. |
+| `PreToolUse` (`""`) | `remind` | Nudges the agent to prefer Serena's symbolic tools over raw `read`/`grep`. Runs before every tool call. |
+| `PreToolUse` (`serena_.*`) | `auto-approve` | Auto-approves Serena tool calls while the client is in a permissive permission mode. |
+| `Stop` | `cleanup` | Clears per-session hook state on exit. |
+
+**Get the matcher prefix right.** pi exposes an MCP server's tools as `<server>_<tool>`. With Serena registered as the `serena` MCP server (the default), tools are named `serena_find_symbol`, `serena_read_file`, … → use `serena_.*`. If you installed Serena as a pi **plugin** instead, the names are `plugin_serena_serena_*` → use `plugin_serena_serena_.*`. Run `/mcp` in pi to confirm your exact prefix.
+
+> ⚠️ **`auto-approve` is currently inert under pi-hooks.** `serena-hooks auto-approve` only emits its approval when stdin reports a permissive `permission_mode` (`acceptEdits` or `auto`), but pi-hooks always sends `permission_mode: "default"` today. The hook still runs but stays silent, so pi's own permission flow applies. `activate`, `remind`, and `cleanup` are unaffected. This will resolve once pi-hooks forwards the real permission mode.
+
+`--client=claude-code` is correct for pi: pi-hooks speaks the Claude Code hooks protocol, so Serena treats pi as a Claude Code client.
+
 ## Config Override
 
 Set `PI_HOOKS_CONFIG` env var to point to a custom config path.
