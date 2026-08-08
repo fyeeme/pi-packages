@@ -14,7 +14,7 @@
  * Event mapping (pi ExtensionAPI → peon.sh hook_event_name):
  *   session_start                       → SessionStart
  *   turn_start                          → UserPromptSubmit
- *   turn_end                            → Stop
+ *   agent_settled                       → Stop
  *   tool_result (event.isError === true) → PostToolUseFailure
  *   session_shutdown                    → SessionEnd
  *
@@ -131,12 +131,8 @@ export function resolveShellAndScript(
 }
 
 // ============================================================================
-// Terminal tab title helpers
+// Terminal tab title (via pi's mode-aware ctx.ui.setTitle)
 // ============================================================================
-
-export function setTabTitle(title: string): void {
-	process.stdout.write(`\x1b]0;${title}\x07`);
-}
 
 // ============================================================================
 // Session ID helpers
@@ -323,14 +319,14 @@ export default function peonPingExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		const config = readPeonConfig(peonPath);
 		const sessionId = getSessionId(ctx);
-		if (ctx.hasUI) setTabTitle(`● ${projectName}: ready`);
+		if (ctx.hasUI) ctx.ui.setTitle(`● ${projectName}: ready`);
 		firePeon(peonPath, "SessionStart", cwd, sessionId, config);
 	});
 
 	pi.on("before_agent_start", async (_event, ctx) => {
 		const config = readPeonConfig(peonPath);
 		const sessionId = getSessionId(ctx);
-		if (ctx.hasUI) setTabTitle(`● ${projectName}: working...`);
+		if (ctx.hasUI) ctx.ui.setTitle(`● ${projectName}: working...`);
 		firePeon(peonPath, "UserPromptSubmit", cwd, sessionId, config);
 	});
 
@@ -340,10 +336,10 @@ export default function peonPingExtension(pi: ExtensionAPI): void {
 		firePeon(peonPath, "PreCompact", cwd, sessionId, config);
 	});
 
-	pi.on("agent_end", async (_event, ctx) => {
+	pi.on("agent_settled", async (_event, ctx) => {
 		const config = readPeonConfig(peonPath);
 		const sessionId = getSessionId(ctx);
-		if (ctx.hasUI) setTabTitle(`✓ ${projectName}: done`);
+		if (ctx.hasUI) ctx.ui.setTitle(`✓ ${projectName}: done`);
 		firePeon(peonPath, "Stop", cwd, sessionId, config);
 	});
 
@@ -351,7 +347,7 @@ export default function peonPingExtension(pi: ExtensionAPI): void {
 		if (!event.isError) return;
 		const config = readPeonConfig(peonPath);
 		const sessionId = getSessionId(ctx);
-		if (ctx.hasUI) setTabTitle(`✗ ${projectName}: error`);
+		if (ctx.hasUI) ctx.ui.setTitle(`✗ ${projectName}: error`);
 		firePeon(peonPath, "PostToolUseFailure", cwd, sessionId, config);
 	});
 

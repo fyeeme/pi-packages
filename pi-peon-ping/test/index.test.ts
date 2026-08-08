@@ -21,7 +21,6 @@ import peonPingExtension, {
 	tryBrewPrefix,
 	findPeonSh,
 	resolveShellAndScript,
-	setTabTitle,
 	getSessionId,
 	firePeon,
 	findPeonCli,
@@ -183,42 +182,6 @@ describe("resolveShellAndScript", () => {
 			shell: "powershell",
 			script: "/path/to/peon.ps1",
 		});
-	});
-});
-
-// ============================================================================
-// setTabTitle
-// ============================================================================
-
-describe("setTabTitle", () => {
-	let writeSpy: ReturnType<typeof vi.spyOn>;
-
-	beforeEach(() => {
-		writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-	});
-
-	afterEach(() => {
-		writeSpy.mockRestore();
-	});
-
-	it("writes OSC 0 escape sequence with the given title", () => {
-		setTabTitle("● my-project: ready");
-		expect(writeSpy).toHaveBeenCalledWith("\x1b]0;● my-project: ready\x07");
-	});
-
-	it("writes working status title", () => {
-		setTabTitle("● my-project: working...");
-		expect(writeSpy).toHaveBeenCalledWith("\x1b]0;● my-project: working...\x07");
-	});
-
-	it("writes done status title", () => {
-		setTabTitle("✓ my-project: done");
-		expect(writeSpy).toHaveBeenCalledWith("\x1b]0;✓ my-project: done\x07");
-	});
-
-	it("writes error status title", () => {
-		setTabTitle("✗ my-project: error");
-		expect(writeSpy).toHaveBeenCalledWith("\x1b]0;✗ my-project: error\x07");
 	});
 });
 
@@ -580,7 +543,7 @@ describe("peonPingExtension", () => {
 
 	describe("when peon.sh is found", () => {
 		let pi: { on: ReturnType<typeof vi.fn> };
-		let writeSpy: ReturnType<typeof vi.spyOn>;
+		let setTitleSpy: ReturnType<typeof vi.fn>;
 		let mockProc: {
 			stdin: { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> };
 			unref: ReturnType<typeof vi.fn>;
@@ -589,7 +552,7 @@ describe("peonPingExtension", () => {
 		beforeEach(() => {
 			vi.mocked(existsSync).mockReturnValue(true);
 			pi = { on: vi.fn(), registerCommand: vi.fn() };
-			writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+			setTitleSpy = vi.fn();
 			mockProc = {
 				stdin: { write: vi.fn(), end: vi.fn() },
 				unref: vi.fn(),
@@ -597,10 +560,6 @@ describe("peonPingExtension", () => {
 			vi.mocked(spawn).mockReturnValue(mockProc as unknown as ReturnType<typeof spawn>);
 
 			peonPingExtension(pi as unknown as ExtensionAPI);
-		});
-
-		afterEach(() => {
-			writeSpy.mockRestore();
 		});
 
 		it("registers all 7 event handlers and 2 commands", () => {
@@ -616,8 +575,8 @@ describe("peonPingExtension", () => {
 			expect(pi.on).toHaveBeenCalledWith("before_agent_start", expect.any(Function));
 		});
 
-		it("registers agent_end handler", () => {
-			expect(pi.on).toHaveBeenCalledWith("agent_end", expect.any(Function));
+		it("registers agent_settled handler", () => {
+			expect(pi.on).toHaveBeenCalledWith("agent_settled", expect.any(Function));
 		});
 
 		it("registers session_before_compact handler", () => {
@@ -641,11 +600,15 @@ describe("peonPingExtension", () => {
 				const handler = pi.on.mock.calls.find(
 					(c: unknown[]) => c[0] === "session_start",
 				)![1] as Function;
-				const ctx = { hasUI: true, sessionManager: { getSessionFile: () => "sess-1" } };
+				const ctx = {
+					hasUI: true,
+					ui: { setTitle: setTitleSpy },
+					sessionManager: { getSessionFile: () => "sess-1" },
+				};
 
 				await handler({}, ctx);
 
-				expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("ready"));
+				expect(setTitleSpy).toHaveBeenCalledWith(expect.stringContaining("ready"));
 				expect(mockProc.stdin.write).toHaveBeenCalledWith(
 					expect.stringContaining("SessionStart"),
 				);
@@ -656,11 +619,11 @@ describe("peonPingExtension", () => {
 					(c: unknown[]) => c[0] === "session_start",
 				)![1] as Function;
 				const ctx = { hasUI: false, sessionManager: { getSessionFile: () => "sess-1" } };
-				writeSpy.mockClear();
+				setTitleSpy.mockClear();
 
 				await handler({}, ctx);
 
-				expect(writeSpy).not.toHaveBeenCalled();
+				expect(setTitleSpy).not.toHaveBeenCalled();
 			});
 		});
 
@@ -669,27 +632,35 @@ describe("peonPingExtension", () => {
 				const handler = pi.on.mock.calls.find(
 					(c: unknown[]) => c[0] === "before_agent_start",
 				)![1] as Function;
-				const ctx = { hasUI: true, sessionManager: { getSessionFile: () => "sess-2" } };
+				const ctx = {
+					hasUI: true,
+					ui: { setTitle: setTitleSpy },
+					sessionManager: { getSessionFile: () => "sess-2" },
+				};
 
 				await handler({}, ctx);
 
-				expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("working..."));
+				expect(setTitleSpy).toHaveBeenCalledWith(expect.stringContaining("working..."));
 				expect(mockProc.stdin.write).toHaveBeenCalledWith(
 					expect.stringContaining("UserPromptSubmit"),
 				);
 			});
 		});
 
-		describe("agent_end handler", () => {
+		describe("agent_settled handler", () => {
 			it("sets tab title to done state and fires Stop", async () => {
 				const handler = pi.on.mock.calls.find(
-					(c: unknown[]) => c[0] === "agent_end",
+					(c: unknown[]) => c[0] === "agent_settled",
 				)![1] as Function;
-				const ctx = { hasUI: true, sessionManager: { getSessionFile: () => "sess-3" } };
+				const ctx = {
+					hasUI: true,
+					ui: { setTitle: setTitleSpy },
+					sessionManager: { getSessionFile: () => "sess-3" },
+				};
 
 				await handler({}, ctx);
 
-				expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("done"));
+				expect(setTitleSpy).toHaveBeenCalledWith(expect.stringContaining("done"));
 				expect(mockProc.stdin.write).toHaveBeenCalledWith(
 					expect.stringContaining("Stop"),
 				);
@@ -716,11 +687,15 @@ describe("peonPingExtension", () => {
 				const handler = pi.on.mock.calls.find(
 					(c: unknown[]) => c[0] === "tool_result",
 				)![1] as Function;
-				const ctx = { hasUI: true, sessionManager: { getSessionFile: () => "sess-4" } };
+				const ctx = {
+					hasUI: true,
+					ui: { setTitle: setTitleSpy },
+					sessionManager: { getSessionFile: () => "sess-4" },
+				};
 
 				await handler({ isError: true }, ctx);
 
-				expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("error"));
+				expect(setTitleSpy).toHaveBeenCalledWith(expect.stringContaining("error"));
 				expect(mockProc.stdin.write).toHaveBeenCalledWith(
 					expect.stringContaining("PostToolUseFailure"),
 				);
@@ -731,12 +706,12 @@ describe("peonPingExtension", () => {
 					(c: unknown[]) => c[0] === "tool_result",
 				)![1] as Function;
 				const ctx = { hasUI: true, sessionManager: { getSessionFile: () => "sess-5" } };
-				writeSpy.mockClear();
+				setTitleSpy.mockClear();
 				mockProc.stdin.write.mockClear();
 
 				await handler({ isError: false }, ctx);
 
-				expect(writeSpy).not.toHaveBeenCalled();
+				expect(setTitleSpy).not.toHaveBeenCalled();
 				expect(mockProc.stdin.write).not.toHaveBeenCalled();
 			});
 		});
@@ -787,11 +762,11 @@ describe("peonPingExtension", () => {
 					(c: unknown[]) => c[0] === "session_shutdown",
 				)![1] as Function;
 				const ctx = { sessionManager: { getSessionFile: () => "sess-7" } };
-				writeSpy.mockClear();
+				setTitleSpy.mockClear();
 
 				await handler({}, ctx);
 
-				expect(writeSpy).not.toHaveBeenCalled();
+				expect(setTitleSpy).not.toHaveBeenCalled();
 			});
 		});
 	});

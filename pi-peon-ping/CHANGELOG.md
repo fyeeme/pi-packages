@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-08
+
+### Changed
+
+- Tab 标题改用 provided API：删除手写 ANSI `setTabTitle`（`process.stdout.write(\x1b]0;...\x07)`），四处调用点（`session_start`/`before_agent_start`/`agent_settled`/`tool_result`，均在 `ctx.hasUI` 守卫下）改为 `ctx.ui.setTitle(...)`——mode 感知，print/json 模式自动 no-op，不再向 stdout 写裸 ANSI。
+- `Stop` 事件映射从 `agent_end` 改为 `agent_settled`（与 ExtensionAPI 实际事件名一致）。
+
 ## [1.1.0] - 2026-07-26
 
 ### Added
