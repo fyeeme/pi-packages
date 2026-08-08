@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-08
+
+### Fixed
+
+- 会话级 token/cost/tok-s 在分叉会话（`/fork`、`/tree`）后不再把整棵树计入：`SessionTokenUsageCalculator.compute` 与 `agent_end` 累计输出改用 `sessionManager.getBranch()`（仅当前分支）；`/status-debug` 仍保留全量 `getEntries()` 用于诊断。
+- 切换 provider（`/model` deepseek↔zai）后状态栏不再短暂显示上一个 provider 的用量段：`getCachedUsage` 在缓存 provider 与当前 provider 不匹配时返回 null，等待 `model_select` 触发的新刷新落地。
+- ZAI 用量段对 `zai-coding-cn` provider 不再永久漏显示：`ZaiResult.provider` 记录实际 provider key（`zai`/`zai-coding-cn`），provider guard 不再因字面量 `"zai"` 误判（code-review #1）。
+- tok/s 改用本次 agent run 的 output/耗时（`event.messages`），分子分母同口径，不再受 /fork 放弃分支的累计耗时影响；同时消除 `agent_end` 对模块级 `lastCtx` 的依赖（code-review #2）。
+- `/status-debug` 的 msg 遍历改用 `getBranch()`，与 `tokenCalculator.compute` 口径一致（code-review #7）。
+- `SessionTokenUsageCalculator.compute` 内 `deepSeekBilledInCny()` 冗余的第二次调用复用已有变量（code-review #8）。
+
+### Changed
+
+- 移除 `package.json` 中已废弃的 MCP 描述与 keyword（MCP 状态段自 1.0.2 起已移除）。
+- 新增 `session_shutdown` 清理 usage cache：`/resume` 或 `/new` 进入不同 provider 时立即刷新，而非沿用上一会话缓存。
+- `devDependencies` 对齐当前平台（`@earendil-works/pi-coding-agent`/`pi-ai`/`pi-tui` `0.77.0` → `0.84.1`），便于利用 `thinking_level_select`、`getAvailableProviderCount` 等新类型。
+- README 状态栏示例 `deepseek-v3` → `deepseek-v4-pro`（`deepseek-v3` 已不在 0.84.x 模型库）。
+
 ## [1.1.0] - 2026-08-07
 
 ### Added

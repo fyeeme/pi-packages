@@ -95,7 +95,7 @@ See the Pi Packages guide on [pi.dev](https://pi.dev) for the full list of sourc
 ## Status Bar Layout
 
 ```
-~/projects/my-repo (main)                    deepseek-v3 · xhigh
+~/projects/my-repo (main)                    deepseek-v4-pro · xhigh
 tokens 65k(in 12k, out 8k, cache 45k) · ¥0.12/50.00 · 7d:1.2M · 45.2%/64k · 2m30s 38.2tok/s
 ```
 
@@ -119,6 +119,8 @@ None required. API keys are resolved automatically by pi's model registry for th
 The extension registers a `UsageProvider` per supported provider and refreshes usage data in the background (on startup, on model switch, and after each agent run). Results are cached with a 5-minute TTL (DeepSeek) or per-refresh (ZAI) to avoid hammering the provider APIs.
 
 All network calls are best-effort with a 5-second timeout — failures stay silent and never block the status bar.
+
+> **Platform API note:** the custom footer relies on `ctx.ui.setFooter`'s third parameter — `footerData: ReadonlyFooterDataProvider` (for `getGitBranch`/`getExtensionStatuses`/`onBranchChange`) — and on returning `dispose` from the footer factory. These are part of the 0.84.x `ExtensionAPI` surface (see `dist/core/extensions/types.d.ts`), but pi's `docs/extensions.md` currently documents only the `(tui, theme)` form. If a future pi release changes the `setFooter` signature, check this extension's footer wiring first.
 
 ## Changelog
 

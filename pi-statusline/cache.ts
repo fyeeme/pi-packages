@@ -70,6 +70,13 @@ export function getCachedUsage(
 	// may synchronously set usageCache = null when the provider is not found,
 	// which would make the eventual `return cache.result` throw on null.
 	const cache = usageCache;
+	// Drop stale cache if the active provider changed since it was populated
+	// (e.g. deepseek -> zai via /model). model_select already kicked off a
+	// refresh; returning null avoids briefly showing the previous provider's
+	// segment until the new fetch lands.
+	if (lastModel && cache.result && cache.result.provider !== lastModel.provider) {
+		return null;
+	}
 	if (Date.now() - cache.fetchedAt > CACHE_TTL_MS) {
 		// TTL expired: return stale data but trigger background refresh.
 		// Memoize inflight promise so concurrent callers share one fetch.

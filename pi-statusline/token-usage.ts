@@ -20,7 +20,10 @@ export class SessionTokenUsageCalculator implements TokenUsageCalculator {
 
 		const billedInCny = deepSeekBilledInCny();
 
-		for (const entry of ctx.sessionManager.getEntries()) {
+		// Use getBranch() (current branch only) so token/cost stats exclude abandoned
+		// sibling branches after /fork or /tree navigation. getEntries() would sum
+		// the whole tree and overcount in forked sessions.
+		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "message" && entry.message.role === "assistant") {
 				const m = entry.message as AssistantMessage;
 				input += m.usage.input;
@@ -42,7 +45,7 @@ export class SessionTokenUsageCalculator implements TokenUsageCalculator {
 			currency = override;
 		} else {
 			const p = ctx.model?.provider ?? "";
-			if (p.toLowerCase().includes("deepseek")) currency = deepSeekBilledInCny() ? "\u00a5" : "$";
+			if (p.toLowerCase().includes("deepseek")) currency = billedInCny ? "\u00a5" : "$";
 		}
 
 		return { input, output, cacheRead, cacheWrite, total, hitRate, cost, currency };

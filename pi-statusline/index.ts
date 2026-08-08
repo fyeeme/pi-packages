@@ -27,7 +27,7 @@ import {
 	setCostCurrencyOverride,
 	getCostCurrencyOverride,
 } from "./cost.ts";
-import { refreshUsage, getCachedUsage, getUsageCacheAge } from "./cache.ts";
+import { refreshUsage, getCachedUsage, getUsageCacheAge, resetUsageCache } from "./cache.ts";
 import { formatCwd, buildStatLine, buildInfoLine } from "./footer.ts";
 
 // ---------------------------------------------------------------------------
@@ -79,21 +79,14 @@ export default function (pi: ExtensionAPI) {
 		if (elapsedMs <= 0) return;
 		lastElapsedSec += elapsedMs / 1000;
 
-		// Compute cumulative output tokens from all assistant messages in the session
-		let cumulativeOutput = 0;
-		if (lastCtx) {
-			for (const entry of lastCtx.sessionManager.getEntries()) {
-				if (entry.type === "message" && entry.message.role === "assistant") {
-					cumulativeOutput += (entry.message as AssistantMessage).usage.output;
-				}
-			}
-		} else {
-			// fallback: use current turn's messages when no session context
-			for (const m of event.messages) {
-				if (m.role === "assistant") cumulativeOutput += (m as AssistantMessage).usage.output;
-			}
+		// tok/s = 本次 agent run 的 output / 本次 run 耗时（即时速度）。用 event.messages
+		// 而非 sessionManager 遍历：不依赖 lastCtx/分支语义，不受 /fork 放弃分支的耗时
+		// 累计影响（分子分母同为本 run 口径），也避开 lastCtx 在 session 切换边界的 staleness。
+		let turnOutput = 0;
+		for (const m of event.messages) {
+			if (m.role === "assistant") turnOutput += (m as AssistantMessage).usage.output;
 		}
-		lastTps = cumulativeOutput > 0 ? cumulativeOutput / lastElapsedSec : 0;
+		lastTps = turnOutput > 0 ? turnOutput / (elapsedMs / 1000) : 0;
 
 		// Schedule background refresh to pick up new usage data
 		if (lastCtx && lastModel) {
@@ -132,8 +125,10 @@ export default function (pi: ExtensionAPI) {
 			const cacheAge = getUsageCacheAge();
 			w(`  cacheAge: ${cacheAge !== null ? `${Math.round(cacheAge / 1000)}s` : "N/A"}`);
 
+			// status-debug dumps the current branch (same scope tokenCalculator.compute
+			// uses via getBranch), so the msg count (idx) lines up with computed totals.
 			let idx = 0;
-			for (const entry of ctx.sessionManager.getEntries()) {
+			for (const entry of ctx.sessionManager.getBranch()) {
 				if (entry.type === "message" && entry.message.role === "assistant") {
 					const m = entry.message as AssistantMessage;
 					w(`--- msg[${idx}] ---`);
@@ -186,6 +181,12 @@ export default function (pi: ExtensionAPI) {
 			applyDeepSeekPricingPatch(lastCtx.modelRegistry);
 			void refreshUsage(providers, lastCtx.modelRegistry, event.model);
 		}
+	});
+
+	// ---- Session shutdown: drop usage cache so /resume into a different provider
+	// shows fresh data instead of the previous session's cached segment.
+	pi.on("session_shutdown", () => {
+		resetUsageCache();
 	});
 
 	// ---- Footer ----

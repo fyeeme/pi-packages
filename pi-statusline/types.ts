@@ -30,7 +30,7 @@ export type DeepSeekResult = {
 };
 
 export type ZaiResult = {
-	provider: "zai";
+	provider: "zai" | "zai-coding-cn";
 	tokensLimitPct: number;
 	tokensResetAt: number;
 	level: string;

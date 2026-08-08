@@ -27,10 +27,13 @@ function makeMessage(overrides: Partial<AssistantMessage["usage"]> = {}): Assist
 function makeCtx(
 	messages: Array<AssistantMessage>,
 	provider?: string,
+	branchMessages?: Array<AssistantMessage>,
 ): ExtensionContext {
 	return {
 		sessionManager: {
 			getEntries: () => messages.map((m) => ({ type: "message" as const, message: m })),
+			getBranch: () =>
+				(branchMessages ?? messages).map((m) => ({ type: "message" as const, message: m })),
 		},
 		model: { provider } as any,
 	} as unknown as ExtensionContext;
@@ -69,6 +72,24 @@ describe("SessionTokenUsageCalculator", () => {
 		expect(stats.cacheWrite).toBe(25);
 		expect(stats.total).toBe(450);
 		expect(stats.cost).toBe(0.03);
+	});
+
+	it("counts only the current branch (getBranch), excluding abandoned siblings", () => {
+		const calc = new SessionTokenUsageCalculator(() => undefined);
+		// Full tree holds two assistant messages, but the current branch keeps only one.
+		const ctx = makeCtx(
+			[
+				makeMessage({ input: 100, output: 50, totalTokens: 150 }),
+				makeMessage({ input: 200, output: 100, totalTokens: 300 }),
+			],
+			"openai",
+			[makeMessage({ input: 100, output: 50, totalTokens: 150 })],
+		);
+
+		const stats = calc.compute(ctx);
+		expect(stats.input).toBe(100);
+		expect(stats.output).toBe(50);
+		expect(stats.total).toBe(150);
 	});
 
 	it("computes cache hit rate", () => {

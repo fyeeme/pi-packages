@@ -5,7 +5,7 @@ import { fmt, formatCountdown, formatWeeklyCountdown } from "../footer.ts";
 import { startOfCurrentWeekLocal, startOfNextWeekLocal } from "../week.ts";
 
 /** Check if the provider name is a ZAI/GLM variant. */
-function isZaiProvider(provider: string): boolean {
+function isZaiProvider(provider: string): provider is "zai" | "zai-coding-cn" {
 	return provider === "zai" || provider === "zai-coding-cn";
 }
 
@@ -84,7 +84,7 @@ export class ZaiUsageProvider implements UsageProvider {
 			}
 
 			return {
-				provider: "zai",
+				provider: model.provider,
 				tokensLimitPct: fiveHourLimit?.percentage ?? 0,
 				tokensResetAt: fiveHourLimit?.nextResetTime ?? 0,
 				level,
@@ -99,7 +99,7 @@ export class ZaiUsageProvider implements UsageProvider {
 	}
 
 	formatForFooter(result: NonNullable<ProviderUsageResult>, _sessionCost: number, _currency: string): string {
-		if (result.provider !== "zai") return "";
+		if (!isZaiProvider(result.provider)) return "";
 		const zai = result as ZaiResult;
 		const parts: string[] = [];
 
@@ -121,7 +121,7 @@ export class ZaiUsageProvider implements UsageProvider {
 	}
 
 	debugDump(result: NonNullable<ProviderUsageResult>, w: (s: string) => void): void {
-		if (result.provider !== "zai") return;
+		if (!isZaiProvider(result.provider)) return;
 		const zai = result as ZaiResult;
 		w(`  tokensLimitPct: ${zai.tokensLimitPct}%`);
 		w(`  tokensResetAt: ${new Date(zai.tokensResetAt).toISOString()}`);
