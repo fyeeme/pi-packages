@@ -1,6 +1,6 @@
 {
   "name": "@fyeeme/pi-thinking-ui",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Faithful, terminal-native three-mode thinking visualization for Pi.",
   "type": "module",
   "license": "MIT",
@@ -28,10 +28,9 @@
   ],
   "files": [
     "index.ts",
-    "internal-patch.ts",
+    "markdown-render.ts",
     "parse.ts",
     "persistence.ts",
-    "render.ts",
     "state.ts",
     "types.ts",
     "README.md",
@@ -48,14 +47,14 @@
     "typecheck": "tsc"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.77.0",
-    "@earendil-works/pi-ai": ">=0.77.0",
-    "@earendil-works/pi-tui": ">=0.77.0"
+    "@earendil-works/pi-coding-agent": ">=0.84.1",
+    "@earendil-works/pi-ai": ">=0.84.1",
+    "@earendil-works/pi-tui": ">=0.84.1"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.77.0",
-    "@earendil-works/pi-ai": "0.77.0",
-    "@earendil-works/pi-tui": "0.77.0",
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-ai": "0.84.1",
+    "@earendil-works/pi-tui": "0.84.1",
     "@types/node": "22.19.19",
     "typescript": "5.9.3"
   }

@@ -51,12 +51,6 @@ export interface DerivedThinkingStep {
 	hasExplicitSuccess?: boolean;
 }
 
-export interface ActiveThinkingState {
-	messageTimestamp?: number;
-	contentIndex?: number;
-	active: boolean;
-}
-
 export interface ThinkingThemeLike {
 	fg(color: string, text: string): string;
 	bold(text: string): string;

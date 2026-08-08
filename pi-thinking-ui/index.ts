@@ -1,10 +1,15 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { Key } from "@earendil-works/pi-tui";
-import { retainThinkingUIPatch } from "./internal-patch.ts";
 import { clearThinkingUIModePreference, readThinkingUIModePreference, writeThinkingUIModePreference } from "./persistence.ts";
 import { parseThinkingMode } from "./parse.ts";
-import { clearActiveThinkingState, clearThinkingMessageOwnership, getCurrentThinkingScopeKey, getThinkingUIMode, nextThinkingRefreshLabel, recordThinkingMessageScope, registerThinkingPatchRelease, resolveThinkingMessageScope, setActiveThinkingState, setCurrentThinkingScopeKey, setThinkingUIMode, takeThinkingPatchRelease } from "./state.ts";
+import { streamingThinkingMarkdown, thinkingToMarkdown } from "./markdown-render.ts";
+import {
+	getThinkingUIMode,
+	nextThinkingRefreshLabel,
+	setCurrentThinkingScopeKey,
+	setThinkingUIMode,
+} from "./state.ts";
 import type { PersistedThinkingUIPreferenceScope, ThinkingUIMode } from "./types.ts";
 
 type ThinkingUICommandScope = "session" | PersistedThinkingUIPreferenceScope;
@@ -66,6 +71,14 @@ async function restoreMode(ctx: ExtensionContext): Promise<ThinkingUIMode> {
 	return globalMode ?? "collapsed";
 }
 
+/**
+ * Force every AssistantMessageComponent to re-run updateContent (and thus the
+ * markdown transformer) by toggling the hidden-thinking label through pi's
+ * ctx.ui proxy. `nextThinkingRefreshLabel` appends/toggles an invisible suffix
+ * so the label string changes on every call — without it, setHiddenThinkingLabel
+ * would no-op when the visible label is unchanged and the new mode would not
+ * take effect until the next natural re-render.
+ */
 function refreshThinkingUI(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return;
 	setCurrentThinkingScopeKey(ctx.cwd);
@@ -175,28 +188,25 @@ function reportPersistenceError(ctx: ExtensionContext, error: unknown): void {
 	notifyUser(ctx, `Thinking UI persistence error: ${error instanceof Error ? error.message : String(error)}`, "warning");
 }
 
-function reportPatchError(ctx: ExtensionContext, error: unknown): void {
-	notifyUser(ctx, `Thinking UI patch error: ${error instanceof Error ? error.message : String(error)}`, "warning");
-}
-
 export default function thinkingUIExtension(pi: ExtensionAPI): void {
-	let sessionScopeKey = getCurrentThinkingScopeKey();
-	const degradedSessionScopes = new Set<string>();
-	const setSessionScopeKey = (scopeKey: string): string => {
-		sessionScopeKey = scopeKey;
-		setCurrentThinkingScopeKey(scopeKey);
-		return sessionScopeKey;
-	};
-	const markSessionDegraded = (scopeKey: string, degraded: boolean): void => {
-		if (degraded) {
-			degradedSessionScopes.add(scopeKey);
-			return;
-		}
-		degradedSessionScopes.delete(scopeKey);
-	};
-	const isSessionDegraded = (scopeKey: string): boolean => degradedSessionScopes.has(scopeKey);
-	const degradedSessionMessage = (): string => "Thinking UI is using Pi's native thinking renderer for this session; live mode switching is disabled.";
-	const futureCompatibleSessionMessage = (scope: PersistedThinkingUIPreferenceScope, action: "saved" | "cleared"): string => `${action === "saved" ? "Saved" : "Cleared"} ${scope} thinking view default for future compatible sessions; the current session is using Pi's native thinking renderer.`;
+	// Render thinking via the provided markdown-transformer hook (no monkeypatch).
+	// The native Markdown renderer draws whatever we return, styled as thinking
+	// text. Re-runs on streaming, finalize, restore, resize, and whenever
+	// refreshThinkingUI toggles the hidden-thinking label (mode switch).
+	//
+	// Scope caveat: MarkdownTransformContext carries no message/scope identity, so
+	// the transformer resolves mode from the process-global currentScopeKey. The
+	// per-scope mode map still serves the command/shortcut handlers (which have
+	// ctx.cwd); only rendering is process-global. Fine while pi is single-session
+	// interactive; a host-side scope id would be needed to fix (out of scope here).
+	pi.registerMarkdownTransformer((markdown, context) => {
+		if (context.messageType !== "assistant-thinking") return markdown;
+		const mode = getThinkingUIMode();
+		// Heavy heuristic derivation only on finalize/restore/resize; during
+		// streaming (every chunk) stay cheap per pi's transformer contract.
+		if (context.isStreaming) return streamingThinkingMarkdown(markdown, mode);
+		return thinkingToMarkdown(markdown, mode);
+	});
 
 	pi.registerCommand("thinking-ui", {
 		description: "Switch thinking view or set/clear project/global defaults",
@@ -208,17 +218,11 @@ export default function thinkingUIExtension(pi: ExtensionAPI): void {
 				return;
 			}
 
-			const degraded = isSessionDegraded(ctx.cwd);
 			if (action.type === "clear") {
 				try {
 					await clearThinkingUIModePreference(action.scope, ctx.cwd);
 				} catch (error) {
 					reportPersistenceError(ctx, error);
-					return;
-				}
-
-				if (degraded) {
-					notifyUser(ctx, futureCompatibleSessionMessage(action.scope, "cleared"), "info");
 					return;
 				}
 
@@ -241,15 +245,6 @@ export default function thinkingUIExtension(pi: ExtensionAPI): void {
 				}
 			}
 
-			if (degraded) {
-				if (action.scope === "session") {
-					notifyUser(ctx, degradedSessionMessage(), "warning");
-					return;
-				}
-				notifyUser(ctx, futureCompatibleSessionMessage(action.scope, "saved"), "info");
-				return;
-			}
-
 			applyMode(pi, ctx, selectedMode, { announceScope: action.scope });
 		},
 	});
@@ -257,104 +252,21 @@ export default function thinkingUIExtension(pi: ExtensionAPI): void {
 	pi.registerShortcut(Key.alt("t"), {
 		description: "Cycle thinking view (collapsed, summary, expanded)",
 		handler: async (ctx) => {
-			if (isSessionDegraded(ctx.cwd)) {
-				notifyUser(ctx, degradedSessionMessage(), "warning");
-				return;
-			}
 			const nextMode = cycleMode(getThinkingUIMode(ctx.cwd));
 			applyMode(pi, ctx, nextMode, { announceScope: "session" });
 		},
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		const activeScopeKey = setSessionScopeKey(ctx.cwd);
-		clearActiveThinkingState(undefined, activeScopeKey);
-		try {
-			registerThinkingPatchRelease(activeScopeKey, await retainThinkingUIPatch());
-			markSessionDegraded(activeScopeKey, false);
-		} catch (error) {
-			markSessionDegraded(activeScopeKey, true);
-			reportPatchError(ctx, error);
-			notifyUser(ctx, degradedSessionMessage(), "warning");
-			return;
-		}
-
+		setCurrentThinkingScopeKey(ctx.cwd);
 		const restoredMode = await restoreMode(ctx);
 		applyMode(pi, ctx, restoredMode, { persistSession: false });
 	});
 
-	pi.on("message_start", async (event) => {
-		if (event.message.role === "assistant") {
-			recordThinkingMessageScope(event.message, sessionScopeKey);
-			const ownerScopeKey = resolveThinkingMessageScope(event.message, sessionScopeKey);
-			const timestamp = typeof (event.message as { timestamp?: unknown }).timestamp === "number"
-				? (event.message as { timestamp: number }).timestamp
-				: undefined;
-			clearActiveThinkingState(timestamp, ownerScopeKey);
-		}
-	});
-
-	pi.on("message_update", async (event) => {
-		if (event.message.role !== "assistant") return;
-		recordThinkingMessageScope(event.message, sessionScopeKey);
-		const ownerScopeKey = resolveThinkingMessageScope(event.message, sessionScopeKey);
-		const assistantEvent = event.assistantMessageEvent;
-		if (assistantEvent.type === "thinking_start" || assistantEvent.type === "thinking_delta") {
-			setActiveThinkingState({
-				active: true,
-				messageTimestamp: event.message.timestamp,
-				contentIndex: assistantEvent.contentIndex,
-			}, ownerScopeKey);
-			return;
-		}
-
-		if (
-			assistantEvent.type === "thinking_end" ||
-			assistantEvent.type === "text_start" ||
-			assistantEvent.type === "text_delta" ||
-			assistantEvent.type === "text_end" ||
-			assistantEvent.type === "toolcall_start" ||
-			assistantEvent.type === "toolcall_delta" ||
-			assistantEvent.type === "toolcall_end"
-		) {
-			clearActiveThinkingState(event.message.timestamp, ownerScopeKey);
-		}
-	});
-
-	pi.on("message_end", async (event) => {
-		if (event.message.role === "assistant") {
-			recordThinkingMessageScope(event.message, sessionScopeKey);
-			const ownerScopeKey = resolveThinkingMessageScope(event.message, sessionScopeKey);
-			const timestamp = typeof (event.message as { timestamp?: unknown }).timestamp === "number"
-				? (event.message as { timestamp: number }).timestamp
-				: undefined;
-			clearActiveThinkingState(timestamp, ownerScopeKey);
-		}
-	});
-
-	pi.on("agent_end", async () => {
-		clearActiveThinkingState(undefined, sessionScopeKey);
-	});
-
 	pi.on("session_shutdown", async (_event, ctx) => {
-		const activeScopeKey = setSessionScopeKey(ctx.cwd);
-		clearActiveThinkingState(undefined, activeScopeKey);
-		clearThinkingMessageOwnership(activeScopeKey);
-		markSessionDegraded(activeScopeKey, false);
+		setCurrentThinkingScopeKey(ctx.cwd);
 		if (ctx.hasUI) {
 			ctx.ui.setStatus("thinking-ui", undefined);
-		}
-
-		const releasePatch = takeThinkingPatchRelease(activeScopeKey);
-		if (!releasePatch) {
-			return;
-		}
-
-		try {
-			await releasePatch();
-		} catch (error) {
-			registerThinkingPatchRelease(activeScopeKey, releasePatch);
-			reportPatchError(ctx, error);
 		}
 	});
 }
