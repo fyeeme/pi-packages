@@ -7,11 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.1] - 2025-07-25
+## [1.0.2] - 2025-07-25
 
 ### Fixed
 
 - Race condition where auto-generated title could overwrite manual rename when `generateTitle` async call completes after user renamed the session
+
+## [1.0.1] - 2025-07-25
 
 ### Added
 

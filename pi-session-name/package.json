@@ -43,12 +43,12 @@
 		"typecheck": "tsc"
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-coding-agent": ">=0.80.0",
-		"@earendil-works/pi-ai": ">=0.80.0"
+		"@earendil-works/pi-coding-agent": ">=0.84.1",
+		"@earendil-works/pi-ai": ">=0.84.1"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-coding-agent": "0.80.10",
-		"@earendil-works/pi-ai": "0.80.10",
+		"@earendil-works/pi-coding-agent": "0.84.1",
+		"@earendil-works/pi-ai": "0.84.1",
 		"@types/node": "22.19.19",
 		"typescript": "5.9.3",
 		"vitest": "3.2.7"
