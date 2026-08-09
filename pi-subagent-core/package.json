@@ -1,8 +1,9 @@
 {
   "name": "@fyeeme/pi-subagent-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shared dispatch core for spawning pi subprocess agents: spawnAgent, mapWithConcurrencyLimit, createSpawnRegistry, abortAgent, getPiInvocation. Not a pi extension (no `pi` manifest) — a shared library used by pi-review and pi-dynamic-workflows.",
   "type": "module",
+  "main": "index.ts",
   "license": "MIT",
   "author": "fyeeme",
   "engines": {
@@ -17,7 +18,6 @@
   ],
   "files": [
     "*.ts",
-    "src/**/*.ts",
     "README.md",
     "LICENSE"
   ],
@@ -26,12 +26,10 @@
     "typecheck": "tsc"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.84.1",
-    "@earendil-works/pi-coding-agent": ">=0.84.1"
+    "@earendil-works/pi-ai": ">=0.84.1"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.84.1",
-    "@earendil-works/pi-coding-agent": "0.84.1",
     "@types/node": "22.19.19",
     "typescript": "5.9.3"
   }

@@ -33,6 +33,79 @@ export type AgentCallId = string;
 export type AgentAbortMap = Map<AgentCallId, AbortController>;
 
 // ---------------------------------------------------------------------------
+// Recursion guard (harden-code-simplify, Decision A3)
+// ---------------------------------------------------------------------------
+//
+// pi's subagent spawns fresh subprocesses whose depth is always 0 at spawn
+// time, so Claude Code's `depth >= MAX_SUBAGENT_SPAWN_DEPTH` guard (tracked
+// in-process) is semantically inert here. Instead we propagate three env vars
+// to each child and let the fan-out tool decide at load time whether to even
+// register itself:
+//
+//   PI_SUBAGENT_DEPTH             — this process's depth in the tree (0=top)
+//   PI_SUBAGENT_RECURSION_ALLOWED — "1" iff the spawner explicitly opted this
+//                                   child into recursion (passed the fan-out
+//                                   tool in its tool whitelist)
+//   PI_SUBAGENT_MAX_SPAWN_DEPTH   — optional hard cap; a child at/above it runs
+//                                   without the fan-out tool even if opted in
+//
+// Default (no opt-in): children cannot recurse — physically, the tool is not
+// registered. Opt-in (caller lists the fan-out tool) re-enables it, bounded by
+// the max cap. This is the faithful pi-analog of CC's spawn-depth guard,
+// simplified because no shipped command needs nested fan-out.
+
+/**
+ * Parse a strictly-positive integer from an env string. Returns null for
+ * missing, non-numeric, non-integer, or non-positive values so callers can
+ * fall back to a default. Used for depth, max-depth, and concurrency ceilings.
+ */
+export function parsePositiveInt(value: string | undefined): number | null {
+	if (value == null || value === "") return null;
+	const n = Number(value);
+	if (!Number.isInteger(n) || n <= 0) return null;
+	return n;
+}
+
+/**
+ * Depth of THIS process in the sub-agent tree. 0 (top-level) when unset; a
+ * child inherits `parent + 1` via the env var spawnAgent sets.
+ */
+export function currentSpawnDepth(env: NodeJS.ProcessEnv = process.env): number {
+	return parsePositiveInt(env.PI_SUBAGENT_DEPTH) ?? 0;
+}
+
+/**
+ * Whether the fan-out tool SHOULD be registered in THIS process. Pure — the
+ * policy core, unit-testable without spawning. Top-level always exposes it; a
+ * child exposes it only when its spawner opted in AND it is below the cap.
+ */
+export function isFanoutToolAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+	const depth = currentSpawnDepth(env);
+	if (depth === 0) return true;
+	if (env.PI_SUBAGENT_RECURSION_ALLOWED !== "1") return false;
+	const max = parsePositiveInt(env.PI_SUBAGENT_MAX_SPAWN_DEPTH);
+	return max == null ? true : depth < max;
+}
+
+/**
+ * Build the env block a spawned child receives. Increments depth, records
+ * whether this child may recurse, and propagates the inherited cap (if any).
+ */
+function childSpawnEnv(options: AgentSpawnOptions): NodeJS.ProcessEnv {
+	const childDepth = currentSpawnDepth() + 1;
+	const max =
+		options.maxSpawnDepth != null
+			? options.maxSpawnDepth
+			: parsePositiveInt(process.env.PI_SUBAGENT_MAX_SPAWN_DEPTH);
+	return {
+		...process.env,
+		PI_SUBAGENT_DEPTH: String(childDepth),
+		PI_SUBAGENT_RECURSION_ALLOWED: options.allowChildRecursion ? "1" : "0",
+		...(max != null ? { PI_SUBAGENT_MAX_SPAWN_DEPTH: String(max) } : {}),
+	};
+}
+
+// ---------------------------------------------------------------------------
 // Concurrency limiter (ported from examples/extensions/subagent)
 // ---------------------------------------------------------------------------
 
@@ -125,6 +198,14 @@ export interface AgentSpawnOptions {
 	readonly signal?: AbortSignal;
 	/** Max assistant turns. When reached, the subprocess is aborted (SIGTERM). Omit for unlimited. */
 	readonly maxTurns?: number;
+	/** When true, the spawned child is allowed to register the fan-out tool
+	 *  (explicit recursion opt-in — the caller listed it in the tool whitelist).
+	 *  When false/omitted, the child loads without the fan-out tool. */
+	readonly allowChildRecursion?: boolean;
+	/** Hard cap on the agent-tree depth. A child at or above this depth loads
+	 *  without the fan-out tool even if {@link allowChildRecursion} is set.
+	 *  Omit to inherit any cap from the PI_SUBAGENT_MAX_SPAWN_DEPTH env var. */
+	readonly maxSpawnDepth?: number;
 }
 
 export interface AgentSpawnResult {
@@ -234,6 +315,7 @@ export async function spawnAgent(
 				cwd: cwd ?? process.cwd(),
 				shell: false,
 				stdio: ["ignore", "pipe", "pipe"],
+				env: childSpawnEnv(options),
 			});
 			registry.processes.set(callId, proc);
 
@@ -368,6 +450,18 @@ async function writePromptToTempFile(callId: string, prompt: string): Promise<{ 
 	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-sa-agent-"));
 	const safeName = callId.replace(/[^\w.-]+/g, "_");
 	const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
-	await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
+	try {
+		await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
+	} catch (err) {
+		// writeFile may have created/partially-written the file (ENOSPC/EIO mid-write),
+		// so rmdir would ENOTEMPTY on the non-empty dir. Use recursive rm to clean both
+		// the dir and any partial file (which may carry sensitive systemPrompt content).
+		try {
+			await fs.promises.rm(tmpDir, { recursive: true, force: true });
+		} catch {
+			/* ignore */
+		}
+		throw err;
+	}
 	return { dir: tmpDir, filePath };
 }
