@@ -3,12 +3,53 @@ import * as fs from "node:fs";
 
 // Keep the real mapWithConcurrencyLimit/createSpawnRegistry; only mock spawnAgent.
 const { spawnAgentMock } = vi.hoisted(() => ({ spawnAgentMock: vi.fn() }));
-vi.mock("../src/agent/dispatch.ts", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../src/agent/dispatch.ts")>();
+vi.mock("@fyeeme/pi-subagent-core", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@fyeeme/pi-subagent-core")>();
 	return { ...actual, spawnAgent: spawnAgentMock };
 });
 
-import type { AgentSpawnResult } from "../src/agent/dispatch.ts";
+// Mock @earendil-works/pi-coding-agent: its dist pulls the @earendil-works/pi-ai/compat
+// subpath, which is unbuildable in this checkout (packages/ai model data requires the
+// models.dev network fetch that times out here). Same workaround review_report.test.ts
+// uses. `defineTool` is a pass-through; truncateHead/formatSize are faithful stubs so
+// the truncation + preview paths still behave for the existing tests.
+vi.mock("@earendil-works/pi-coding-agent", () => ({
+	defineTool: <T>(def: T): T => def,
+	DEFAULT_MAX_BYTES: 51_200,
+	DEFAULT_MAX_LINES: 2_000,
+	formatSize: (bytes: number): string => `${(bytes / 1024).toFixed(1)}KB`,
+	truncateHead: (
+		text: string,
+		{ maxBytes, maxLines }: { maxBytes: number; maxLines: number },
+	) => {
+		const lines = text.split("\n");
+		const totalLines = lines.length;
+		const totalBytes = Buffer.byteLength(text, "utf8");
+		const truncated = totalLines > maxLines || totalBytes > maxBytes;
+		if (!truncated)
+			return { content: text, truncated: false, outputLines: totalLines, totalLines, outputBytes: totalBytes, totalBytes };
+		const out: string[] = [];
+		let bytes = 0;
+		for (const ln of lines) {
+			if (out.length >= maxLines) break;
+			const add = (out.length ? 1 : 0) + Buffer.byteLength(ln, "utf8");
+			if (bytes + add > maxBytes) break;
+			out.push(ln);
+			bytes += add;
+		}
+		const content = out.join("\n");
+		return {
+			content,
+			truncated: true,
+			outputLines: out.length,
+			totalLines,
+			outputBytes: Buffer.byteLength(content, "utf8"),
+			totalBytes,
+		};
+	},
+}));
+
+import type { AgentSpawnResult } from "@fyeeme/pi-subagent-core";
 import { subagentTool } from "../src/tools/subagent.ts";
 
 function fakeResult(
@@ -135,5 +176,87 @@ describe("subagent tool", () => {
 		const transcript = fs.readFileSync(entry.transcriptFile!, "utf-8");
 		expect(transcript).toContain(huge);
 		expect(transcript).toContain("--- assistant ---");
+	});
+
+	// --- recursion-guard + cost-guard (harden-code-simplify) ---
+
+	it("default maxTurns applies when omitted", async () => {
+		spawnAgentMock.mockResolvedValue(fakeResult("ok"));
+		await subagentTool.execute("tm", { mode: "single", prompts: ["a"] }, undefined, undefined, fakeCtx);
+		const opts = spawnAgentMock.mock.calls[0]![1] as { maxTurns?: number };
+		expect(opts.maxTurns).toBe(25);
+	});
+
+	it("explicit maxTurns overrides the default (0 honored, not unset)", async () => {
+		spawnAgentMock.mockResolvedValue(fakeResult("ok"));
+		await subagentTool.execute(
+			"tz",
+			{ mode: "single", prompts: ["a"], maxTurns: 0 },
+			undefined,
+			undefined,
+			fakeCtx,
+		);
+		const opts = spawnAgentMock.mock.calls[0]![1] as { maxTurns?: number };
+		expect(opts.maxTurns).toBe(0);
+	});
+
+	it("allowChildRecursion is false when the fan-out tool is not in the whitelist", async () => {
+		spawnAgentMock.mockResolvedValue(fakeResult("ok"));
+		await subagentTool.execute(
+			"tr",
+			{ mode: "single", prompts: ["a"], tools: ["read", "bash"] },
+			undefined,
+			undefined,
+			fakeCtx,
+		);
+		const opts = spawnAgentMock.mock.calls[0]![1] as { allowChildRecursion?: boolean };
+		expect(opts.allowChildRecursion).toBe(false);
+	});
+
+	it("allowChildRecursion is true when the fan-out tool is explicitly whitelisted", async () => {
+		spawnAgentMock.mockResolvedValue(fakeResult("ok"));
+		await subagentTool.execute(
+			"tr2",
+			{ mode: "single", prompts: ["a"], tools: ["read", "subagent"] },
+			undefined,
+			undefined,
+			fakeCtx,
+		);
+		const opts = spawnAgentMock.mock.calls[0]![1] as { allowChildRecursion?: boolean };
+		expect(opts.allowChildRecursion).toBe(true);
+	});
+
+	it("PI_MAX_CONCURRENT_SUBAGENTS caps concurrent in-flight agents", async () => {
+		const prev = process.env.PI_MAX_CONCURRENT_SUBAGENTS;
+		process.env.PI_MAX_CONCURRENT_SUBAGENTS = "2";
+		try {
+		// Each spawn resolves on the next microtask; track real concurrency.
+		let inFlight = 0;
+		let maxInFlight = 0;
+		spawnAgentMock.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					inFlight++;
+					maxInFlight = Math.max(maxInFlight, inFlight);
+					queueMicrotask(() => {
+						inFlight--;
+						resolve(fakeResult("ok"));
+					});
+				}),
+		);
+		await subagentTool.execute(
+			"tc",
+			{ mode: "parallel", prompts: ["a", "b", "c", "d", "e"] },
+			undefined,
+			undefined,
+			fakeCtx,
+		);
+		expect(spawnAgentMock).toHaveBeenCalledTimes(5);
+		expect(maxInFlight).toBeLessThanOrEqual(2); // the cap invariant
+		expect(maxInFlight).toBe(2); // 5 prompts + cap 2 ⇒ parallelism actually used
+		} finally {
+			if (prev === undefined) delete process.env.PI_MAX_CONCURRENT_SUBAGENTS;
+			else process.env.PI_MAX_CONCURRENT_SUBAGENTS = prev;
+		}
 	});
 });

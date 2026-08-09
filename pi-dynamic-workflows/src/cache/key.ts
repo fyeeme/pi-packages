@@ -1,5 +1,5 @@
 /**
- * Cache key for agent invocations — the pi port of Claude Code's `Hid` + `tA_`.
+ * Cache key for agent invocations — the pi port of Claude Code.s workflow cache-key
  *
  * A workflow run that is re-executed (resume after a script edit, or a second
  * identical run) should NOT pay to re-dispatch agents whose (prompt,
@@ -8,7 +8,7 @@
  * signature (model/tools/systemPrompt). runId is deliberately excluded —
  * resume changes the runId but must still hit the cache.
  *
- * Normalization (CC's `tA_`): drop functions, sort object keys, so the same
+ * Normalization (CC.s signature normalizer): drop functions, sort object keys, so the same
  * logical signature produces the same JSON regardless of field declaration
  * order or attached closures. sha256 makes the key opaque and fixed-length.
  */
@@ -30,7 +30,7 @@ export interface AgentCacheSignature {
  * Serialize a signature to a stable canonical form: object keys sorted, no
  * functions, arrays in order. Same signature → identical string.
  *
- * Picks only the known data fields (model/tools/systemPrompt) — CC's `tA_`
+ * Picks only the known data fields (model/tools/systemPrompt) — CC.s signature normalizer
  * pattern. A caller may pass a wider object (e.g. an AgentCallSpec that also
  * carries a `prompt` function); picking avoids both hashing the prompt
  * (which is a separate cache-key dimension) and tripping the function-guard
@@ -76,13 +76,22 @@ export interface CacheKeyInput {
 	readonly signature?: AgentCacheSignature;
 }
 
-/** Compute the deterministic cache key for one agent call. */
+/** Cache-key namespace prefix. Bump it (wf3 → wf4 → …) whenever the key
+ *  derivation OR the engine's prompt-affecting behavior changes — old journal
+ *  entries then cleanly miss instead of being replayed as stale results (the
+ *  entries stay on disk but are never looked up). Derivation history:
+ *  `wf:` — initial; `wf2:` — B1+B2 base system prompt joined into the key;
+ *  `wf3:` — JSON-tuple encoding; `wf4:` — current revision. */
+export const CACHE_KEY_PREFIX = "wf4";
+
+/** Compute the deterministic cache key for one agent call.
+ *  The tuple is JSON-encoded so field boundaries are unambiguous: a `\x00`
+ *  (or any char) inside workflowName/prompt cannot shift the parse and collide
+ *  with another (name, prompt) pair. Production paths sanitize these inputs,
+ *  but this is a self-defending public function. */
 export function computeCacheKey(input: CacheKeyInput): CacheKey {
 	const hash = createHash("sha256");
-	hash.update(input.workflowName);
-	hash.update("\x00");
-	hash.update(input.prompt);
-	hash.update("\x00");
-	hash.update(normalizeSignature(input.signature));
-	return `wf:${hash.digest("hex")}`;
+	const blob = JSON.stringify([input.workflowName, input.prompt, normalizeSignature(input.signature)]);
+	hash.update(blob);
+	return `${CACHE_KEY_PREFIX}:${hash.digest("hex")}`;
 }

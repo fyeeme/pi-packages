@@ -2,14 +2,19 @@
  * Budget pool — CC's `budget.{total, spent(), remaining()}` re-expressed for pi.
  *
  * A static `Budget` (types.ts) describes caps; a `BudgetPool` is the live,
- * queryable tracker the runtime mutates as agents settle. fanOut consults
- * `remaining()` before each batch to scale concurrency to what the budget
- * allows (CC's `while (budget.remaining() > N)` pattern, here as the pure
- * `scaleBatchByBudget`).
+ * queryable tracker the runtime mutates as agents settle. Caps are enforced
+ * as SPAWN-GATE SOFT LIMITS: the runtime checks `isExhausted()` before
+ * committing each new spawn (guardSpawn/guardBatch) and stops spawning when
+ * exhausted — an in-flight agent is allowed to complete and may push spend
+ * past the cap. fan_out concurrency is the step's static `parallelism`; the
+ * budget does not dynamically resize it.
  *
- * Determinism: the pool never reads Date.now() — `now` is passed into
- * remaining/isExhausted/canSpawn by the caller (run inception timestamp +
- * elapsed), consistent with the Task 3 sandbox.
+ * Determinism: identity (runId, journal timestamps, cache keys) never reads
+ * Date.now() — `now` is the run inception timestamp. The DURATION dimension,
+ * however, is wall-clock and the engine reads Date.now() at the guard points
+ * (guardSpawn/guardBatch) to enforce maxDurationMs; engine code is not
+ * AST-guarded. Token/agent dimensions are passed `now` but don't depend on
+ * it (elapsed only matters for duration).
  *
  * Scope: per-run (one pool per workflow execution), not global.
  *
@@ -22,7 +27,7 @@
  * after-the-fact track + isExhausted check on the next guard.
  */
 import type { Budget } from "../types.ts";
-import { BudgetExceededError, MAX_BATCH } from "./caps.ts";
+import { BudgetExceededError } from "./caps.ts";
 
 export interface BudgetRemaining {
 	/** Tokens left before maxTokens is hit. Infinity if uncapped. */
@@ -110,29 +115,4 @@ export class BudgetPool {
 	canSpawn(n: number, now: number): boolean {
 		return this.remaining(now).agents >= n;
 	}
-}
-
-/**
- * Scale a desired fan-out batch to what the budget allows.
- *
- * Pure-function form of CC's `while (budget.remaining() > N) agent()`: given a
- * desired batch, per-agent token cost, and current pool state, return how many
- * can actually run without busting tokens OR agents, hard-capped at MAX_BATCH.
- */
-export function scaleBatchByBudget(
-	desired: number,
-	pool: BudgetPool,
-	perAgentTokens: number,
-	now: number,
-): number {
-	if (desired <= 0) return 0;
-	const capped = Math.min(desired, MAX_BATCH);
-	const r = pool.remaining(now);
-	const tokenAffordable =
-		perAgentTokens <= 0 || r.tokens === Number.POSITIVE_INFINITY
-			? capped
-			: Math.min(capped, Math.floor(r.tokens / perAgentTokens));
-	const agentAffordable =
-		r.agents === Number.POSITIVE_INFINITY ? capped : Math.min(capped, r.agents);
-	return Math.max(0, Math.min(tokenAffordable, agentAffordable));
 }

@@ -5,4 +5,4 @@ export {
 	assertBatchSize,
 	assertLifetimeAgents,
 } from "./caps.ts";
-export { BudgetPool, scaleBatchByBudget, type BudgetRemaining } from "./pool.ts";
+export { BudgetPool, type BudgetRemaining } from "./pool.ts";

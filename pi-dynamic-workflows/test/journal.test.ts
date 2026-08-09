@@ -98,4 +98,25 @@ describe("Journal — robustness", () => {
 		const j = new Journal({ dir });
 		expect(j.file).toBe(path.join(dir, "journal.jsonl"));
 	});
+
+	it("a failed append does not poison the chain (writes stay best-effort, error recorded) [D8]", async () => {
+		// Source-tagged P0: without the `.catch` on the append chain, a single disk
+		// failure (ENOSPC/EACCES/EIO) rejects the chain forever and every later
+		// append becomes a permanent silent no-op.
+		const j = new Journal({ dir });
+		await j.append({ type: "result", key: "k1", at: 1, ok: true, value: "v1" });
+		expect(j.writeError).toBeUndefined();
+
+		// Make the journal file read-only so subsequent appends fail with EACCES.
+		const file = path.join(dir, "journal.jsonl");
+		fs.chmodSync(file, 0o444);
+		try {
+			// These resolve (caught on the chain) rather than throwing...
+			await j.append({ type: "result", key: "k2", at: 2, ok: true, value: "v2" });
+			await j.append({ type: "result", key: "k3", at: 3, ok: true, value: "v3" });
+			expect(j.writeError).toBeTruthy(); // ...and the failure is recorded.
+		} finally {
+			fs.chmodSync(file, 0o644); // restore so afterEach can rmSync the dir
+		}
+	});
 });

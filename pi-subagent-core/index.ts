@@ -93,10 +93,10 @@ export function isFanoutToolAllowed(env: NodeJS.ProcessEnv = process.env): boole
  */
 function childSpawnEnv(options: AgentSpawnOptions): NodeJS.ProcessEnv {
 	const childDepth = currentSpawnDepth() + 1;
-	const max =
-		options.maxSpawnDepth != null
-			? options.maxSpawnDepth
-			: parsePositiveInt(process.env.PI_SUBAGENT_MAX_SPAWN_DEPTH);
+	// Parse the option through parsePositiveInt so 0/negative/non-numeric values
+	// fall back to the inherited env (or unset) instead of propagating a "0" that
+	// the child would read as "no cap" — the directionally-dangerous reading.
+	const max = parsePositiveInt(options.maxSpawnDepth != null ? String(options.maxSpawnDepth) : process.env.PI_SUBAGENT_MAX_SPAWN_DEPTH);
 	return {
 		...process.env,
 		PI_SUBAGENT_DEPTH: String(childDepth),
@@ -113,6 +113,10 @@ function childSpawnEnv(options: AgentSpawnOptions): NodeJS.ProcessEnv {
  * Run `fn` over `items` with at most `concurrency` in flight, preserving
  * input order in the output array. parallel mode builds on this.
  */
+/**
+ * Run `fn` over `items` with at most `concurrency` in flight, preserving
+ * input order in the output array. parallel mode builds on this.
+ */
 export async function mapWithConcurrencyLimit<TIn, TOut>(
 	items: TIn[],
 	concurrency: number,
@@ -124,7 +128,9 @@ export async function mapWithConcurrencyLimit<TIn, TOut>(
 	let nextIndex = 0;
 	// Stop dispatching NEW items once any worker has errored, so a rejection
 	// doesn't leave sibling workers pulling more items and spawning unawaited
-	// subprocesses. In-flight calls finish; the failing worker rethrows.
+	// subprocesses. In-flight calls are AWAITED before rethrowing — a failure
+	// never leaves spawned subprocesses running in the background after the
+	// caller observes the rejection (the `failed` flag only blocks new dispatch).
 	let failed = false;
 	const workers = new Array(limit).fill(null).map(async () => {
 		while (!failed) {
@@ -138,7 +144,14 @@ export async function mapWithConcurrencyLimit<TIn, TOut>(
 			}
 		}
 	});
-	await Promise.all(workers);
+	// Await every worker (including in-flight ones) before rethrowing, so an
+	// error from one item cannot orphan already-spawned subprocesses that keep
+	// running after the caller sees the rejection. The lowest-index worker's
+	// rejection wins (Promise.allSettled preserves input order) — deterministic,
+	// though not necessarily the earliest failure in time.
+	const settled = await Promise.allSettled(workers);
+	const firstRejection = settled.find((s): s is PromiseRejectedResult => s.status === "rejected");
+	if (firstRejection) throw firstRejection.reason;
 	return results;
 }
 
@@ -206,6 +219,11 @@ export interface AgentSpawnOptions {
 	 *  without the fan-out tool even if {@link allowChildRecursion} is set.
 	 *  Omit to inherit any cap from the PI_SUBAGENT_MAX_SPAWN_DEPTH env var. */
 	readonly maxSpawnDepth?: number;
+	/** Optional callback for streamed assistant text. Invoked once per
+	 *  `message_update` event with the delta chunk (partial text since the last
+	 *  event). Omit to keep the current behavior of discarding intermediate
+	 *  events; final `message_end` results are always collected regardless. */
+	readonly onUpdate?: (delta: string) => void;
 }
 
 export interface AgentSpawnResult {
@@ -217,10 +235,13 @@ export interface AgentSpawnResult {
 	model?: string;
 	stopReason?: string;
 	errorMessage?: string;
-	/** True if aborted (external cancel or per-call abort). exitCode may be null/non-zero. */
+	/** True if aborted (external cancel, per-call abort, or maxTurns budget hit —
+	 *  the maxTurns path sets `aborted` too via the per-call controller; use
+	 *  {@link maxTurnsReached} to distinguish the two). exitCode may be null/non-zero. */
 	aborted: boolean;
-	/** True if killed because the caller's maxTurns budget was reached. Distinct
-	 *  from `aborted` (external cancel): the agent did useful bounded work. */
+	/** True if killed because the caller's maxTurns budget was reached. NOT
+	 *  mutually exclusive with `aborted` — the maxTurns path aborts the call, so
+	 *  both flags are true for a budget-stopped agent. */
 	maxTurnsReached: boolean;
 }
 
@@ -360,6 +381,26 @@ export async function spawnAgent(
 
 				if (event.type === "tool_result_end" && event.message) {
 					result.messages.push(event.message);
+				}
+
+				if (event.type === "message_update" && options.onUpdate) {
+					// The JSON stream emits message_update as
+					// { type: "message_update", assistantMessageEvent: { type: "text_delta", delta } }
+					// (the cumulative `partial` is stripped by toJsonEvent). Forward only the
+				// visible assistant text delta; thinking_delta is internal reasoning.
+					const e = (event as { assistantMessageEvent?: { type?: string; delta?: unknown } }).assistantMessageEvent;
+					if (e && e.type === "text_delta" && typeof e.delta === "string" && e.delta) {
+						// The consumer callback must not be able to break event parsing: a
+						// throwing onUpdate inside the stdout data handler would crash the
+						// host process, and one thrown from the close-path processLine call
+						// would skip resolve() and leave the spawnAgent promise unsettled
+						// (plus a leaked registry entry). Swallow callback errors.
+						try {
+							options.onUpdate(e.delta);
+						} catch {
+							/* ignore consumer callback errors */
+						}
+					}
 				}
 			};
 

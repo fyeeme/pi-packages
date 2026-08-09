@@ -1,6 +1,6 @@
 {
   "name": "@fyeeme/pi-review",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Review & cleanup extension for pi. Registers /code-review and /code-simplify commands plus a general-purpose `subagent` tool that spawns parallel pi subprocesses — providing the real fan-out capability the code-review and simplify skills (bundled under `skills/`) need for their multi-agent flows. The /code-simplify handler uses ctx.getContextUsage() to decide parallel vs single-pass mode deterministically.",
   "type": "module",
   "license": "MIT",
@@ -34,16 +34,21 @@
     "test": "vitest --run",
     "typecheck": "tsc"
   },
+  "dependencies": {
+    "@fyeeme/pi-subagent-core": "^0.3.2"
+  },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.77.0",
-    "@earendil-works/pi-coding-agent": ">=0.77.0",
+    "@earendil-works/pi-ai": ">=0.84.1",
+    "@earendil-works/pi-coding-agent": ">=0.84.1",
+    "@earendil-works/pi-tui": ">=0.84.1",
     "jiti": ">=2.0.0",
     "typebox": ">=1.0.0",
     "typescript": ">=5.0.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.77.0",
-    "@earendil-works/pi-coding-agent": "0.77.0",
+    "@earendil-works/pi-ai": "0.84.1",
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-tui": "0.84.1",
     "@types/node": "22.19.19",
     "jiti": "2.7.0",
     "typebox": "1.1.38",

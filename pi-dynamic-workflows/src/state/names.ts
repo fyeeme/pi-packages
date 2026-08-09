@@ -31,15 +31,3 @@ export function generateRunId(input: RunIdInput): string {
 	const seq = input.sequence.toString(36).padStart(4, "0");
 	return `run-${ts}-${seq}`;
 }
-
-/**
- * Extract the timestamp a run was created from its id (inverse of the ts slot).
- * Used by resume to reconstruct the original inception time without storing
- * it separately. Returns undefined if the id is malformed.
- */
-export function runIdTimestamp(runId: string): number | undefined {
-	const match = /^run-([0-9a-z]+)-/.exec(runId);
-	if (!match) return undefined;
-	const parsed = Number.parseInt(match[1]!, 36);
-	return Number.isNaN(parsed) ? undefined : parsed;
-}

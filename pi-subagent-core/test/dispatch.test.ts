@@ -78,6 +78,33 @@ describe("mapWithConcurrencyLimit", () => {
 		expect(seen).not.toContain(4);
 		expect(seen).not.toContain(5);
 	});
+
+	it("awaits in-flight workers before rethrowing (no orphan subprocesses)", async () => {
+		// Worker A parks on item 0 (in-flight); worker B fails on item 1
+		// immediately, setting `failed`. The limiter must NOT rethrow until A
+		// settles — otherwise a spawned subprocess could outlive the rejection.
+		let releaseA: () => void = () => {};
+		const gate = new Promise<void>((r) => (releaseA = r));
+		let rejected = false;
+		const p = mapWithConcurrencyLimit([0, 1], 2, async (n) => {
+			if (n === 0) {
+				await gate;
+				return "a";
+			}
+			throw new Error("boom");
+		}).then(
+			() => "resolved",
+			() => {
+				rejected = true;
+				return "rejected";
+			},
+		);
+		// B has thrown by now; a fast-reject impl would have set `rejected` here.
+		await new Promise((r) => setTimeout(r, 5));
+		expect(rejected).toBe(false);
+		releaseA(); // let the in-flight item 0 finish
+		expect(await p).toBe("rejected");
+	});
 });
 
 describe("getPiInvocation", () => {
@@ -104,6 +131,38 @@ describe("spawnAgent", () => {
 		const r = await p;
 		expect(r.exitCode).toBe(0);
 		expect(r.messages).toHaveLength(2);
+	});
+
+	it("forwards message_update deltas via onUpdate and still collects message_end", async () => {
+		const proc = fakeProc();
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const deltas: string[] = [];
+		const p = spawnAgent(registry, { callId: "c5", task: "hi", onUpdate: (d) => deltas.push(d) });
+	const deltaMsg = (text: string): string => JSON.stringify({
+			type: "message_update",
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: text },
+		});
+		proc.stdout!.emit("data", Buffer.from(`${deltaMsg("Hel")}\n`));
+		proc.stdout!.emit("data", Buffer.from(`${deltaMsg("lo, w")}\n`));
+		proc.stdout!.emit("data", Buffer.from(`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: "Hello, world" } })}\n`));
+		proc.emit("close", 0);
+		const r = await p;
+		expect(deltas).toEqual(["Hel", "lo, w"]);
+		expect(r.messages).toHaveLength(1); // message_end still collected
+	});
+
+	it("discards message_update deltas when no onUpdate is provided", async () => {
+		const proc = fakeProc();
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const p = spawnAgent(registry, { callId: "c6", task: "hi" });
+		proc.stdout!.emit("data", Buffer.from(`${JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "ignored" } })}\n`));
+		proc.stdout!.emit("data", Buffer.from(`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: "final" } })}\n`));
+		proc.emit("close", 0);
+		const r = await p;
+		expect(r.messages).toHaveLength(1);
+		expect(r.messages[0]?.content).toBe("final");
 	});
 
 	it("aborts via the registry → SIGTERM on the one process, SIGKILL after 5s", async () => {

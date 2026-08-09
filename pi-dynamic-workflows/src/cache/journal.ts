@@ -1,5 +1,5 @@
 /**
- * Per-run journal of agent call results — the pi port of CC's `ews` class.
+ * Per-run journal of agent call results — the pi port of CC.s LocalFileJournal.
  *
  * One JSONL file per run (<dir>/journal.jsonl). Each line is either a
  * `started` marker (an agent dispatched) or a `result` (an agent settled with
@@ -23,21 +23,23 @@ export type JournalEntry<T = unknown> =
 	| { readonly type: "started"; readonly key: CacheKey; readonly at: number }
 	| { readonly type: "result"; readonly key: CacheKey; readonly at: number; readonly ok: boolean; readonly value: T };
 
-/** Staged-resume manifest: records all cache keys from the last completed run
- *  so the next run can predict cache-hit vs re-dispatch before starting. */
+/** Staged-resume manifest: identifies the last completed run. Only `runId` is
+ *  consumed downstream (resume.previousRunId); cache-hit accounting is observed
+ *  live during the run, so no key list is persisted here. */
 export interface RunManifest {
 	/** Run ID that produced this manifest. */
 	readonly runId: string;
 	/** Inception timestamp. */
 	readonly at: number;
-	/** Ordered list of cache keys from the last run. */
-	readonly keys: readonly CacheKey[];
 }
 
 export interface JournalOptions {
 	/** Directory holding journal.jsonl (typically <cwd>/.pi/workflows/runs/<runId>). */
 	readonly dir: string;
 }
+
+/** Monotonic counter for unique manifest temp-file names (crash-safe atomic writes). */
+let manifestSeq = 0;
 
 export class Journal {
 	private readonly filePath: string;
@@ -125,33 +127,55 @@ export class Journal {
 	}
 
 	/** Write the staged-resume manifest for the next run to consume.
-	 *  Call after the run completes successfully. */
+	 *  Call after the run completes successfully. Written atomically
+	 *  (write-temp + rename) so a crash between truncate and write can never
+	 *  leave a 0-byte / truncated manifest that would crash future runs. */
 	async writeManifest(manifest: RunManifest): Promise<void> {
-		const manifestPath = path.join(path.dirname(this.filePath), "manifest.json");
-		await fs.promises.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
+		const dir = path.dirname(this.filePath);
+		const manifestPath = path.join(dir, "manifest.json");
+		const tmp = path.join(dir, `.manifest.${process.pid}.${manifestSeq++}.tmp`);
+		// Sweep stale tmp files from crashed prior writes BEFORE writing ours — a
+		// post-write sweep would match (and delete) the file we are about to
+		// rename from.
+		await this.sweepStaleTmp(dir);
+		await fs.promises.writeFile(tmp, JSON.stringify(manifest, null, 2), "utf-8");
+		await fs.promises.rename(tmp, manifestPath);
 	}
 
-	/** Load the staged-resume manifest from the last completed run, if present. */
+	private async sweepStaleTmp(dir: string): Promise<void> {
+		try {
+			const entries = await fs.promises.readdir(dir);
+			await Promise.all(
+				entries
+					.filter((e) => e.startsWith(".manifest.") && e.endsWith(".tmp"))
+					.map((e) => fs.promises.unlink(path.join(dir, e)).catch(() => {})),
+			);
+		} catch {
+			/* best-effort */
+		}
+	}
+
+	/** Load the staged-resume manifest from the last completed run, if present.
+	 *  Best-effort and crash-resilient: a missing file is the normal
+	 *  pre-first-run state; a corrupt/truncated file (e.g. after a crash
+	 *  mid-write) is treated as "no manifest" with a warning — it MUST never
+	 *  crash the run. The next successful run overwrites it. */
 	async loadManifest(): Promise<RunManifest | undefined> {
 		const manifestPath = path.join(path.dirname(this.filePath), "manifest.json");
+		let raw: string;
 		try {
-			const raw = await fs.promises.readFile(manifestPath, "utf-8");
-			return JSON.parse(raw) as RunManifest;
+			raw = await fs.promises.readFile(manifestPath, "utf-8");
 		} catch (e) {
-			if (!isENOENT(e)) throw e;
+			if (isENOENT(e)) return undefined; // normal pre-first-run state
+			console.warn(`[pi-dynamic-workflows] manifest read failed, ignoring: ${(e as Error).message}`);
 			return undefined;
 		}
-	}
-
-	/** Compare a manifest against the current journal: how many of its keys
-	 *  would be cache-hits on a re-run. Returns {hits, total}. */
-	stagedHits(manifest: RunManifest): { hits: number; total: number } {
-		let hits = 0;
-		for (const key of manifest.keys) {
-			const entry = this.lookup(key);
-			if (entry?.type === "result" && entry.ok) hits++;
+		try {
+			return JSON.parse(raw) as RunManifest;
+		} catch (e) {
+			console.warn(`[pi-dynamic-workflows] manifest is corrupt, ignoring: ${(e as Error).message}`);
+			return undefined;
 		}
-		return { hits, total: manifest.keys.length };
 	}
 }
 

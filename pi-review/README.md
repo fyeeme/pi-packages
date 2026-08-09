@@ -29,6 +29,9 @@ From the package dir:
 npm install
 ```
 
+This resolves [`@fyeeme/pi-subagent-core`](https://www.npmjs.com/package/@fyeeme/pi-subagent-core)
+(`^0.3.0`, from the npm registry — no sibling-repo layout requirement).
+
 Then point pi at it (e.g. via your extensions config), or symlink into your pi
 extensions directory.
 
@@ -63,6 +66,17 @@ This is the deterministic mode selection a pure-prompt skill cannot reproduce
 `ctx.getContextUsage()`). The decision is announced in the trigger message so
 it is observable.
 
+**Apply → verify → revert safety net** (harden-code-simplify): after Phase 2
+applies the cleanups, the handler also injects a verification command detected
+from `package.json` scripts (`check` → `test` → `lint` → `typecheck`). The
+skill snapshots the touched files, applies the fixes, runs that command, and
+on failure auto-reverts per-file (a clean apply runs verify exactly once; only
+a failure escalates to one verify per touched file). The result is reported as
+structured outcomes via `review_report` (`level: "simplify"`), not a free-text
+summary. If no verification command is detectable, fixes are kept but the
+report states no verification was run (verification is opportunistic, never
+blocking).
+
 ### `subagent` tool
 
 An LLM-callable tool that spawns one or more real pi subprocesses:
@@ -70,8 +84,19 @@ An LLM-callable tool that spawns one or more real pi subprocesses:
 | mode | behavior |
 |---|---|
 | `single` | run `prompts[0]` once (e.g. an independent verify agent) |
-| `parallel` | run all prompts concurrently, capped at 8 (e.g. one finder per angle) |
+| `parallel` | run all prompts concurrently, capped at the ceiling (e.g. one finder per angle) |
 | `chain` | run sequentially; each later prompt receives prior output |
+
+**Fan-out guards** (harden-code-simplify, shared with `/code-review`):
+
+- **Recursion cap (whitelist-by-default)** — a spawned sub-agent does not
+  receive the `subagent` tool in its default toolset, so it cannot recurse. A
+  caller opts in by listing `subagent` in the child's `tools` whitelist; set
+  `PI_SUBAGENT_MAX_SPAWN_DEPTH` to allow multi-level fan-out up to a hard cap.
+- **Default turn budget** — fan-out agents get a finite default `maxTurns` (25)
+  when the caller omits it; an explicit `0` is honored.
+- **Configurable concurrency** — `PI_MAX_CONCURRENT_SUBAGENTS` (default 8;
+  invalid values fall back to the default).
 
 Each sub-agent is a full `pi --mode json -p --no-session` run. Progress streams
 to the TUI via `onUpdate` as each agent completes. ESC aborts the whole batch
@@ -85,8 +110,6 @@ pi-review/
 ├── index.ts                     factory: registerTool(subagent) + 2 commands
 ├── skills/                      bundled SKILL.md files (code-review, simplify)
 ├── src/
-│   ├── agent/dispatch.ts        spawnAgent + mapWithConcurrencyLimit (self-contained copy
-│   │                            from pi-dynamic-workflows; no external dep beyond node + pi-ai)
 │   ├── skills.ts                bundledSkillPath — resolve this extension's own skills/ dir
 │   ├── tools/subagent.ts        defineTool("subagent") — generic capability layer
 │   └── commands/
@@ -96,15 +119,18 @@ pi-review/
 ```
 
 The layout is deliberately layered: `src/tools/` is the **generic capability
-layer** (subagent tool + dispatch), `src/commands/` is the **entry layer** (one
+layer** (subagent tool), `src/commands/` is the **entry layer** (one
 file per skill). If a third or fourth skill needs the subagent tool, `src/tools/`
 can be split into its own `pi-subagent` extension with zero refactor — the code
 is already separated.
 
-`src/agent/dispatch.ts` is a self-contained copy of the spawn pattern from
-`examples/extensions/subagent` and `pi-dynamic-workflows/src/agent/dispatch.ts`
-(~150 lines). When pi promotes `spawnAgent` to a public `pi-coding-agent`
-export, this file should be deleted in favor of that import.
+The dispatch primitive (`spawnAgent`, `mapWithConcurrencyLimit`,
+`createSpawnRegistry`, `abortAgent`, `getPiInvocation` + types) lives in
+[`pi-subagent-core`](../pi-subagent-core) (npm `@fyeeme/pi-subagent-core`), a
+shared library extracted from the duplicated copies that used to live here and
+in `pi-dynamic-workflows`. When pi promotes `spawnAgent` to a public
+`pi-coding-agent` export, `pi-subagent-core` should be deleted in favor of that
+import.
 
 ## Relation to the skills
 

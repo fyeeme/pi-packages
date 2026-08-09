@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-09
+
+### Fixed
+
+- `maxSpawnDepth` 选项改走 `parsePositiveInt` 校验：0/负值/非数字不再透传（此前 `maxSpawnDepth: 0` 会以字符串 `"0"` 进子进程 env，被解读为「无上限」——方向性危险），非法值回退继承 `PI_SUBAGENT_MAX_SPAWN_DEPTH`。
+- 注释/文档修正（review L 系列）：`mapWithConcurrencyLimit`「first rejection wins」实为「最低索引 worker 的 rejection 胜出」；`AgentSpawnResult.maxTurnsReached` 与 `aborted` 并非互斥（maxTurns 路径两者同为 true）。
+
+## [0.3.1] - 2026-08-09
+
+### Fixed
+
+- `onUpdate` 回调错误隔离（review L3）：回调抛错不再影响事件解析——stdout `data` 路径不崩宿主进程，`close` 路径的尾行处理不跳过 `resolve`（此前可能让 `spawnAgent` promise 永不 settle 并泄漏 registry 条目）。
+
+## [0.3.0] - 2026-08-09
+
+### Added
+
+- 流式文本转发（harden-dynamic-workflows，C3）：`AgentSpawnOptions` 新增可选 `onUpdate` 回调；`spawnAgent` 解析 stdout 时转发 `message_update` 事件的增量文本块（delta chunk），未提供回调时保持原有丢弃行为。最终 `message_end`/`tool_result_end` 收集不变。
+
+### Changed
+
+- `mapWithConcurrencyLimit` 在任一 worker 失败后改为等待全部 in-flight worker settle 再抛错（`Promise.allSettled` + 首个 rejection）：失败不再遗留已派发的子进程在后台继续运行。语义由「立即抛错、可能孤儿子进程」改为「先收拢再抛」。
+
 ## [0.2.0] - 2026-08-09
 
 ### Added

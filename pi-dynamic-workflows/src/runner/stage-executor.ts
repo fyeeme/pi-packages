@@ -16,7 +16,8 @@
  * Timing note: `Date.now()` is used here for per-step duration stats only. This
  * is engine code, NOT a workflow `.ts` body, so the Task 3 ast-guard does not
  * apply; run identity (`now`) is still supplied deterministically by the caller.
- * (maxDurationMs is therefore advisory — it needs a live clock; maxTokens is
+ * (maxDurationMs uses a live clock via Date.now() at the guard points — engine
+ * code is not AST-guarded — so wall-clock duration is enforced; maxTokens is
  * enforced via BudgetPool.isExhausted on each spawn.)
  */
 import {
@@ -26,7 +27,8 @@ import {
 	BudgetPool,
 } from "../budget/index.ts";
 import { computeCacheKey, type Journal } from "../cache/index.ts";
-import { type AgentLifecycleListeners, notifyCacheHit } from "../lifecycle.ts";
+import { RETRYABLE_CATEGORIES, WorkflowError, type ErrorCategory } from "../errors.ts";
+import { type AgentLifecycleListeners, notifyCacheHit, notifyLog, notifyUpdate } from "../lifecycle.ts";
 import { parseFirstJson } from "../outcomes.ts";
 import type {
 	AdversarialStep,
@@ -36,6 +38,7 @@ import type {
 	ClassifyRouteStep,
 	CodeStep,
 	LoopUntilDryStep,
+	LogStep,
 	SubWorkflowStep,
 	FanOutStep,
 	LoopUntilStep,
@@ -48,6 +51,7 @@ import type {
 } from "../types.ts";
 import type { AgentSpawnOptions, AgentSpawnRegistry, AgentSpawnResult } from "../agent/dispatch.ts";
 import { mapWithConcurrencyLimit } from "../agent/dispatch.ts";
+import { stepIdOf } from "../format.ts";
 
 /** Injectable agent dispatch — same shape as spawnAgent. Default = real spawnAgent. */
 export type AgentDispatch = (
@@ -64,24 +68,70 @@ export interface StepExecContext {
 	readonly pool: BudgetPool;
 	readonly signal?: AbortSignal;
 	readonly listeners?: AgentLifecycleListeners;
-	/** Deterministic inception time (ms), supplied by the caller — never read from Date.now() here. */
+	/** Run inception time (ms), supplied deterministically by the caller — used
+	 * for journal timestamps and as the child BudgetPool originMs. NOT used for
+	 * budget duration checks (those read Date.now() at the guard points). */
 	readonly now: number;
 	/** Cumulative agents spawned so far this run (lifetime-cap counter). */
 	spawned: number;
 	/** Current classify_route nesting depth (cycle guard). */
 	depth: number;
+	/** A3: per-step budget-exhaustion policy. Set by runStepSequence from
+	 *  step.onBudgetExhaust before each step (default "throw"). */
+	budgetPolicy: "throw" | "null";
+	/** A6: max resolved-prompt byte size; oversize throws a size-limit error. */
+	maxPromptBytes: number;
+	/** A3: step ids that degraded to null under the "null" policy this run. */
+	degradedStepIds: Set<string>;
+	/** Recursion opt-in propagated to every spawned workflow sub-agent: when
+	 *  false (default) children load WITHOUT the subagent/fan-out tools.
+	 *  Opt-in re-enables them, bounded by any maxSpawnDepth cap. */
+	allowChildRecursion: boolean;
+	/** Non-cached dispatch attempts this run (null-degraded and dispatch-throw
+	 *  paths included) — the denominator for resume cache-hit accounting. */
+	dispatched: number;
 }
 
 /** Outcome of a dispatched agent call (shared by all step kinds that call agents). */
 interface AgentCallOutcome {
-	readonly value: string;
+	readonly value: string | null;
 	readonly ok: boolean;
 	readonly aborted: boolean;
 	readonly cached: boolean;
 	readonly stats: StepStats;
+	/** A5: error category of this call's failure. dispatch-error marks a
+	 *  retryable agent failure (dispatch rejection OR a failed subprocess);
+	 *  absent for aborts and successes. */
+	readonly errorCategory?: ErrorCategory;
 }
 
 const MAX_ROUTE_DEPTH = 8;
+
+/** Default per-prompt byte-size cap (A6). Overridable via RunWorkflowOptions. */
+export const DEFAULT_MAX_PROMPT_BYTES = 256 * 1024;
+
+/** Non-printable C0 controls + DEL, excluding the common whitespace (\t \n \r).
+ *  Presence triggers a control-chars rejection (A6) — these almost always
+ *  indicate corrupted/serialized binary data leaking into a prompt. */
+// A6: reject prompts containing non-printable / format control characters before
+// any spawn. Covers C0 (minus tab/LF/CR) + DEL + C1 (U+0080–U+009F) + zero-width
+// and bidi format chars (U+200B–U+200F, U+202A–U+202E, U+2060–U+206F, U+FEFF) —
+// the known prompt-injection vectors (bidi override, ZWJ/ZWNJ smuggling, BOM).
+// The message below says "non-printable control characters" and the regex means
+// it: previously only C0+DEL were blocked while bidi/zero-width sailed through.
+const CONTROL_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u0080-\u009F\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/;
+
+/** Base workflow-subagent discipline prompt (B1+B2). Prepended to every agent
+ *  dispatch's systemPrompt so the model knows it is a workflow subagent and
+ *  returns the literal result without confirmations / fences / prose. Injected
+ *  BEFORE cache-key computation (design D1) so it participates in the key. */
+const BASE_WORKFLOW_SUBAGENT_PROMPT = [
+	"You are a subagent spawned by a deterministic workflow orchestration script.",
+	"Your final text response is returned verbatim as a string to the calling script \u2014 it is your return value, not a message to a human.",
+	"- Output the literal result (data, JSON, or text). Do NOT output confirmations like \"Done.\" or \"Sent.\"",
+	"- If asked for JSON, return ONLY the raw JSON \u2014 no code fences, no prose, no markdown.",
+	"- Be concise. The script will parse your output.",
+].join("\n");
 
 // ---------------------------------------------------------------------------
 // Dispatch
@@ -97,6 +147,8 @@ export async function executeStep(
 			return execAgent(step, ctx, exec);
 		case "code":
 			return execCode(step, ctx);
+		case "log":
+			return execLog(step, ctx, exec);
 		case "fan_out":
 			return execFanOut(step, ctx, exec);
 		case "loop_until":
@@ -130,7 +182,15 @@ async function dispatchAgentCall(
 		return { value: "", ok: false, aborted: true, cached: false, stats: zeroStats };
 	}
 
-	const key = computeCacheKey({ workflowName: exec.workflowName, prompt, signature });
+	// D1: prepend the base workflow-subagent discipline prompt to the signature's
+	// systemPrompt BEFORE computing the cache key, so it participates in the key
+	// (injecting after the key would let runs under different base-prompt versions
+	// collide). A step override appends after the base (spec B1+B2).
+	const effectiveSignature: AgentOpts = signature.systemPrompt
+		? { ...signature, systemPrompt: `${BASE_WORKFLOW_SUBAGENT_PROMPT}\n\n${signature.systemPrompt}` }
+		: { ...signature, systemPrompt: BASE_WORKFLOW_SUBAGENT_PROMPT };
+
+	const key = computeCacheKey({ workflowName: exec.workflowName, prompt, signature: effectiveSignature });
 
 	const cached = exec.journal.lookup(key);
 	if (cached?.type === "result" && cached.ok) {
@@ -138,14 +198,40 @@ async function dispatchAgentCall(
 		return { value: cached.value as string, ok: true, aborted: false, cached: true, stats: zeroStats };
 	}
 
-const releaseSpawn = guardSpawn(exec, 1);
+	// A6: reject oversized / control-character payloads before any spawn. These
+	// run AFTER the cache-hit return so a config change (e.g. lowering
+	// maxPromptBytes between runs) cannot kill resume replay of a previously
+	// cached call — a replay spawns nothing. The checks gate NEW spawns and
+	// cover BOTH the task prompt and the effective systemPrompt (which always
+	// contains the base discipline prompt), so oversized/binary data cannot
+	// dodge the guard by being placed in the system prompt. These throw terminal
+	// WorkflowErrors (size-limit / control-chars) which propagate past
+	// runWithRetry's retry loop — only dispatch-error is retryable (A5:
+	// runWithRetry gates on RETRYABLE_CATEGORIES, not bare status). A rejection
+	// also aborts the step's in-flight siblings so a concurrent batch fails fast
+	// instead of the allSettled wait blocking on a stalled sibling.
+	assertPromptAllowed(exec, callId, prompt, effectiveSignature.systemPrompt);
+
+const releaseSpawn = guardSpawn(exec, callId, 1);
+	if (releaseSpawn === null) {
+		// A3: budget exhausted under the "null" policy — degrade this call to null
+		// (guardSpawn already attributed the step to degradedStepIds). No spawn,
+		// no slot consumed, nothing journaled. Counted as a dispatch attempt so
+		// resume's cachedTotal covers the degraded path.
+		exec.dispatched++;
+		return { value: null, ok: true, aborted: false, cached: false, stats: zeroStats };
+	}
+	// Every non-cached call that passes the guard is a dispatch attempt (the
+	// dispatch-throw path increments here too — the start was announced even
+	// though no agent launched, so the total must not undercount it).
+	exec.dispatched++;
 	notifyStart(exec, callId);
 	await exec.journal.append({ type: "started", key, at: exec.now });
 	let res: AgentSpawnResult;
 	let durationMs: number;
 	try {
 		({ res, durationMs } = await timed(() =>
-			exec.dispatch(exec.registry, dispatchOpts(callId, prompt, signature, exec.signal)),
+			exec.dispatch(exec.registry, dispatchOpts(callId, prompt, effectiveSignature, exec.signal, exec.listeners, exec.allowChildRecursion)),
 		));
 	} catch (e) {
 		releaseSpawn(); // dispatch never started — return the reserved slot
@@ -155,7 +241,19 @@ const releaseSpawn = guardSpawn(exec, 1);
 		const msg = e instanceof Error ? e.message : String(e);
 		await exec.journal.append({ type: "result", key, at: exec.now, ok: false, value: `dispatch error: ${msg}` });
 		notifyEnd(exec, callId, false, zeroStats);
-		return { value: `dispatch error: ${msg}`, ok: false, aborted: false, cached: false, stats: zeroStats };
+		// Fail-fast for concurrent batches: a dispatch error is a real failure —
+		// terminate the step's in-flight siblings (SIGTERM via their per-call
+		// controllers) so mapWithConcurrencyLimit's allSettled wait does not hang
+		// forever on a stalled sibling subprocess.
+		abortStepCalls(exec, stepIdOf(callId));
+		return {
+			value: `dispatch error: ${msg}`,
+			ok: false,
+			aborted: false,
+			cached: false,
+			stats: zeroStats,
+			errorCategory: "dispatch-error",
+		};
 	}
 	applyOutcome(exec, res);
 	const value = finalText(res);
@@ -167,8 +265,25 @@ const releaseSpawn = guardSpawn(exec, 1);
 	// step result is just "" and the error is invisible.
 	const diag = ok || value ? value : diagnoseFailure(res);
 	await exec.journal.append({ type: "result", key, at: exec.now, ok, value: diag });
-	notifyEnd(exec, callId, ok, stats);
-	return { value: diag, ok, aborted: res.aborted, cached: false, stats };
+	notifyEnd(exec, callId, ok, stats, res.model, diag);
+	// Fail-fast for concurrent batches: a settled-but-failed call (non-abort) is a
+	// real failure — terminate the step's in-flight siblings so the batch's
+	// allSettled wait cannot block forever on a stalled sibling subprocess. A
+	// degraded (budget-null) or aborted call is NOT a failure and must not abort
+	// its siblings.
+	if (!ok && !res.aborted) abortStepCalls(exec, stepIdOf(callId));
+	// A failed-but-settled subprocess (exitCode≠0 / stopReason "error" / killed)
+	// is a retryable dispatch-error — typically a transient provider/model
+	// failure. Aborts (external cancel, skip, maxTurns) carry no category: they
+	// settle as skipped and must not auto-retry.
+	return {
+		value: diag,
+		ok,
+		aborted: res.aborted,
+		cached: false,
+		stats,
+		errorCategory: ok || res.aborted ? undefined : "dispatch-error",
+	};
 }
 
 /** Build a human-readable failure reason from a subprocess result that
@@ -194,7 +309,7 @@ async function execAgent(step: AgentStep, ctx: StepContext, exec: StepExecContex
 	const callId = `${step.id}#${exec.spawned + 1}`;
 	const outcome = await dispatchAgentCall(callId, prompt, step, exec);
 	const status = outcome.ok ? "done" : outcome.aborted ? "skipped" : "failed";
-	return stepResult(step.id, "agent", status, outcome.value, outcome.stats);
+	return stepResult(step.id, "agent", status, outcome.value, outcome.stats, undefined, outcome.errorCategory);
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +341,31 @@ async function execCode(step: CodeStep, ctx: StepContext): Promise<StepResult> {
 	}
 }
 
+// log (C2): emit a narrative line via the onLog listener. Pure string, zero
+// dispatch/tokens, not cached — same profile as `code` but fires onLog and the
+// widget renders it as a distinct narrative line.
+async function execLog(step: LogStep, ctx: StepContext, exec: StepExecContext): Promise<StepResult> {
+	const start = Date.now();
+	// A `log` step is non-critical narrative — a throwing message function (e.g.
+	// referencing a missing upstream field) must NOT crash the whole run. Fall
+	// back to an inline error marker and keep status "done" so the run continues.
+	let message: string;
+	try {
+		message = typeof step.message === "function" ? await step.message(ctx) : step.message;
+	} catch (e) {
+		const msg = e instanceof Error ? e.message : String(e);
+		message = `[log error: ${msg}]`;
+	}
+	notifyLog(exec.listeners, step.id, message);
+	return stepResult(step.id, "log", "done", message, {
+		tokens: 0,
+		cost: 0,
+		durationMs: Date.now() - start,
+		agents: 0,
+		failures: 0,
+	});
+}
+
 // ---------------------------------------------------------------------------
 // fan_out (parallel agents over a list)
 // ---------------------------------------------------------------------------
@@ -236,7 +376,7 @@ async function execFanOut(step: FanOutStep, ctx: StepContext, exec: StepExecCont
 	guardBatch(exec, n, `fan_out "${step.id}"`);
 
 	const parallelism = step.parallelism ?? Math.min(n, 8);
-	const itemSpecs = items.map((item, i) => step.agent(item, i));
+	const itemSpecs = items.map((item, i) => step.agent(item, i, ctx));
 	const start = Date.now();
 
 	const outcomes = await mapWithConcurrencyLimit(itemSpecs, parallelism, (spec, i) =>
@@ -246,7 +386,13 @@ async function execFanOut(step: FanOutStep, ctx: StepContext, exec: StepExecCont
 	const durationMs = Date.now() - start;
 	const merged = step.merge ? await step.merge(outcomes.map((o) => o.value), ctx) : outcomes.map((o) => o.value);
 	const stats = aggregateStats(outcomes.map((o) => o.stats), durationMs);
-	return stepResult(step.id, "fan_out", outcomesStatus(outcomes), merged, stats);
+	const status = outcomesStatus(outcomes);
+	// A5: a batch whose failures are all retryable dispatch-errors carries the
+	// category so runWithRetry can retry the whole fan_out (successful items
+	// replay as cache hits and are not re-charged). Aborted-only batches settle
+	// as skipped and carry none.
+	const errorCategory = status === "failed" && outcomes.some((o) => o.errorCategory === "dispatch-error") ? "dispatch-error" : undefined;
+	return stepResult(step.id, "fan_out", status, merged, stats, undefined, errorCategory);
 }
 
 // ---------------------------------------------------------------------------
@@ -285,8 +431,21 @@ async function execLoopUntil(step: LoopUntilStep, ctx: StepContext, exec: StepEx
 // adversarial (produce one candidate, N judges grade it, tally)
 // ---------------------------------------------------------------------------
 
+/** Judge call opts inherit the produce opts (model/tools/systemPrompt) and are
+ *  overridden per-field by an explicit `step.judge`. Without this, a step-level
+ *  `model` applied only to the produce call and judges silently fell back to the
+ *  default model (review m14). */
+function judgeOpts(produce: AgentOpts, judge?: AgentOpts): AgentOpts {
+	return {
+		model: judge?.model ?? produce.model,
+		tools: judge?.tools ?? produce.tools,
+		systemPrompt: judge?.systemPrompt ?? produce.systemPrompt,
+	};
+}
+
 async function execAdversarial(step: AdversarialStep, ctx: StepContext, exec: StepExecContext): Promise<StepResult> {
 	const judgeCount = step.judges ?? 3;
+	if (judgeCount < 1) throw new Error(`adversarial "${step.id}" requires judges >= 1`);
 	const minPass = step.minPass ?? Math.ceil(judgeCount / 2);
 	guardBatch(exec, 1 + judgeCount, `adversarial "${step.id}"`);
 	const start = Date.now();
@@ -296,17 +455,25 @@ async function execAdversarial(step: AdversarialStep, ctx: StepContext, exec: St
 	const candidate = await dispatchAgentCall(`${step.id}#produce`, producePrompt, step.produce, exec);
 	stats = addStats(stats, candidate.stats);
 
+	// A3: a degraded produce (budget exhausted under the "null" policy) returns
+	// value null — the step degrades to a null result per the README contract,
+	// NOT a fabricated "done" with an empty candidate. No judges are dispatched:
+	// the budget is exhausted, they would only degrade too.
+	if (candidate.value === null) {
+		return stepResult(step.id, "adversarial", "done", null, withDuration(stats, start), 1);
+	}
+
 	const outcomes: AgentCallOutcome[] = [candidate];
 	const judges: { pass: boolean; reason: string }[] = [];
 	if (candidate.ok) {
-		const judgeSpecs = Array.from({ length: judgeCount }, (_, i) => judgePrompt(i, candidate.value, step.rubric));
+		const judgeSpecs = Array.from({ length: judgeCount }, (_, i) => judgePrompt(i, candidate.value ?? "", step.rubric));
 		const judgeOutcomes = await mapWithConcurrencyLimit(judgeSpecs, Math.min(judgeCount, 8), (prompt, i) =>
-			dispatchAgentCall(`${step.id}#judge${i + 1}`, prompt, step.judge ?? {}, exec),
+			dispatchAgentCall(`${step.id}#judge${i + 1}`, prompt, judgeOpts(step.produce, step.judge), exec),
 		);
 		for (const o of judgeOutcomes) {
 			stats = addStats(stats, o.stats);
 			outcomes.push(o);
-			const parsed = parseFirstJson(o.value) as { pass?: unknown; reason?: unknown } | undefined;
+			const parsed = parseFirstJson(o.value ?? "") as { pass?: unknown; reason?: unknown } | undefined;
 			judges.push({ pass: parsePassBool(parsed?.pass), reason: parseReason(parsed?.reason) });
 		}
 	} else {
@@ -319,7 +486,7 @@ async function execAdversarial(step: AdversarialStep, ctx: StepContext, exec: St
 		step.id,
 		"adversarial",
 		outcomesStatus(outcomes),
-		{ candidate: candidate.value, passed: passCount >= minPass, passCount, minPass, judges },
+		{ candidate: candidate.value ?? "", passed: passCount >= minPass, passCount, minPass, judges },
 		withDuration(stats, start),
 		1 + judgeCount,
 	);
@@ -347,17 +514,17 @@ async function execTournament(step: TournamentStep, ctx: StepContext, exec: Step
 	const candidates = candOutcomes.map((o) => {
 		stats = addStats(stats, o.stats);
 		outcomes.push(o);
-		return o.value;
+		return o.value ?? "";
 	});
 
 	const judgeSpecs = Array.from({ length: step.judges }, (_, j) => rankPrompt(j, candidates));
 	const judgeOutcomes = await mapWithConcurrencyLimit(judgeSpecs, Math.min(step.judges, 8), (prompt, j) =>
-		dispatchAgentCall(`${step.id}#judge${j + 1}`, prompt, step.judge ?? {}, exec),
+		dispatchAgentCall(`${step.id}#judge${j + 1}`, prompt, judgeOpts(step.produce, step.judge), exec),
 	);
 	const judgePicks = judgeOutcomes.map((o) => {
 		stats = addStats(stats, o.stats);
 		outcomes.push(o);
-		const parsed = parseFirstJson(o.value) as { winner?: unknown; reason?: unknown } | undefined;
+		const parsed = parseFirstJson(o.value ?? "") as { winner?: unknown; reason?: unknown } | undefined;
 		return { winner: parseWinnerNum(parsed?.winner), reason: parseReason(parsed?.reason) };
 	});
 	const winner = tallyWinner(
@@ -365,13 +532,19 @@ async function execTournament(step: TournamentStep, ctx: StepContext, exec: Step
 		step.candidates,
 	);
 
+	// A5: like fan_out, a tournament whose failures are retryable dispatch-errors
+	// carries the category so runWithRetry can retry the whole composite.
+	const status = outcomesStatus(outcomes);
+	const errorCategory = status === "failed" && outcomes.some((o) => o.errorCategory === "dispatch-error") ? "dispatch-error" : undefined;
+
 	return stepResult(
 		step.id,
 		"tournament",
-		outcomesStatus(outcomes),
+		status,
 		{ candidates, winner, judges: judgePicks },
 		withDuration(stats, start),
 		step.candidates + step.judges,
+		errorCategory,
 	);
 }
 
@@ -390,10 +563,19 @@ async function execClassifyRoute(step: ClassifyRouteStep, ctx: StepContext, exec
 			classify.aborted ? "skipped" : "failed",
 			undefined,
 			withDuration(classify.stats, start),
+			undefined,
+			classify.aborted ? undefined : "dispatch-error",
 		);
 	}
 
-	const parsed = parseFirstJson(classify.value) as { category?: unknown } | undefined;
+	// A3: a degraded classifier (budget exhausted under the "null" policy)
+	// returns value null — the step degrades to a null result per the README
+	// contract; do not fabricate a route run from an empty category.
+	if (classify.value === null) {
+		return stepResult(step.id, "classify_route", "done", null, withDuration(classify.stats, start));
+	}
+
+	const parsed = parseFirstJson(classify.value ?? "") as { category?: unknown } | undefined;
 	const category = parseCategoryStr(parsed?.category);
 	const routeSteps = step.routes[category] ?? step.fallback ?? [];
 
@@ -412,6 +594,8 @@ async function execClassifyRoute(step: ClassifyRouteStep, ctx: StepContext, exec
 		status,
 		{ category, matched: category in step.routes, route: sub.steps, routeStatus: sub.status },
 		withDuration(addStats(classify.stats, aggregateStats(sub.steps.map((s) => s.stats), 0)), start),
+		undefined,
+		sub.errorCategory,
 	);
 }
 
@@ -421,8 +605,14 @@ async function execClassifyRoute(step: ClassifyRouteStep, ctx: StepContext, exec
 
 async function execSubWorkflow(step: SubWorkflowStep, ctx: StepContext, exec: StepExecContext): Promise<StepResult> {
 	const start = Date.now();
-	// Resolve the child's input: static value or function of parent ctx.
-	const childInput = typeof step.input === "function" ? (step.input as (c: StepContext) => unknown)(ctx) : step.input ?? ctx.input;
+	// Resolve the child's input: static value or function of parent ctx. The
+	// function form is awaited (and typed to allow a Promise), matching the
+	// async convention of CodeStep.transform / LogStep.message — an un-awaited
+	// Promise would leak into the child's ctx.input as "[object Promise]" with
+	// its rejection silently dropped.
+	const childInput = typeof step.input === "function"
+		? await (step.input as (c: StepContext) => unknown | Promise<unknown>)(ctx)
+		: step.input ?? ctx.input;
 
 	// Child shares parent's journal, pool, registry, and signal by default.
 	// inheritBudget: false means the child uses its own BudgetPool (isolated caps).
@@ -430,7 +620,7 @@ async function execSubWorkflow(step: SubWorkflowStep, ctx: StepContext, exec: St
 	// child workflow — otherwise two sibling sub_workflows whose agents share a
 	// prompt+signature collide on the parent's name and replay each other's cache.
 	const childExec: StepExecContext = step.inheritBudget === false
-		? { ...exec, workflowName: step.workflow.name, depth: exec.depth + 1, pool: new BudgetPool(step.workflow.budget ?? {}, exec.now) }
+		? { ...exec, workflowName: step.workflow.name, depth: exec.depth + 1, pool: new BudgetPool(step.workflow.budget ?? {}, Date.now()) }
 		: { ...exec, workflowName: step.workflow.name, depth: exec.depth + 1 };
 
 	let sub: SequenceOutcome;
@@ -455,6 +645,8 @@ async function execSubWorkflow(step: SubWorkflowStep, ctx: StepContext, exec: St
 		status,
 		{ steps: sub.steps, status: sub.status, workflowName: step.workflow.name, error: sub.error },
 		withDuration(aggregateStats(sub.steps.map((s) => s.stats), 0), start),
+		undefined,
+		sub.errorCategory,
 	);
 }
 
@@ -483,7 +675,7 @@ async function execLoopUntilDry(step: LoopUntilDryStep, ctx: StepContext, exec: 
 			status = outcome.aborted ? "skipped" : "failed";
 			break;
 		}
-		const parsed = parseFirstJson(outcome.value) as unknown;
+		const parsed = parseFirstJson(outcome.value ?? "") as unknown;
 		const freshItems: unknown[] = Array.isArray(parsed) ? parsed : parsed !== undefined && parsed !== null ? [parsed] : [];
 		const seen = new Set(known.map(keyOf));
 		const novel = freshItems.filter((item) => !seen.has(keyOf(item)));
@@ -496,7 +688,7 @@ async function execLoopUntilDry(step: LoopUntilDryStep, ctx: StepContext, exec: 
 					const criticOutcome = await dispatchAgentCall(`${step.id}#critic`, criticPrompt, {}, exec);
 					stats = addStats(stats, criticOutcome.stats);
 					if (criticOutcome.ok) {
-						const criticParsed = parseFirstJson(criticOutcome.value) as unknown;
+						const criticParsed = parseFirstJson(criticOutcome.value ?? "") as unknown;
 						const criticItems: unknown[] = Array.isArray(criticParsed) ? criticParsed : [];
 						const criticNovel = criticItems.filter((item) => !seen.has(keyOf(item)));
 						if (criticNovel.length > 0) {
@@ -527,6 +719,9 @@ export interface SequenceOutcome {
 	readonly steps: readonly StepResult[];
 	readonly status: RunStatus;
 	readonly error?: string;
+	/** A5: category of the terminal error that failed the sequence (from a
+	 *  thrown WorkflowError), surfaced on RunResult.errorCategory. */
+	readonly errorCategory?: ErrorCategory;
 }
 
 export async function runStepSequence(
@@ -550,11 +745,19 @@ export async function runStepSequence(
 
 	for (const step of steps) {
 		if (exec.signal?.aborted) return { steps: out, status: "aborted", error: "aborted by signal" };
+		// A3: apply the step's budget-exhaustion policy for the duration of this step.
+		exec.budgetPolicy = step.onBudgetExhaust ?? "throw";
 		let sr: StepResult;
 		try {
 			sr = await runWithRetry(step, ctx, exec);
 		} catch (e) {
-			return { steps: out, status: "failed", error: e instanceof Error ? e.message : String(e) };
+			const wfe = e instanceof WorkflowError ? e : undefined;
+			return {
+				steps: out,
+				status: "failed",
+				error: e instanceof Error ? e.message : String(e),
+				errorCategory: wfe?.category,
+			};
 		}
 		prior.set(step.id, { results: sr.results, stats: sr.stats });
 		out.push(sr);
@@ -563,7 +766,7 @@ export async function runStepSequence(
 		if (exec.signal?.aborted) return { steps: out, status: "aborted", error: "aborted by signal" };
 		if (sr.status === "failed") {
 			const why = typeof sr.results === "string" && sr.results ? `: ${sr.results}` : "";
-			return { steps: out, status: "failed", error: `step "${step.id}" failed${why}` };
+			return { steps: out, status: "failed", error: `step "${step.id}" failed${why}`, errorCategory: sr.errorCategory };
 		}
 		if (sr.status === "skipped") {
 			const aborted = !!exec.signal?.aborted;
@@ -578,7 +781,11 @@ async function runWithRetry(step: StepDefinition, ctx: StepContext, exec: StepEx
 	const max = step.retry?.maxRetries ?? 0;
 	let attempt = 0;
 	let stats = sr.stats; // accumulate every attempt's stats (the pool is charged per dispatch)
-	while (sr.status === "failed" && attempt < max) {
+	// A5: retry is gated by error category, not by bare status. Only retryable
+	// categories (dispatch-error / unexpected-state) auto-retry — a code
+	// transform failure or a terminal category (size-limit, determinism, …) must
+	// not burn budget on a deterministic re-run.
+	while (sr.status === "failed" && attempt < max && sr.errorCategory !== undefined && RETRYABLE_CATEGORIES.includes(sr.errorCategory)) {
 		if (exec.signal?.aborted) break;
 		attempt++;
 		sr = await executeStep(step, ctx, exec);
@@ -597,12 +804,16 @@ async function resolvePrompt(spec: AgentCallSpec, ctx: StepContext): Promise<str
 
 function judgePrompt(index: number, candidate: string, rubric: readonly string[]): string {
 	const criteria = rubric.map((r, i) => `${i + 1}. ${r}`).join("\n");
-	return `You are judge ${index + 1}. Evaluate this candidate:\n\n${candidate}\n\nAgainst these criteria:\n${criteria}\n\nReply with ONLY JSON: {"pass": true|false, "reason": "..."}`;
+	// The base workflow-subagent systemPrompt already carries the verbatim / raw-JSON
+	// discipline, so this task prompt states only the task + the JSON schema it wants.
+	return `You are judge ${index + 1}. Evaluate this candidate:\n\n${candidate}\n\nAgainst these criteria:\n${criteria}\n\nReturn JSON matching: {"pass": true|false, "reason": "..."}`;
 }
 
 function rankPrompt(index: number, candidates: readonly string[]): string {
 	const listing = candidates.map((c, i) => `[${i}] ${c}`).join("\n\n");
-	return `You are judge ${index + 1}. Rank these candidates:\n\n${listing}\n\nReply with ONLY JSON: {"winner": <index>, "reason": "..."}`;
+	// Base systemPrompt carries the verbatim / raw-JSON discipline; task prompt
+	// states only the ranking task + the JSON schema it wants.
+	return `You are judge ${index + 1}. Rank these candidates:\n\n${listing}\n\nReturn JSON matching: {"winner": <index>, "reason": "..."}`;
 }
 
 /** LLMs sometimes stringify booleans/numbers ("true", "0"); coerce leniently. */
@@ -652,6 +863,52 @@ function outcomesStatus(outcomes: readonly { ok: boolean; aborted: boolean }[]):
 	return "done";
 }
 
+/** Terminate every in-flight call belonging to `stepId` (via its per-call
+ *  controller → SIGTERM in spawnAgent). Called from dispatchAgentCall on any
+ *  failure of that call (settle failure, dispatch throw, A6 rejection): the
+ *  hung siblings are killed so the batch's allSettled wait settles instead of
+ *  blocking the run forever on a stalled subprocess. Aborting a healthy
+ *  in-flight item is fine — the step is already failing, its results are
+ *  discarded. A degraded (budget-null) or aborted call is NOT a failure and
+ *  never triggers this. */
+function abortStepCalls(exec: StepExecContext, stepId: string): void {
+	for (const [callId, controller] of exec.registry.controllers) {
+		if (stepIdOf(callId) === stepId) controller.abort();
+	}
+}
+
+/** A6: reject oversized / control-character payloads before any spawn. On
+ *  rejection the step's in-flight siblings are aborted first (fail-fast for
+ *  concurrent batches), then a terminal WorkflowError is thrown. */
+function assertPromptAllowed(exec: StepExecContext, callId: string, prompt: string, systemPrompt: string | undefined): void {
+	const promptBytes = Buffer.byteLength(prompt, "utf8");
+	if (promptBytes > exec.maxPromptBytes) {
+		abortStepCalls(exec, stepIdOf(callId));
+		throw new WorkflowError(
+			`prompt size ${promptBytes} bytes exceeds limit ${exec.maxPromptBytes} bytes`,
+			{ category: "size-limit", detail: { bytes: promptBytes, limit: exec.maxPromptBytes } },
+		);
+	}
+	if (CONTROL_CHARS.test(prompt)) {
+		abortStepCalls(exec, stepIdOf(callId));
+		throw new WorkflowError("prompt contains non-printable control characters", { category: "control-chars" });
+	}
+	if (systemPrompt) {
+		const sysBytes = Buffer.byteLength(systemPrompt, "utf8");
+		if (sysBytes > exec.maxPromptBytes) {
+			abortStepCalls(exec, stepIdOf(callId));
+			throw new WorkflowError(
+				`systemPrompt size ${sysBytes} bytes exceeds limit ${exec.maxPromptBytes} bytes`,
+				{ category: "size-limit", detail: { bytes: sysBytes, limit: exec.maxPromptBytes } },
+			);
+		}
+		if (CONTROL_CHARS.test(systemPrompt)) {
+			abortStepCalls(exec, stepIdOf(callId));
+			throw new WorkflowError("systemPrompt contains non-printable control characters", { category: "control-chars" });
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // budget / spawn / stats helpers
 // ---------------------------------------------------------------------------
@@ -663,7 +920,10 @@ function outcomesStatus(outcomes: readonly { ok: boolean; aborted: boolean }[]):
  *  the pre-check gap; within-step concurrency is guarded by reserve(1)'s atomic increment. */
 function guardBatch(exec: StepExecContext, total: number, label: string): void {
 	assertBatchSize(total);
-	if (!exec.pool.canSpawn(total, exec.now)) {
+	// Under the "null" policy (A3), skip the canSpawn pre-check: per-item
+	// guardSpawn degrades excess items to null instead. The hard MAX_BATCH cap
+	// above still throws regardless of policy.
+	if (exec.budgetPolicy !== "null" && !exec.pool.canSpawn(total, Date.now())) {
 		throw new BudgetExceededError(`${label} needs ${total} agents but the budget is exhausted`);
 	}
 }
@@ -671,20 +931,23 @@ function guardBatch(exec: StepExecContext, total: number, label: string): void {
 /** Reserve one agent slot and check token budget. Returns a release handle —
  *  call it ONLY if the dispatch never started (spawn threw).
  *
- *  Lifetime accounting: `exec.spawned` is incremented SYNCHRONOUSLY here, before
- *  the await on dispatch, so that concurrent fan_out workers each see an accurate
- *  count when they reach assertLifetimeAgents. (Previously it was incremented in
- *  applyOutcome, after the dispatch settled — so N concurrent workers all read the
- *  pre-flight count and a single batch with parallelism > MAX_LIFETIME_AGENTS
- *  could bust the runaway backstop before any settle.) The release handle rolls
- *  the increment back so a failed dispatch doesn't consume a lifetime slot, which
- *  also preserves callId numbering across retries. */
-function guardSpawn(exec: StepExecContext, n: number): () => void {
+ *  Under the "null" budget policy (A3), returns `null` instead of throwing
+ *  when the budget is exhausted: the caller degrades that call to a null
+ *  outcome. This is the single atomic chokepoint (sync section, no await gap),
+ *  so concurrent fan_out workers each see an accurate count — closing the
+ *  TOCTOU that a pre-check before reserve would reintroduce.
+ *
+ *  Lifetime accounting: `exec.spawned` is incremented SYNCHRONOUSLY here ... */
+function guardSpawn(exec: StepExecContext, callId: string, n: number): (() => void) | null {
 	exec.spawned += n;
 	assertLifetimeAgents(exec.spawned);
 	// isExhausted enforces maxTokens (and maxAgents) before committing.
-	if (exec.pool.isExhausted(exec.now)) {
+	if (exec.pool.isExhausted(Date.now())) {
 		exec.spawned -= n;
+		if (exec.budgetPolicy === "null") {
+			exec.degradedStepIds.add(stepIdOf(callId));
+			return null;
+		}
 		throw new BudgetExceededError("agent spawn refused — budget exhausted");
 	}
 	const releasePool = exec.pool.reserve(n);
@@ -711,6 +974,8 @@ function dispatchOpts(
 	prompt: string,
 	spec: AgentOpts,
 	signal?: AbortSignal,
+	listeners?: AgentLifecycleListeners,
+	allowChildRecursion = false,
 ): AgentSpawnOptions {
 	return {
 		callId,
@@ -719,6 +984,11 @@ function dispatchOpts(
 		tools: spec.tools ? [...spec.tools] : undefined,
 		systemPrompt: spec.systemPrompt,
 		signal,
+		allowChildRecursion,
+		// C3: bridge the spawn's streamed deltas to the lifecycle onUpdate listener,
+		// attributed to this callId. When no listener is registered, the subprocess
+		// drops the deltas (its onUpdate stays undefined — same as before).
+		onUpdate: listeners?.onUpdate ? (delta) => notifyUpdate(listeners, callId, delta) : undefined,
 	};
 }
 
@@ -784,9 +1054,12 @@ function stepResult(
 	results: unknown,
 	stats: StepStats,
 	iterations?: number,
+	errorCategory?: ErrorCategory,
 ): StepResult {
-	if (iterations !== undefined) return { id, type, status, results, stats, iterations };
-	return { id, type, status, results, stats };
+	const base: StepResult = { id, type, status, results, stats };
+	if (iterations !== undefined) return { ...base, iterations, errorCategory };
+	if (errorCategory !== undefined) return { ...base, errorCategory };
+	return base;
 }
 
 function notifyStart(exec: StepExecContext, callId: string): void {
@@ -796,9 +1069,9 @@ function notifyStart(exec: StepExecContext, callId: string): void {
 		/* listener robustness — a throwing listener never blocks dispatch */
 	}
 }
-function notifyEnd(exec: StepExecContext, callId: string, ok: boolean, stats: StepStats): void {
+function notifyEnd(exec: StepExecContext, callId: string, ok: boolean, stats: StepStats, model?: string, output?: string): void {
 	try {
-		exec.listeners?.onAgentEnd?.(callId, ok, stats);
+		exec.listeners?.onAgentEnd?.(callId, ok, stats, model, output);
 	} catch {
 		/* listener robustness */
 	}

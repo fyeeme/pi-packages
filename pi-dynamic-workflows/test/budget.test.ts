@@ -6,7 +6,6 @@ import {
 	BudgetPool,
 	MAX_BATCH,
 	MAX_LIFETIME_AGENTS,
-	scaleBatchByBudget,
 } from "../src/budget/index.ts";
 
 describe("BudgetPool — remaining", () => {
@@ -105,46 +104,6 @@ describe("BudgetPool — exhaustion + canSpawn", () => {
 		const p = new BudgetPool({ maxAgents: 3 }, 0);
 		expect(p.canSpawn(3, 0)).toBe(true);
 		expect(p.canSpawn(4, 0)).toBe(false);
-	});
-});
-
-describe("scaleBatchByBudget", () => {
-	it("caps at MAX_BATCH", () => {
-		const p = new BudgetPool({}, 0);
-		expect(scaleBatchByBudget(10_000, p, 100, 0)).toBe(MAX_BATCH);
-	});
-
-	it("scales down by token budget", () => {
-		const p = new BudgetPool({ maxTokens: 1000 }, 0);
-		p.track({ tokens: 200 }); // 800 left, 100/agent → 8
-		expect(scaleBatchByBudget(20, p, 100, 0)).toBe(8);
-	});
-
-	it("scales down by agents budget", () => {
-		const p = new BudgetPool({ maxAgents: 5 }, 0);
-		expect(scaleBatchByBudget(20, p, 10, 0)).toBe(5);
-	});
-
-	it("returns the min of token and agent limits", () => {
-		const p = new BudgetPool({ maxTokens: 300, maxAgents: 10 }, 0);
-		// tokens: 300/100 = 3; agents: 10 → min = 3
-		expect(scaleBatchByBudget(20, p, 100, 0)).toBe(3);
-	});
-
-	it("returns 0 when budget exhausted", () => {
-		const p = new BudgetPool({ maxTokens: 100 }, 0);
-		p.track({ tokens: 100 });
-		expect(scaleBatchByBudget(5, p, 10, 0)).toBe(0);
-	});
-
-	it("returns 0 for non-positive desired", () => {
-		const p = new BudgetPool({}, 0);
-		expect(scaleBatchByBudget(0, p, 100, 0)).toBe(0);
-	});
-
-	it("ignores token cost when perAgentTokens <= 0", () => {
-		const p = new BudgetPool({ maxTokens: 1 }, 0); // tiny budget, but cost 0
-		expect(scaleBatchByBudget(50, p, 0, 0)).toBe(50);
 	});
 });
 

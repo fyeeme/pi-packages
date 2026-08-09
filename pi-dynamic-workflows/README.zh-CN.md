@@ -2,7 +2,7 @@
 
 **为 [pi](https://github.com/earendil-works/pi-mono) 打造的确定性 TypeScript 工作流编排。**
 
-把工作流定义成一份类型化的声明式步骤列表，运行后即可获得**可恢复、受预算约束、可中止**的执行。融合 pi-dynamic-workflows 设计（7 个步骤原语 + 启发式 planner + outcome 收集器）与 Claude Code 工作流引擎的协调机制（确定性沙箱、缓存键恢复、按 agent 中止、动态预算、失控上限）。
+把工作流定义成一份类型化的声明式步骤列表，运行后即可获得**可恢复、受预算约束、可中止**的执行。融合 pi-dynamic-workflows 设计（9 个步骤原语 + 启发式 planner + outcome 收集器）与 Claude Code 工作流引擎的协调机制（确定性沙箱、缓存键恢复、按 agent 中止、动态预算、失控上限）。
 
 语言：[English](README.md) | **中文**
 
@@ -27,6 +27,8 @@
 ```bash
 npm install --ignore-scripts   # 水合（本包是 workspace 依赖）
 ```
+
+这会解析 npm registry 上的 [`@fyeeme/pi-subagent-core`](https://www.npmjs.com/package/@fyeeme/pi-subagent-core)（`^0.3.0`，无需保持同级仓库目录结构）。
 
 随后从包根模块导入公共 API（TypeScript barrel，包直接以 `.ts` 源码分发）：
 
@@ -290,13 +292,17 @@ const result = await runWorkflow({ workflow: wf, cwd: tempDir, now: 1000, dispat
 |---|---|---|
 | `agent` | `prompt: string \| (ctx)=>string`、`model?`、`tools?`、`systemPrompt?` | 最后一条 assistant 文本 |
 | `code` | `transform: (ctx) => unknown`（纯函数、不派发、不缓存） | transform 的返回值 |
+| `log` | `message: string \| (ctx)=>string`（叙事行、零派发零 token） | 该消息（触发 `onLog`） |
 | `fan_out` | `over()`、`agent(item,i)`、`parallelism?`、`merge?` | 合并后的数组（或 `merge` 的输出） |
 | `loop_until` | `prompt(ctx,i)`、`until(ctx,i)`、`maxIterations?` | 每轮输出的数组 |
 | `adversarial` | `produce`、`rubric[]`、`judges?`、`minPass?` | `{ candidate, passed, passCount, judges }` |
 | `tournament` | `candidates`、`judges`、`produce` | `{ candidates, winner, judges }` |
 | `classify_route` | `classifier`、`routes: Record<cat, Step[]>`、`fallback?` | `{ category, matched, route, routeStatus }` |
 
-每个步骤都接受 `id`、`retry?: { maxRetries }`。
+每个步骤都接受 `id`、`retry?: { maxRetries }` 与
+`onBudgetExhaust?: "throw" | "null"`——`"null"` 下预算耗尽时该步骤返回 `null`
+（降级）而不是中止运行；运行结果用 `degradedSteps` 记录降级步骤。默认
+`"throw"` 保持 fail-fast 保证。
 
 ---
 
@@ -312,13 +318,15 @@ const result = await runWorkflow({ workflow: wf, cwd: tempDir, now: 1000, dispat
 | `input?` | `unknown` | `ctx.input` |
 | `budget?` | `Budget` | 覆盖 `workflow.budget` |
 | `signal?` | `AbortSignal` | 整运行中止信号 |
-| `listeners?` | `AgentLifecycleListeners` | `onAgentStart/End/Skip/Retry` |
+| `listeners?` | `AgentLifecycleListeners` | `onAgentStart/End/Skip/Retry/CacheHit` + `onLog`（log 步骤）+ `onUpdate`（流式 delta） |
 | `dispatch?` | `AgentDispatch` | 默认 = 真实 `spawnAgent` |
+| `maxPromptBytes?` | `number` | A6 尺寸守卫——解析后 prompt 超过该字节数在派发前抛 `size-limit`（默认 256 KB） |
+| `policyGate?` | `(wf) => { allow, reason? }` | A6 门控——返回 `{ allow: false }` 在任何派发前中止运行 |
 | `registry?` | `AgentSpawnRegistry` | 供外部 `skipAgent`/`abortAgent` |
 | `journalDir?` | `string` | 默认 `<cwd>/.pi/workflows/<name>` |
 | `sequence?` | `number` | run-id 消歧 |
 
-`RunResult = { runId, status, steps: StepResult[], stats: StepStats, journalFile?, error? }`。
+`RunResult = { runId, status, steps: StepResult[], stats: StepStats, journalFile?, error?, errorCategory?, degradedSteps? }`。
 
 ### 同时导出
 `defineWorkflow`、`loadWorkflowModule`、`collect`（含 `urlCollector`/`filePathCollector`/`jsonCollector`/`parseFirstJson`）、`heuristicallyPlan`、`createSpawnRegistry`/`abortAgent`/`skipAgent`/`retryAgent`（来自 `sessions/spawn.ts`），以及全部步骤/结果/上下文类型。

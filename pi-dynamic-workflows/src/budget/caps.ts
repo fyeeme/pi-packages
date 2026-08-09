@@ -8,12 +8,17 @@
  * `mapWithConcurrencyLimit` in src/agent/dispatch.ts.
  */
 
+import { WorkflowError } from "../errors.ts";
+
 export const MAX_LIFETIME_AGENTS = 1000;
 export const MAX_BATCH = 4096;
 
-export class BudgetExceededError extends Error {
+/** Budget exhaustion (maxAgents / maxTokens / maxDuration) or a hard cap hit
+ *  (MAX_BATCH / MAX_LIFETIME_AGENTS). Extends WorkflowError so it carries the
+ *  `budget-exceeded` category for retry policy (terminal by default). */
+export class BudgetExceededError extends WorkflowError {
 	constructor(message: string) {
-		super(message);
+		super(message, { category: "budget-exceeded" });
 		this.name = "BudgetExceededError";
 	}
 }

@@ -1,1 +1,1 @@
-export { generateRunId, runIdTimestamp, type RunIdInput } from "./names.ts";
+export { generateRunId, type RunIdInput } from "./names.ts";

@@ -10,13 +10,16 @@
  */
 
 // ---------------------------------------------------------------------------
-// Stage primitives (7 per spec D4)
+// Stage primitives (10 per implementation)
 // ---------------------------------------------------------------------------
+
+import type { ErrorCategory } from "./errors.ts";
 
 export type StageType =
 	| "fan_out"
 	| "agent"
 	| "code"
+	| "log"
 	| "loop_until"
 	| "adversarial"
 	| "tournament"
@@ -29,13 +32,13 @@ export type StageType =
 // ---------------------------------------------------------------------------
 
 /**
- * Per-run resource limits.
+ * Per-run resource limits. These are SPAWN-GATE SOFT LIMITS, not hard kills:
+ * the runtime checks them before committing a new agent spawn (guardSpawn /
+ * guardBatch) and stops spawning new agents when exhausted, but an agent
+ * already in flight is allowed to complete — its spend may push cumulative
+ * usage past the cap. `maxDurationMs` is wall-clock from run inception.
  *
- * Task 6 upgrades this from static caps to a live pool: the runtime tracks
- * cumulative spend and exposes `remaining()` so fanOut can scale batch size
- * dynamically (Claude Code's `while (budget.remaining() > N)` pattern,
- * re-expressed for the declarative graph as a budget-driven loopUntil).
- */
+ * Task 6 note: originally a static bag; the live tracker is `BudgetPool`. */
 export interface Budget {
 	readonly maxTokens?: number;
 	readonly maxDurationMs?: number;
@@ -57,11 +60,16 @@ export interface StepStats {
 export interface StepResult<T = unknown> {
 	readonly id: string;
 	readonly type: StageType;
-	readonly status: "done" | "failed" | "skipped";
+	readonly status: "done" | "failed" | "skipped" | "running";
 	readonly results: T;
 	readonly stats: StepStats;
 	/** Present only for loop_until / adversarial / tournament. */
 	readonly iterations?: number;
+	/** A5: category of the terminal failure (dispatch-error for agent dispatch /
+	 *  subprocess failures; propagated from nested classify_route / sub_workflow
+	 *  children). Absent when the failure must not auto-retry — a code transform
+	 *  error or a terminal category (size-limit, determinism, …). */
+	readonly errorCategory?: ErrorCategory;
 }
 
 // ---------------------------------------------------------------------------
@@ -78,7 +86,7 @@ export interface StepContext {
 // ---------------------------------------------------------------------------
 
 /**
- * Concrete step payloads — a discriminated union on `type`. All seven step
+ * Concrete step payloads — a discriminated union on `type`. All ten step
  * types are implemented in the runner (src/runner/stage-executor.ts): the four
  * core primitives (agent/code/fan_out/loop_until) plus three composites
  * (adversarial/tournament/classify_route) expanded onto them.
@@ -86,6 +94,11 @@ export interface StepContext {
 export interface StepBase {
 	readonly id: string;
 	readonly retry?: StepRetry;
+	/** Budget-exhaustion policy for this step. "throw" (default) aborts the run with
+	 *  BudgetExceededError; "null" returns null for this step so siblings/downstream
+	 *  can continue (the run result records degraded steps). The atomic reserve
+	 *  still enforces the agent-count cap regardless of this setting. */
+	readonly onBudgetExhaust?: "throw" | "null";
 }
 
 /** agent: one LLM call (dispatched via the injectable AgentDispatch). */
@@ -103,6 +116,14 @@ export interface CodeStep extends StepBase {
 	readonly transform: (ctx: StepContext) => unknown | Promise<unknown>;
 }
 
+/** log: emit a free-form narrative line into the progress widget. Pure string,
+ *  zero dispatch, zero tokens, not cached — same execution profile as `code`,
+ *  but fires the onLog listener and renders as a distinct narrative line. */
+export interface LogStep extends StepBase {
+	readonly type: "log";
+	readonly message: string | ((ctx: StepContext) => string | Promise<string>);
+}
+
 /** Per-item agent spec emitted by a fan_out step's `agent` factory. */
 export interface FanOutItemSpec extends AgentOpts {
 	readonly prompt: string;
@@ -112,7 +133,7 @@ export interface FanOutItemSpec extends AgentOpts {
 export interface FanOutStep extends StepBase {
 	readonly type: "fan_out";
 	readonly over: (ctx: StepContext) => readonly unknown[];
-	readonly agent: (item: unknown, index: number) => FanOutItemSpec;
+	readonly agent: (item: unknown, index: number, ctx: StepContext) => FanOutItemSpec;
 	/** Defaults to mapWithConcurrencyLimit's cap (MAX_CONCURRENCY). */
 	readonly parallelism?: number;
 	readonly merge?: (results: readonly unknown[], ctx: StepContext) => unknown | Promise<unknown>;
@@ -201,8 +222,8 @@ export interface SubWorkflowStep extends StepBase {
 	readonly type: "sub_workflow";
 	/** The child workflow definition (inline or referenced). */
 	readonly workflow: WorkflowDefinition;
-	/** Input passed to the child workflow's ctx.input. If a function, called with parent ctx. */
-	readonly input?: unknown | ((ctx: StepContext) => unknown);
+	/** Input passed to the child workflow's ctx.input. If a function, called with parent ctx (may be async). */
+	readonly input?: unknown | ((ctx: StepContext) => unknown | Promise<unknown>);
 	/** If true (default), child agents count against parent budget. If false, child has its own pool. */
 	readonly inheritBudget?: boolean;
 }
@@ -210,6 +231,7 @@ export interface SubWorkflowStep extends StepBase {
 export type StepDefinition =
 	| AgentStep
 	| CodeStep
+	| LogStep
 	| FanOutStep
 	| LoopUntilStep
 	| AdversarialStep
@@ -264,6 +286,15 @@ export interface RunResult {
 	readonly stats: StepStats;
 	readonly journalFile?: string;
 	readonly error?: string;
+	/** A5: category of the terminal error that ended the run (when the failure
+	 *  originated from a categorized WorkflowError — budget-exceeded, size-limit,
+	 *  control-chars, policy-gate, determinism, …). Absent when the run failed
+	 *  with an uncategorized step error or aborted. */
+	readonly errorCategory?: ErrorCategory;
+	/** A3: step ids that returned null under an `onBudgetExhaust: "null"` policy
+	 *  (present only when any step degraded). Lets callers distinguish a clean
+	 *  completion from one with holes. */
+	readonly degradedSteps?: readonly string[];
 	/** Staged-resume info: how many agents hit the cache from a previous run. */
 	readonly resume?: {
 		readonly cachedHits: number;

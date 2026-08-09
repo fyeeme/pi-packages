@@ -2,7 +2,7 @@
 
 **Deterministic TypeScript workflow orchestration for [pi](https://github.com/earendil-works/pi-mono).**
 
-Define a workflow as a declarative list of typed steps, run it, and get resumable, budget-bounded, abortable execution. Fuses the pi-dynamic-workflows design (7 step primitives + heuristic planner + outcome collectors) with Claude Code's workflow-engine coordination mechanisms (deterministic sandbox, cache-key resume, per-agent abort, dynamic budget, runaway caps).
+Define a workflow as a declarative list of typed steps, run it, and get resumable, budget-bounded, abortable execution. Fuses the pi-dynamic-workflows design (10 step primitives + heuristic planner + outcome collectors) with Claude Code's workflow-engine coordination mechanisms (deterministic sandbox, cache-key resume, per-agent abort, dynamic budget, runaway caps).
 
 Languages: **English** | [中文](README.zh-CN.md)
 
@@ -10,7 +10,7 @@ Languages: **English** | [中文](README.zh-CN.md)
 
 ## Why
 
-A workflow run is a list of steps (`agent` / `code` / `fan_out` / `loop_until` / `adversarial` / `tournament` / `classify_route`). The engine guarantees:
+A workflow run is a list of steps (`agent` / `code` / `log` / `fan_out` / `loop_until` / `loop_until_dry` / `adversarial` / `tournament` / `classify_route` / `sub_workflow`). The engine guarantees:
 
 - **Determinism** — workflow `.ts` files are AST-guarded against `Date.now()` / `Math.random()` / `new Date()`; run ids are a pure function of `(timestamp, sequence)`.
 - **Resume without re-dispatch** — every agent call is keyed by `sha256(workflow + prompt + signature)` and journaled; re-running the same workflow replays cached agents (zero subprocess spawns).
@@ -28,13 +28,18 @@ This is a pi extension package (workspace / local), not yet published to npm. Fr
 npm install --ignore-scripts   # hydrate (the package is a workspace dep)
 ```
 
+This resolves [`@fyeeme/pi-subagent-core`](https://www.npmjs.com/package/@fyeeme/pi-subagent-core)
+(`^0.3.0`, from the npm registry — no sibling-repo layout requirement).
+
 Then import the public API from the package root module (a TypeScript barrel; the package ships `.ts` source):
 
 ```ts
 import { defineWorkflow, runWorkflow } from "@fyeeme/pi-dynamic-workflows/src/index.ts";
 ```
 
-> The package's `pi.extensions` entry (`./index.ts`) is currently scaffolding — wiring the `run_workflow` tool into pi is forthcoming. The engine itself is fully usable via the imports shown here.
+> The package's `pi.extensions` entry (`./index.ts`) registers the `run_workflow`
+> tool and the `/wf-inspect` command. The engine is also fully usable via the
+> imports shown here.
 
 ---
 
@@ -207,7 +212,7 @@ skipAgent(registry, "fan#2");   // aborts only that call; siblings keep running
 const result = await runP;       // status "completed" — the batch finished without item 2
 ```
 
-`abortAgent(registry, callId)` aborts one call; `retryAgent(registry, callId)` aborts so the runner can re-dispatch. Call ids are `${step.id}#${n}` (1-based).
+`abortAgent(registry, callId)` aborts one call and fires `onAgentSkip`; `retryAgent(registry, callId)` aborts one call and fires `onAgentRetry`. **No automatic re-dispatch is wired yet** — the aborted call settles as skipped/failed and the run continues/fails per the step's normal settle semantics; `retryAgent` is a notify-and-abort primitive for external controllers today. Call ids are `${step.id}#${n}` (1-based).
 
 ### 8. Budget enforcement
 
@@ -291,13 +296,27 @@ const result = await runWorkflow({ workflow: wf, cwd: tempDir, now: 1000, dispat
 |---|---|---|
 | `agent` | `prompt: string \| (ctx)=>string`, `model?`, `tools?`, `systemPrompt?` | final assistant text |
 | `code` | `transform: (ctx) => unknown` (pure, no dispatch, not cached) | the transform's return value |
+| `log` | `message: string \| (ctx)=>string` (narrative, zero dispatch/tokens) | the message (fires `onLog`) |
 | `fan_out` | `over()`, `agent(item,i)`, `parallelism?`, `merge?` | merged array (or `merge` output) |
 | `loop_until` | `prompt(ctx,i)`, `until(ctx,i)`, `maxIterations?` | array of per-iteration outputs |
 | `adversarial` | `produce`, `rubric[]`, `judges?`, `minPass?` | `{ candidate, passed, passCount, judges }` |
 | `tournament` | `candidates`, `judges`, `produce` | `{ candidates, winner, judges }` |
 | `classify_route` | `classifier`, `routes: Record<cat, Step[]>`, `fallback?` | `{ category, matched, route, routeStatus }` |
+| `sub_workflow` | `workflow: WorkflowDefinition`, `input?`, `inheritBudget?` | `{ steps, status, workflowName, error }` |
+| `loop_until_dry` | `agent(item, i)`, `keyOf?`, `merge?`, `maxRounds?`, `dryThreshold?` | array of discovered items |
 
-Every step accepts `id`, `retry?: { maxRetries }`.
+Every step accepts `id`, `retry?: { maxRetries }`, and
+`onBudgetExhaust?: "throw" | "null"` — under `"null"`, a step whose budget
+runs out returns `null` (degraded) instead of aborting the run; the run result
+reports degraded steps in `degradedSteps`. Default `"throw"` preserves the
+fail-fast guarantee.
+
+**Template strictness** — string prompts are filled in a single left-to-right
+pass over `{{input}}` / `{{item}}` / `{{step.<id>}}`. Any other `{{...}}` (or an
+out-of-context token, e.g. `{{item}}` in a non-fan_out prompt) raises a
+`compile`-category error that aborts the run: a literal `{{...}}` in a prompt
+(e.g. mustache/jinja examples) must be avoided or the prompt text adjusted, it
+is no longer passed through verbatim (0.1.0 behavior).
 
 ---
 
@@ -313,13 +332,15 @@ Every step accepts `id`, `retry?: { maxRetries }`.
 | `input?` | `unknown` | `ctx.input` |
 | `budget?` | `Budget` | overrides `workflow.budget` |
 | `signal?` | `AbortSignal` | run-wide abort |
-| `listeners?` | `AgentLifecycleListeners` | `onAgentStart/End/Skip/Retry` |
+| `listeners?` | `AgentLifecycleListeners` | `onAgentStart/End/Skip/Retry/CacheHit` + `onLog` (log steps) + `onUpdate` (streamed deltas) |
 | `dispatch?` | `AgentDispatch` | default = real `spawnAgent` |
+| `maxPromptBytes?` | `number` | A6 size guard — resolved task prompt **and** effective systemPrompt over this byte size throw a `size-limit` error before spawn (default 256 KB) |
+| `policyGate?` | `(wf) => { allow, reason? }` | A6 gate — return `{ allow: false }` to abort the run before any dispatch |
 | `registry?` | `AgentSpawnRegistry` | for external `skipAgent`/`abortAgent` |
 | `journalDir?` | `string` | default `<cwd>/.pi/workflows/<name>` |
 | `sequence?` | `number` | run-id disambiguator |
 
-`RunResult = { runId, status, steps: StepResult[], stats: StepStats, journalFile?, error? }`.
+`RunResult = { runId, status, steps: StepResult[], stats: StepStats, journalFile?, error?, errorCategory?, degradedSteps? }`.
 
 ### Also exported
 `defineWorkflow`, `loadWorkflowModule`, `collect` (+ `urlCollector`/`filePathCollector`/`jsonCollector`/`parseFirstJson`), `heuristicallyPlan`, `createSpawnRegistry`/`abortAgent`/`skipAgent`/`retryAgent` (from `sessions/spawn.ts`), and all step/result/context types.

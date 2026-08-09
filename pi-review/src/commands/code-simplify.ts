@@ -1,10 +1,41 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { bundledSkillPath } from "../skills.ts";
 
 /** Context fraction at which we fall back to single-pass — a Pi-specific heuristic (see decideSimplifyMode). */
 const CONTEXT_NEAR_FULL_THRESHOLD = 0.8;
 
 export type SimplifyMode = "parallel" | "single-pass";
+
+/** Priority order for picking a verification command from package.json scripts. */
+const VERIFY_SCRIPT_PRIORITY = ["check", "test", "lint", "typecheck"] as const;
+
+/**
+ * Pick the project verification command from a package.json `scripts` map, in
+ * priority order (check → test → lint → typecheck). Pure — unit-testable.
+ * Returns the runnable command (e.g. `npm run check`) or null when none exists.
+ */
+export function detectVerifyCommand(scripts: Record<string, string> | null): string | null {
+	if (!scripts) return null;
+	for (const key of VERIFY_SCRIPT_PRIORITY) {
+		const v = scripts[key];
+		if (typeof v === "string" && v.trim() !== "") return `npm run ${key}`;
+	}
+	return null;
+}
+
+/** Read package.json scripts from `cwd`; returns null when absent/unparseable. */
+function readScriptsAt(cwd: string): Record<string, string> | null {
+	try {
+		const pkg = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8")) as {
+			scripts?: Record<string, string>;
+		};
+		return pkg.scripts ?? null;
+	} catch {
+		return null;
+	}
+}
 
 /**
  * Decide simplify mode deterministically from real context usage + tool availability.
@@ -48,18 +79,20 @@ export function registerSimplify(pi: ExtensionAPI): void {
 				contextWindow: usage?.contextWindow ?? 0,
 				hasSubagent,
 			});
-			const pct =
-				usage && usage.tokens != null && usage.contextWindow > 0
-					? Math.round((usage.tokens / usage.contextWindow) * 100) + "%"
-					: "?";
+			const pct = usage && usage.percent != null ? `${Math.round(usage.percent)}%` : "?";
 			const bodyLabel = mode === "parallel" ? "PARALLEL MODE" : "SINGLE-PASS MODE";
+			const verifyCmd = detectVerifyCommand(readScriptsAt(ctx.cwd));
+			const verifyLine = verifyCmd
+				? `Verification command: \`${verifyCmd}\` (detected from package.json scripts). After applying Phase 2 fixes, run it; on failure, follow the skill's auto-revert procedure — never leave the working tree verified-broken.`
+				: `No verification command detected in package.json (looked for check/test/lint/typecheck). Apply fixes and report outcomes, but state in the report that no verification was run (verification is opportunistic, never blocking).`;
 			pi.sendUserMessage(
 				`Clean up the changed code now. Target: ${args || "(whole diff)"}.\n\n` +
 					`Handler decided ${mode} mode (context ${pct} full, subagent ${hasSubagent ? "available" : "absent"}). ` +
 					`Load ${bundledSkillPath("simplify/SKILL.md")} via the read tool and follow the ${bodyLabel} body. ` +
 					(mode === "parallel"
 						? `Use the \`subagent\` tool (mode: parallel) for the 4-agent fan-out.`
-						: `Work the four angles inline — do not fake fan-out.`),
+						: `Work the four angles inline — do not fake fan-out.`) +
+					`\n${verifyLine}`,
 			);
 		},
 	});

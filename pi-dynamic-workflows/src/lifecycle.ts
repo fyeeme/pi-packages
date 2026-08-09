@@ -18,11 +18,15 @@ import type { StepStats } from "./types.ts";
 export interface AgentLifecycleListeners {
 	onAgentStart?(callId: string): void;
 	/** `stats` carries per-call tokens/cost/duration so progress UIs can show spend live. */
-	onAgentEnd?(callId: string, ok: boolean, stats?: StepStats): void;
+	onAgentEnd?(callId: string, ok: boolean, stats?: StepStats, model?: string, output?: string): void;
 	onAgentSkip?(callId: string): void;
 	onAgentRetry?(callId: string): void;
 	/** Fired when an agent call hits the journal cache (zero-dispatch resume). */
 	onAgentCacheHit?(callId: string): void;
+	/** Fired when a `log` step runs, with the step id and resolved message. */
+	onLog?(stepId: string, message: string): void;
+	/** Fired on each streamed `message_update` partial for an in-flight agent call. */
+	onUpdate?(callId: string, partial: string): void;
 }
 
 export function notifySkip(listeners: AgentLifecycleListeners | undefined, callId: string): void {
@@ -46,6 +50,22 @@ export function notifyCacheHit(listeners: AgentLifecycleListeners | undefined, c
 		listeners?.onAgentCacheHit?.(callId);
 	} catch (e) {
 		warn("onAgentCacheHit", e);
+	}
+}
+
+export function notifyLog(listeners: AgentLifecycleListeners | undefined, stepId: string, message: string): void {
+	try {
+		listeners?.onLog?.(stepId, message);
+	} catch (e) {
+		warn("onLog", e);
+	}
+}
+
+export function notifyUpdate(listeners: AgentLifecycleListeners | undefined, callId: string, partial: string): void {
+	try {
+		listeners?.onUpdate?.(callId, partial);
+	} catch (e) {
+		warn("onUpdate", e);
 	}
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideSimplifyMode } from "../src/commands/code-simplify.ts";
+import { decideSimplifyMode, detectVerifyCommand } from "../src/commands/code-simplify.ts";
 import { parseReviewArgs, resolveEffort } from "../src/commands/code-review.ts";
 
 describe("decideSimplifyMode", () => {
@@ -67,5 +67,33 @@ describe("resolveEffort", () => {
 
 	it("falls back to default low when neither explicit nor last-used", () => {
 		expect(resolveEffort(undefined, undefined)).toEqual({ level: "low", source: "default" });
+	});
+});
+
+describe("detectVerifyCommand", () => {
+	it("prefers `check` over test/lint/typecheck", () => {
+		expect(detectVerifyCommand({ check: "tsc", test: "vitest", lint: "eslint" })).toBe("npm run check");
+	});
+
+	it("falls back to test when check is absent", () => {
+		expect(detectVerifyCommand({ test: "vitest", lint: "eslint" })).toBe("npm run test");
+	});
+
+	it("falls back to lint, then typecheck", () => {
+		expect(detectVerifyCommand({ lint: "eslint" })).toBe("npm run lint");
+		expect(detectVerifyCommand({ typecheck: "tsc --noEmit" })).toBe("npm run typecheck");
+	});
+
+	it("returns null when no recognized script exists", () => {
+		expect(detectVerifyCommand({ build: "tsc", dev: "vite" })).toBeNull();
+	});
+
+	it("returns null for null/empty scripts", () => {
+		expect(detectVerifyCommand(null)).toBeNull();
+		expect(detectVerifyCommand({})).toBeNull();
+	});
+
+	it("ignores a script whose value is empty/whitespace", () => {
+		expect(detectVerifyCommand({ check: "   ", test: "" })).toBeNull();
 	});
 });

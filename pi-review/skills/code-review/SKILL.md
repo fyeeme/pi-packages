@@ -41,9 +41,13 @@ description: "Review the current diff for correctness bugs and reuse/simplificat
   Pi ADAPTATIONS (differ from the CC runtime)
   ════════════════════════════════════════════════════════════════════════
     1. Output   — CC calls a ReportFindings tool with {level, findings}; Pi
-                  PRINTS a Markdown findings table + details block as text
-                  (no such tool on Pi). [was JSON array; switched for
-                  readability]
+                  uses this extension's `review_report` tool (the Pi counterpart
+                  to ReportFindings, verdict/outcome enums aligned to CC
+                  v2.1.226): it renders the Chinese Markdown report (table +
+                  details) back to the conversation AND writes a
+                  machine-readable JSON to <cwd>/.pi/review/ for CI / --fix /
+                  --comment. If the tool is absent, fall back to printing the
+                  Markdown as text.
     2. Fan-out  — CC uses the Agent tool; Pi uses the `subagent` tool
                   (mode: parallel), or runs angles sequentially if unavailable.
     3. Verify   — CC uses the Agent tool; Pi uses `subagent` for the
@@ -74,6 +78,8 @@ altitude, and conventions findings when the output cap forces a cut.
 | medium | **precision** — surface only findings a maintainer would act on | independent agent | fan-out (1 finder/angle) | ≤ 8 |
 | high | **recall** — catch every real bug a careful reviewer would; **err on the side of surfacing** | independent agent | more angles | ≤ 10 |
 | xhigh → max | recall + **gap-hunt** | independent agent | above + 1 fresh gap finder | larger, may include uncertain |
+
+**max 与 xhigh 结构相同**：fan-out / verify / sweep 完全一致，差别仅在模型 reasoning effort（CC v2.1.226 注释实证：`max → same structure as xhigh (the API reasoning effort differs, not the fan-out)`）。若运行时不支持调节 reasoning effort，max 在结构上退化为 xhigh——不要因档名而期待更多 fan-out。
 
 Each finder surfaces **up to 6 candidate findings** with `file`, `line`, a
 one-line `summary`, and a concrete `failure_scenario`.
@@ -277,48 +283,38 @@ At **high and below**, skip Phase 3.
 
 ## Output
 
-Print the findings as a **Markdown table + a details block** — readable in a
-terminal and in rendered Markdown (no JSON, no ReportFindings tool on Pi). Cap =
-low's min(files_changed, 4); 8 at medium; 10 at high; larger at xhigh → max.
+Report the findings via the `review_report` tool (this extension's counterpart
+to CC's `ReportFindings`) — call it **once** with
+`{ level, target, files_changed, fanned_out, findings }`, findings ranked
+most-severe first (empty array if nothing survived verification). The tool
+renders the Chinese Markdown report (table + details) back to the conversation
+AND writes a machine-readable JSON to `<cwd>/.pi/review/` for CI / `--fix` /
+`--comment`. Do **not** also hand-write the Markdown table.
 
-**全部用中文输出**：表头、概述、场景一律用中文；`Verdict`、`Category` 作为标识符保留
-英文 token（CONFIRMED / PLAUSIBLE；correctness / reuse …）。
+Each finding in the array carries: `file`, `line` (optional), `category`
+(`correctness` / `reuse` / `simplification` / `efficiency` / `altitude` /
+`conventions`, or a more specific slug like `test-coverage`), `verdict`
+(`CONFIRMED` / `PLAUSIBLE` / `REFUTED`), `summary` (one line, Chinese), and
+`failure_scenario` (concrete input/state → wrong output/crash; for cleanup
+findings, the concrete cost — Chinese). When re-reporting after applying
+`--fix`, set `outcome` on each finding (`fully_achieved` / `mostly_achieved` /
+`partially_achieved` / `not_achieved` / `unclear_from_transcript` — mirrored
+verbatim from CC's `ReportFindings`, v2.1.226).
 
-**1. 表头行** — 单行写明：力度、diff 命令/范围、改动文件数、命中条数、是否真的多智能体
-并发（见下文 Single-pass honesty）。示例：
+Cap = low's min(files_changed, 4); 8 at medium; 10 at high; larger at
+xhigh → max. If more than `{cap}` survive, send the `{cap}` most severe
+(correctness outranks cleanup/altitude/conventions when cutting). If nothing
+survives, send an empty `findings` array — the tool prints a zero-count header.
 
-> `max` · `git diff HEAD` · 29 个文件 · 3 条发现 · 多智能体（验证 + 查漏）
+**全部用中文**：`summary` 与 `failure_scenario` 一律中文；`verdict`、`category`、
+`outcome` 作为标识符保留英文 token。
 
-**2. 发现汇总表** — 按严重程度从高到低，每条一行：
+**`fanned_out` 诚实** — 准确设置：仅当多智能体 fan-out 真的跑起来（subagent
+finder + verify agent）才为 `true`；low effort 或任何单遍/自审降级为 `false`。该
+字段会出现在报告表头，让读者不被误导（替代旧的 Single-pass honesty 小节）。
 
-| # | 判定 | 类别 | 位置 | 概述 |
-|---|------|------|------|------|
-| 1 | CONFIRMED | correctness | path/file.ext:123 | 一句话说明这个 bug |
-| 2 | PLAUSIBLE | reuse | path/file.ext:45 | … |
-
-- `判定` — `CONFIRMED` / `PLAUSIBLE` / 留空（未做验证）。
-- `类别` — 产生该发现的角度，短横线小写 slug（`correctness`、`simplification`、
-  `efficiency`、`reuse`、`altitude`、`conventions`，或更具体的如 `test-coverage`）。
-- `位置` — `文件:行号`。
-- `概述` — 一句话说明（≤ 约 80 字，同时作为紧凑标签）。
-
-**3. 详情块** — 与表格同序；场景放不进单元格，在这里展开：
-
-**1. path/file.ext:123 — 类别** *(判定)*
-概述：<一句话>
-场景：<具体的输入/状态 → 错误输出/崩溃；若是清理类发现，写明具体代价——重复了什么、
-浪费了什么、哪里更难维护，或违反了哪条规则>
-
-If more than `{cap}` survive, keep the `{cap}` most severe (correctness outranks
-cleanup/altitude/conventions when cutting). If nothing survives, print the header
-line with count 0 and skip the table and details — don't emit an empty table.
-
-### Single-pass honesty
-
-If this review did not actually fan out — low effort, or medium+ where the
-`subagent` tool was unavailable so the angles ran sequentially in one context —
-state clearly in the header line that this was a single-pass review done without the
-multi-agent fan-out, so whoever reads it isn't misled about what actually ran.
+**降级** — 若 `review_report` 工具未注册（这份 SKILL.md 跑在 pi-review 扩展之外），
+退回到直接打印 Markdown 表格 + 详情块文本；不要报错。
 
 ---
 
@@ -329,8 +325,13 @@ findings to the working tree instead of stopping at the report: fix each one
 directly — correctness bugs and reuse/simplification/efficiency cleanups alike.
 Skip any finding whose fix would change intended behavior, require changes well
 outside the reviewed diff, or that you judge to be a false positive — note the
-skip rather than arguing with it. Finish with a brief summary of what was fixed
-and what was skipped.
+skip rather than arguing with it. Then call `review_report` once more to
+re-report, setting `outcome` on each finding (`fully_achieved` / `mostly_achieved`
+/ `partially_achieved` / `not_achieved` / `unclear_from_transcript` — skipped
+ones are `not_achieved` or `unclear_from_transcript`). This structured re-report
+replaces the hand-written summary and makes the fix result machine-consumable.
+If `review_report` is unavailable, fall back to a brief text summary of what was
+fixed and what was skipped.
 
 ## Posting comments (--comment)
 

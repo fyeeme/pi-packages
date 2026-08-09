@@ -18,3 +18,11 @@ export {
 	type Collector,
 } from "./outcomes.ts";
 export { heuristicallyPlan, type HeuristicPlanOptions } from "./planner.ts";
+export {
+	WorkflowError,
+	isRetryable,
+	RETRYABLE_CATEGORIES,
+	type ErrorCategory,
+	type ErrorDetail,
+	type WorkflowErrorOptions,
+} from "./errors.ts";

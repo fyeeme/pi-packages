@@ -14,6 +14,8 @@ import type { AgentSpawnOptions, AgentSpawnResult } from "../../src/agent/dispat
 export interface FakeDispatchOptions {
 	/** Produce the final assistant text for a call. Default: `out:<task>`. */
 	readonly value?: (opts: AgentSpawnOptions) => string;
+	/** Model stamped on every settled result. Default: "fake". */
+	readonly model?: string;
 	/** callIds that block until their controller aborts (for abort/skip scenarios). */
 	readonly hang?: ReadonlySet<string>;
 	/** callIds that settle as an errored agent (stopReason "error") — for failure-path tests. */
@@ -57,6 +59,7 @@ export function makeFakeDispatch(opts: FakeDispatchOptions = {}): AgentDispatch 
 				stderr: "",
 				usage,
 				aborted: true,
+				maxTurnsReached: false,
 			} as AgentSpawnResult;
 		}
 
@@ -65,11 +68,12 @@ export function makeFakeDispatch(opts: FakeDispatchOptions = {}): AgentDispatch 
 		const isAbort = opts.aborts?.has(callId) ?? false;
 
 		const text = valueFn(options);
+		const model = opts.model ?? "fake";
 		const msg = {
 			role: "assistant" as const,
 			content: [{ type: "text" as const, text }],
 			usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0 }, totalTokens: 15 },
-			model: "fake",
+			model,
 			stopReason: isError ? "error" : isAbort ? "aborted" : "stop",
 			errorMessage: isError ? "fake error" : undefined,
 		};
@@ -82,10 +86,11 @@ export function makeFakeDispatch(opts: FakeDispatchOptions = {}): AgentDispatch 
 			messages: [msg as unknown as Message],
 			stderr: "",
 			usage,
-			model: "fake",
+			model,
 			stopReason,
 			errorMessage,
 			aborted,
+			maxTurnsReached: false,
 		};
 
 		registry.controllers.delete(callId);

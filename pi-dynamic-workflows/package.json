@@ -1,7 +1,7 @@
 {
   "name": "@fyeeme/pi-dynamic-workflows",
-  "version": "0.1.0",
-  "description": "Deterministic TypeScript workflow orchestration for pi. Fuses the pi-dynamic-workflows design (declarative graph, 7 step primitives, heuristic planner, outcome collectors) with Claude Code's workflow engine coordination mechanisms (deterministic sandbox, cache-key resume, per-agent abort map, dynamic budget, runaway caps).",
+  "version": "0.1.1",
+  "description": "Deterministic TypeScript workflow orchestration for pi. Fuses the pi-dynamic-workflows design (declarative graph, 10 step primitives, heuristic planner, outcome collectors) with Claude Code's workflow engine coordination mechanisms (deterministic sandbox, cache-key resume, per-agent abort map, dynamic budget, runaway caps).",
   "type": "module",
   "license": "MIT",
   "author": "fyeeme",
@@ -21,6 +21,7 @@
   "files": [
     "*.ts",
     "src/**/*.ts",
+    "sessions/**/*.ts",
     "README.md",
     "README.zh-CN.md",
     "LICENSE"
@@ -34,18 +35,21 @@
     "test": "vitest --run",
     "typecheck": "tsc"
   },
+  "dependencies": {
+    "@fyeeme/pi-subagent-core": "^0.3.2"
+  },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.77.0",
-    "@earendil-works/pi-coding-agent": ">=0.77.0",
-    "@earendil-works/pi-tui": ">=0.77.0",
+    "@earendil-works/pi-ai": ">=0.84.1",
+    "@earendil-works/pi-coding-agent": ">=0.84.1",
+    "@earendil-works/pi-tui": ">=0.84.1",
     "jiti": ">=2.0.0",
     "typebox": ">=1.0.0",
     "typescript": ">=5.0.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.77.0",
-    "@earendil-works/pi-coding-agent": "0.77.0",
-    "@earendil-works/pi-tui": "0.77.0",
+    "@earendil-works/pi-ai": "0.84.1",
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-tui": "0.84.1",
     "@types/node": "22.19.19",
     "jiti": "2.7.0",
     "typebox": "1.1.38",

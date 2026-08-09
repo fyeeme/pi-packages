@@ -68,7 +68,15 @@ describe("computeCacheKey (deterministic)", () => {
 		expect(a).toBe(b);
 	});
 
-	it("produces wf: prefixed 64-hex", () => {
-		expect(computeCacheKey({ workflowName: "wf", prompt: "x" })).toMatch(/^wf:[0-9a-f]{64}$/);
+	it("produces wf4: prefixed 64-hex", () => {
+		expect(computeCacheKey({ workflowName: "wf", prompt: "x" })).toMatch(/^wf4:[0-9a-f]{64}$/);
+	});
+
+	it("delimiter injection cannot force a key collision (B5)", () => {
+		// JSON-tuple derivation: a NUL (or any char) inside a field cannot shift the
+		// parse the way the old `field + "\x00" + field` scheme allowed.
+		const a = computeCacheKey({ workflowName: "a\u0000b", prompt: "c" });
+		const b = computeCacheKey({ workflowName: "a", prompt: "b\u0000c" });
+		expect(a).not.toBe(b);
 	});
 });

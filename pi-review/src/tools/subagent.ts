@@ -21,14 +21,33 @@ import {
 	abortAgent,
 	createSpawnRegistry,
 	mapWithConcurrencyLimit,
+	parsePositiveInt,
 	spawnAgent,
 	type AgentSpawnRegistry,
 	type AgentSpawnOptions,
 	type AgentSpawnResult,
-} from "../agent/dispatch.ts";
+} from "@fyeeme/pi-subagent-core";
 
-/** Cap on concurrent subprocesses (matches pi-dynamic-workflows + examples/subagent). */
-const MAX_CONCURRENCY = 8;
+/** Default concurrency ceiling when PI_MAX_CONCURRENT_SUBAGENTS is unset/invalid. */
+const DEFAULT_MAX_CONCURRENCY = 8;
+
+/**
+ * Effective concurrency ceiling, configurable via PI_MAX_CONCURRENT_SUBAGENTS
+ * (parity with CC's CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS). Unset, missing, or
+ * non-positive/non-integer values fall back to the default. Read at call time
+ * so a changed env takes effect without a reload.
+ */
+function getMaxConcurrency(): number {
+	return parsePositiveInt(process.env.PI_MAX_CONCURRENT_SUBAGENTS) ?? DEFAULT_MAX_CONCURRENCY;
+}
+
+/**
+ * Default turn budget for a fan-out agent when the caller omits maxTurns. A
+ * runaway agent cannot otherwise be bounded. Generous (well above the ~10–15
+ * turns the 4-angle finder/verify agents need) so legitimate work is not
+ * truncated; callers may override with a smaller or larger explicit value.
+ */
+const DEFAULT_FANOUT_MAX_TURNS = 25;
 
 // Module-level registry so abortAgent can reach in-flight calls. callIds are
 // unique per tool call (toolCallId#index), so a single registry is safe.
@@ -45,10 +64,12 @@ const SubagentParams = Type.Object({
 	systemPrompt: Type.Optional(Type.String({ description: "Appended to the sub-agent's system prompt." })),
 	tools: Type.Optional(Type.Array(Type.String(), { description: "Tool whitelist for the sub-agent. Omit for default tools." })),
 	parallelism: Type.Optional(
-		Type.Number({ description: `Max concurrent agents in parallel mode (default min(prompts.length, ${MAX_CONCURRENCY})).` }),
+		Type.Number({
+			description: `Max concurrent agents in parallel mode (integer ≥ 1; default min(prompts.length, ceiling)). The ceiling is PI_MAX_CONCURRENT_SUBAGENTS (default ${DEFAULT_MAX_CONCURRENCY}).`, 
+		}),
 	),
 	maxTurns: Type.Optional(
-		Type.Number({ description: "Max assistant turns per sub-agent. When reached, the subprocess is aborted. Omit for unlimited." }),
+		Type.Number({ description: "Max assistant turns per sub-agent. When reached, the subprocess is aborted. Omit for the default budget; 0 means abort after the first message." }),
 	),
 	cwd: Type.Optional(Type.String({ description: "Working directory. Defaults to the session cwd." })),
 });
@@ -221,13 +242,21 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 
 		const cwd = params.cwd ?? ctx.cwd;
 		const baseSystem = params.systemPrompt;
+		// Recursion opt-in: a child may itself spawn sub-agents ONLY when the
+		// caller explicitly listed the fan-out tool in the child's whitelist.
+		// Default (omitted, or whitelist without it) → the child loads without
+		// the subagent tool (see isFanoutToolAllowed in the extension entry).
+		const allowChildRecursion = params.tools?.includes("subagent") ?? false;
 		// Per-call-agnostic subset of AgentSpawnOptions; callId/task are added per spawn.
 		const baseOpts: Omit<AgentSpawnOptions, "callId" | "task"> = {
 			cwd,
 			model: params.model,
 			tools: params.tools,
 			signal,
-			maxTurns: params.maxTurns,
+			// Default turn budget applies when omitted; an explicit 0 is honored by
+			// spawnAgent (it uses `!= null`, not truthiness) rather than treated as unset.
+			maxTurns: params.maxTurns ?? DEFAULT_FANOUT_MAX_TURNS,
+			allowChildRecursion,
 		};
 
 		const partial: SubagentDetails = {
@@ -287,7 +316,12 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 		};
 
 		if (params.mode === "parallel") {
-			const conc = Math.min(params.parallelism ?? MAX_CONCURRENCY, MAX_CONCURRENCY, prompts.length);
+			const ceiling = getMaxConcurrency();
+			// Fractional / non-positive parallelism from the model would reach
+			// mapWithConcurrencyLimit as `new Array(3.5)` → RangeError. Clamp to a
+			// sane integer instead of failing the whole tool call.
+			const requested = Math.floor(Math.max(1, params.parallelism ?? ceiling));
+			const conc = Math.min(requested, ceiling, prompts.length);
 			await mapWithConcurrencyLimit(prompts, conc, (p, i) => runOne(p, i));
 		} else {
 			// single or chain

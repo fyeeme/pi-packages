@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateRunId, runIdTimestamp } from "../src/state/names.ts";
+import { generateRunId } from "../src/state/names.ts";
 
 describe("generateRunId (deterministic)", () => {
 	it("same input produces identical id", () => {
@@ -28,15 +28,5 @@ describe("generateRunId (deterministic)", () => {
 	it("sequence zero-pads to 4 digits", () => {
 		const ts = 1;
 		expect(generateRunId({ timestamp: ts, sequence: 0 })).toBe(`run-${ts.toString(36)}-0000`);
-	});
-
-	it("runIdTimestamp inverts the timestamp slot", () => {
-		const ts = 1_800_000_000_000;
-		const id = generateRunId({ timestamp: ts, sequence: 7 });
-		expect(runIdTimestamp(id)).toBe(ts);
-	});
-
-	it("runIdTimestamp returns undefined for malformed ids", () => {
-		expect(runIdTimestamp("not-a-run-id")).toBeUndefined();
 	});
 });

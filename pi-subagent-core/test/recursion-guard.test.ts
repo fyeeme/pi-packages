@@ -103,23 +103,50 @@ describe("isFanoutToolAllowed (whitelist-by-default + depth cap)", () => {
 });
 
 describe("spawnAgent recursion-guard env propagation", () => {
-	function capturedEnv(opts: Partial<AgentSpawnOptions>): NodeJS.ProcessEnv | undefined {
-		spawnMock.mockReset();
-		const { proc, emitClose } = fakeProc();
-		spawnMock.mockImplementation(() => {
-			// resolve asynchronously like a real proc close
-			queueMicrotask(() => emitClose(0));
-			return proc;
-		});
-		const registry: AgentSpawnRegistry = createSpawnRegistry();
-		void spawnAgent(registry, {
-			callId: "test",
-			task: "noop",
-			maxTurns: 1,
-			...opts,
-		});
-		expect(spawnMock).toHaveBeenCalledTimes(1);
-		return spawnMock.mock.calls[0]![2]?.env as NodeJS.ProcessEnv | undefined;
+	// Host-env isolation: this test file may run inside a pi sub-agent session,
+	// whose process.env already carries PI_SUBAGENT_DEPTH / _RECURSION_ALLOWED /
+	// _MAX_SPAWN_DEPTH. childSpawnEnv computes the child depth as ambient + 1, so
+	// a leaked ambient depth would turn the "depth 1" assertion into "2" and fail
+	// the suite. Snapshot the three vars, clear them for the spawn, restore after.
+	// The ambient-inheritance case opts out (it sets the env itself).
+	const AMBIENT_KEYS = ["PI_SUBAGENT_DEPTH", "PI_SUBAGENT_RECURSION_ALLOWED", "PI_SUBAGENT_MAX_SPAWN_DEPTH"] as const;
+	function withCleanAmbientEnv(fn: () => void): void {
+		const saved: Partial<Record<(typeof AMBIENT_KEYS)[number], string | undefined>> = {};
+		for (const k of AMBIENT_KEYS) saved[k] = process.env[k];
+		for (const k of AMBIENT_KEYS) delete process.env[k];
+		try {
+			fn();
+		} finally {
+			for (const k of AMBIENT_KEYS) {
+				if (saved[k] === undefined) delete process.env[k];
+				else process.env[k] = saved[k];
+			}
+		}
+	}
+
+	function capturedEnv(opts: Partial<AgentSpawnOptions>, clearAmbient = true): NodeJS.ProcessEnv | undefined {
+		let env: NodeJS.ProcessEnv | undefined;
+		const capture = (): void => {
+			spawnMock.mockReset();
+			const { proc, emitClose } = fakeProc();
+			spawnMock.mockImplementation(() => {
+				// resolve asynchronously like a real proc close
+				queueMicrotask(() => emitClose(0));
+				return proc;
+			});
+			const registry: AgentSpawnRegistry = createSpawnRegistry();
+			void spawnAgent(registry, {
+				callId: "test",
+				task: "noop",
+				maxTurns: 1,
+				...opts,
+			});
+			expect(spawnMock).toHaveBeenCalledTimes(1);
+			env = spawnMock.mock.calls[0]![2]?.env as NodeJS.ProcessEnv | undefined;
+		};
+		if (clearAmbient) withCleanAmbientEnv(capture);
+		else capture();
+		return env;
 	}
 
 	it("marks a default child as recursion-disallowed and depth 1", () => {
@@ -142,7 +169,7 @@ describe("spawnAgent recursion-guard env propagation", () => {
 		const prev = process.env.PI_SUBAGENT_MAX_SPAWN_DEPTH;
 		process.env.PI_SUBAGENT_MAX_SPAWN_DEPTH = "5";
 		try {
-			const env = capturedEnv({ allowChildRecursion: true });
+			const env = capturedEnv({ allowChildRecursion: true }, false); // keep ambient — this case sets it itself
 			expect(env?.PI_SUBAGENT_MAX_SPAWN_DEPTH).toBe("5");
 		} finally {
 			if (prev === undefined) delete process.env.PI_SUBAGENT_MAX_SPAWN_DEPTH;

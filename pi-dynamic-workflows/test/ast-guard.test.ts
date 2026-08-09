@@ -71,8 +71,16 @@ describe("ast-guard — reject banned APIs", () => {
 		expect(findDeterminismViolations(src)).toHaveLength(3);
 	});
 
-	it("BANNED_API_MESSAGE covers all four kinds", () => {
-		expect(Object.keys(BANNED_API_MESSAGE).sort()).toEqual(["date_call", "date_now", "math_random", "new_date"]);
+	it("BANNED_API_MESSAGE covers all kinds", () => {
+		expect(Object.keys(BANNED_API_MESSAGE).sort()).toEqual([
+			"crypto_random",
+			"date_call",
+			"date_now",
+			"math_random",
+			"new_date",
+			"performance_now",
+			"process_hrtime",
+		]);
 	});
 });
 
@@ -93,5 +101,58 @@ describe("ast-guard — throws DeterminismError", () => {
 
 	it("does not throw on clean code", () => {
 		expect(() => assertDeterministic("export default 42;", "clean.ts")).not.toThrow();
+	});
+});
+
+describe("ast-guard — extended non-determinism surfaces (B4)", () => {
+	it("flags crypto.randomUUID()", () => {
+		const v = findDeterminismViolations("const id = crypto.randomUUID();");
+		expect(v).toHaveLength(1);
+		expect(v[0]?.kind).toBe("crypto_random");
+	});
+
+	it("flags crypto.randomBytes()", () => {
+		expect(findDeterminismViolations("const b = crypto.randomBytes(8);")[0]?.kind).toBe("crypto_random");
+	});
+
+	it("flags performance.now()", () => {
+		expect(findDeterminismViolations("const t = performance.now();")[0]?.kind).toBe("performance_now");
+	});
+
+	it("flags process.hrtime()", () => {
+		expect(findDeterminismViolations("const h = process.hrtime();")[0]?.kind).toBe("process_hrtime");
+	});
+
+	it("flags process.hrtime.bigint() via its process.hrtime base access", () => {
+		expect(findDeterminismViolations("const h = process.hrtime.bigint();")[0]?.kind).toBe("process_hrtime");
+	});
+
+	it("flags bracket access Date[\"now\"]()", () => {
+		expect(findDeterminismViolations('const t = Date["now"]();')[0]?.kind).toBe("date_now");
+	});
+
+	it("flags bracket access crypto[\"randomUUID\"]()", () => {
+		expect(findDeterminismViolations('const id = crypto["randomUUID"]();')[0]?.kind).toBe("crypto_random");
+	});
+
+	it("flags template-literal subscript Date[`now`]()", () => {
+		expect(findDeterminismViolations("const t = Date[`now`]();")[0]?.kind).toBe("date_now");
+	});
+
+	it("flags parenthesized access (Date).now() and (crypto)[\"randomUUID\"]()", () => {
+		expect(findDeterminismViolations("const t = (Date).now();")[0]?.kind).toBe("date_now");
+		expect(findDeterminismViolations('const id = (crypto)["randomUUID"]();')[0]?.kind).toBe("crypto_random");
+	});
+
+	it("still allows safe accesses (Math.floor, Date.parse)", () => {
+		expect(() =>
+			assertDeterministic("const a = Math.floor(1.5); const b = Date.parse('2026-01-01');"),
+		).not.toThrow();
+	});
+
+	it("documented limitation: destructuring alias still bypasses", () => {
+		// `const {now} = Date; now()` is not caught — a single-file lint cannot
+		// track bindings. This documents the limitation, not desired behavior.
+		expect(findDeterminismViolations("const {now} = Date; const t = now();")).toHaveLength(0);
 	});
 });

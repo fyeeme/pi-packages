@@ -24,7 +24,7 @@ import {
 	spawnAgent,
 	type AgentSpawnRegistry,
 } from "../agent/dispatch.ts";
-import { runStepSequence, aggregateStats, type AgentDispatch, type StepExecContext } from "./stage-executor.ts";
+import { runStepSequence, aggregateStats, DEFAULT_MAX_PROMPT_BYTES, type AgentDispatch, type StepExecContext } from "./stage-executor.ts";
 
 export { type AgentDispatch } from "./stage-executor.ts";
 
@@ -59,8 +59,19 @@ export interface RunWorkflowOptions {
 	readonly dispatch?: AgentDispatch;
 	/** Reuse an existing registry (e.g. to drive skip/retry from outside). */
 	readonly registry?: AgentSpawnRegistry;
+	/** Recursion opt-in for workflow sub-agents: when true, spawned agents may
+	 *  register the subagent/fan-out tools (bounded by PI_SUBAGENT_MAX_SPAWN_DEPTH
+	 *  if set). Default false — children run WITHOUT those tools, so nested
+	 *  fan-out requires explicit opt-in. */
+	readonly allowChildRecursion?: boolean;
 	/** Journal directory. Default <cwd>/.pi/workflows/<workflow.name> (per-workflow → cross-run cache). */
 	readonly journalDir?: string;
+	/** A6: max resolved-prompt byte size; oversize throws a size-limit error.
+	 *  Default DEFAULT_MAX_PROMPT_BYTES (256 KB). */
+	readonly maxPromptBytes?: number;
+	/** A6: policy gate invoked before the first dispatch. Return { allow: false,
+	 *  reason } to deny the run with a policy-gate error. */
+	readonly policyGate?: (workflow: WorkflowDefinition) => { readonly allow: boolean; readonly reason?: string } | Promise<{ readonly allow: boolean; readonly reason?: string }>;
 }
 
 export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunResult> {
@@ -76,11 +87,38 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunResult> 
 	const journal = new Journal({ dir: journalDir });
 	await journal.load();
 
-	// Staged resume: load last run's manifest to predict cache hits.
+	// Staged resume: load last run's manifest (best-effort; crash-resilient).
+	// Real cache-hit accounting is OBSERVED during the run via the counting
+	// listeners below — not predicted from the manifest, which would replay the
+	// prior journal against itself and always read 100% (review M4).
 	const prevManifest = await journal.loadManifest();
-	const stagedInfo = prevManifest ? journal.stagedHits(prevManifest) : null;
+	let cacheHits = 0;
+	let dispatchStarts = 0;
+	const baseListeners = opts.listeners;
+	const listeners: AgentLifecycleListeners = {
+		onAgentStart: (id) => {
+			dispatchStarts++;
+			baseListeners?.onAgentStart?.(id);
+		},
+		onAgentEnd: baseListeners?.onAgentEnd,
+		onAgentSkip: baseListeners?.onAgentSkip,
+		onAgentRetry: baseListeners?.onAgentRetry,
+		onAgentCacheHit: (id) => {
+			cacheHits++;
+			baseListeners?.onAgentCacheHit?.(id);
+		},
+		onLog: baseListeners?.onLog,
+		onUpdate: baseListeners?.onUpdate,
+	};
 
-	const pool = new BudgetPool(budget, now);
+	// maxDurationMs is wall-clock: the pool's originMs must be the same clock
+	// the guard points use (Date.now()), NOT the caller-supplied deterministic
+	// `now` — mixing epochs (e.g. runWorkflow({ now: 1 }) + maxDurationMs) would
+	// make the duration budget read as already-exhausted at the first guard.
+	// `now` still drives runId / journal timestamps / exec.now (deterministic).
+	const pool = new BudgetPool(budget, Date.now());
+
+	const runId = generateRunId({ timestamp: now, sequence: opts.sequence ?? 0 });
 
 	const exec: StepExecContext = {
 		workflowName: workflow.name,
@@ -89,11 +127,33 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunResult> 
 		journal,
 		pool,
 		signal: opts.signal,
-		listeners: opts.listeners,
+		listeners,
 		now,
 		spawned: 0,
 		depth: 0,
+		budgetPolicy: "throw",
+		maxPromptBytes: opts.maxPromptBytes ?? DEFAULT_MAX_PROMPT_BYTES,
+		degradedStepIds: new Set(),
+		allowChildRecursion: opts.allowChildRecursion ?? false,
+		dispatched: 0,
 	};
+
+	// A6: policy gate runs before any agent is dispatched. A denial aborts the
+	// run with a terminal policy-gate error (not retryable).
+	if (opts.policyGate) {
+		const decision = await opts.policyGate(workflow);
+		if (!decision.allow) {
+			return {
+				runId,
+				status: "failed",
+				steps: [],
+				stats: { tokens: 0, cost: 0, durationMs: 0, agents: 0, failures: 0 },
+				journalFile: journal.file,
+				error: decision.reason ?? "denied by policy gate",
+				errorCategory: "policy-gate",
+			};
+		}
+	}
 
 	const outcome = await runStepSequence(workflow.steps, opts.input, exec);
 
@@ -102,19 +162,11 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunResult> 
 		? `journal write error (entries may be missing from disk; resume could re-dispatch): ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`
 		: undefined;
 
-	const runId = generateRunId({ timestamp: now, sequence: opts.sequence ?? 0 });
-
-	// Write staged-resume manifest when the run completes (even partially —
-	// the manifest records whatever agent keys made it to the journal).
+	// Write staged-resume manifest when the run completes (even partially).
+	// Only `runId` is consumed downstream (resume.previousRunId); the key list
+	// is dead weight now that cache-hit accounting is observed live.
 	if (!writeErr) {
-		const allKeys: string[] = [];
-		for (const entry of journal.allEntries()) {
-			// Only successful results are cache-hits on resume (failed keys are
-			// re-dispatched); including them inflated cachedTotal and understated
-			// the real hit ratio.
-			if (entry.type === "result" && entry.ok) allKeys.push(entry.key);
-		}
-		const manifest: RunManifest = { runId, at: now, keys: allKeys };
+		const manifest: RunManifest = { runId, at: now };
 		await journal.writeManifest(manifest).catch(() => { /* best-effort */ });
 	}
 
@@ -125,8 +177,12 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunResult> 
 		stats: aggregateStats(outcome.steps.map((s) => s.stats), 0),
 		journalFile: journal.file,
 		error: outcome.error ?? journalWarning,
-		resume: stagedInfo
-			? { cachedHits: stagedInfo.hits, cachedTotal: stagedInfo.total, previousRunId: prevManifest?.runId }
-			: undefined,
+		errorCategory: outcome.errorCategory,
+		degradedSteps: exec.degradedStepIds.size > 0 ? [...exec.degradedStepIds] : undefined,
+		resume: {
+			cachedHits: cacheHits,
+			cachedTotal: cacheHits + exec.dispatched,
+			...(prevManifest ? { previousRunId: prevManifest.runId } : {}),
+		},
 	};
 }

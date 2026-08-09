@@ -1,6 +1,6 @@
 ---
 name: simplify
-description: "Review the changed code for reuse, simplification, efficiency, and altitude cleanups, then apply the fixes. Quality only — it does not hunt for bugs; use /code-review for that. v2 (from Claude Code CLI v2.1.223) — 4 cleanup agents fan out in parallel when context allows, else a single-pass inline cleanup; either way the fixes are applied to the working tree."
+description: "Review the changed code for reuse, simplification, efficiency, and altitude cleanups, then apply the fixes. Quality only — it does not hunt for bugs; use /code-review for that. v2 (from Claude Code CLI v2.1.223) — 4 cleanup agents fan out in parallel when context allows, else a single-pass inline cleanup; either way the fixes are applied, verified against the project's check command, and auto-reverted on failure, then reported as structured outcomes via review_report."
 ---
 
 <!--
@@ -38,7 +38,9 @@ description: "Review the changed code for reuse, simplification, efficiency, and
     3. Command     — CC: /simplify; Pi: /code-simplify.
 
   Prerequisite: the `subagent` tool (provided by the pi-review extension) for
-                PARALLEL MODE. SINGLE-PASS MODE runs standalone.
+                PARALLEL MODE, and the `review_report` tool (same extension) for
+                the Phase 2 structured outcome report. SINGLE-PASS MODE runs
+                standalone apart from `review_report`.
 -->
 
 You are improving the quality of the changed code, not hunting for bugs. Review
@@ -96,14 +98,9 @@ bandaid. Special cases layered on shared infrastructure are a sign the fix isn't
 deep enough — prefer generalizing the underlying mechanism over adding special
 cases.
 
-## Phase 2 — Apply the fixes
+## Phase 2 — Apply, verify, and report
 
-Wait for all four agents to complete, dedup findings that point at the same line
-or mechanism, and fix each remaining one directly. Skip any finding whose fix
-would change intended behavior, require changes well outside the reviewed diff,
-or that you judge to be a false positive — note the skip rather than arguing
-with it. Finish with a brief summary of what was fixed and what was skipped (or
-confirm the code was already clean).
+Follow the shared **Phase 2** procedure at the end of this skill (snapshot → apply → verify → auto-revert on failure → report via `review_report`). The parallel fan-out only changes how findings are gathered (Phase 1); applying, verifying, and reporting are identical across modes. Set `fanned_out: true` in the report since the 4-agent fan-out actually ran.
 
 ---
 
@@ -145,13 +142,106 @@ bandaid. Special cases layered on shared infrastructure are a sign the fix isn't
 deep enough — prefer generalizing the underlying mechanism over adding special
 cases.
 
-## Phase 2 — Apply the fixes
+## Phase 2 — Apply, verify, and report
 
-Dedup findings that point at the same line or mechanism, and fix each remaining
-one directly. Skip any finding whose fix would change intended behavior, require
-changes well outside the reviewed diff, or that you judge to be a false positive
-— note the skip rather than arguing with it. Finish with a brief summary of what
-was fixed and what was skipped (or confirm the code was already clean). State
-clearly in your summary that this was a single-pass review done without the
-`subagent` tool, not the full 4-agent fan-out, so whoever reads it isn't misled
-about what actually ran.
+Follow the shared **Phase 2** procedure at the end of this skill (snapshot → apply → verify → auto-revert on failure → report via `review_report`). Single-pass vs parallel only changes how findings are gathered (Phase 1); applying, verifying, and reporting are identical across modes. Set `fanned_out: false` in the report so a reader is not misled into thinking the 4-agent fan-out ran.
+
+---
+
+# Phase 2 — Apply, verify, and report (shared by both modes)
+
+Dedup findings that point at the same line or mechanism first. Then apply,
+verify, and report. This safety net is what distinguishes `/code-simplify` from
+a blind cleanup: a finding is only "done" once it is applied AND the project
+still verifies — otherwise it is reverted.
+
+## Step 1 — Snapshot the baseline
+
+Before applying any fix, snapshot every file you are about to edit so a failed
+verification can be reverted cleanly. For each touched file, copy its current
+content into a temp dir:
+
+```
+mkdir -p /tmp/pi-simplify-baseline/$(dirname <file>)
+cp <file> /tmp/pi-simplify-baseline/<file>
+```
+
+`$(dirname <file>)` keeps the target's parent dir (e.g. `src/`) inside the
+baseline — a bare `cp <file> /tmp/pi-simplify-baseline/<file>` fails with ENOENT
+for any file in a subdirectory. If a fix CREATES a new file, record its path so
+Step 3a can remove it on rollback (it has no baseline entry).
+
+This baseline captures the working-tree state **including** the user's
+uncommitted changes — reverting to it undoes only `/code-simplify`'s fixes,
+never the user's diff. Do **not** use `git checkout` / `git restore` to revert:
+that would discard the user's intended changes too.
+
+## Step 2 — Apply the fixes
+
+Apply each surviving finding directly. Skip any finding whose fix would change
+intended behavior, require changes well outside the reviewed diff, or that you
+judge to be a false positive — note the skip (it will be reported as
+`not_achieved`).
+
+## Step 3 — Verify, branching on the result
+
+Run the verification command the handler injected in the trigger message (e.g.
+`npm run check`), then branch:
+
+- **No verification command was detected** → keep the applied changes, mark each
+  applied finding `fully_achieved`, and say in the report that NO verification
+  was run. Verification is opportunistic — never block on its absence.
+- **Verification passes** → keep the changes; applied findings are
+  `fully_achieved` (or `mostly_achieved` / `partially_achieved` if a fix only
+  partly addressed the issue).
+- **Verification fails** → the working tree is verified-broken; go to Step 3a.
+
+### Step 3a — Auto-revert (hybrid granularity, only on failure)
+
+1. Revert ALL touched files from the Step 1 baseline (working-tree parent dirs
+already exist, so copying back is safe):
+   ```
+   cp /tmp/pi-simplify-baseline/<file> <file>
+   ```
+2. Remove any files the fixes CREATED (they have no baseline entry and would
+otherwise survive the rollback).
+3. Re-apply ONE file's findings at a time, running the verification command
+   after each file. Keep only files whose verification passes; revert any file
+   whose verification fails back to its baseline.
+4. If NO file passes on its own, leave everything reverted and mark every
+   finding `not_achieved` — a clean tree is the safe outcome, not a broken one.
+
+This caps the cost: the common case (clean apply) runs verification exactly
+once; only a failure escalates to one verification per touched file.
+
+## Step 4 — Report via `review_report`
+
+Call the `review_report` tool **once** with `level: "simplify"` and one finding
+entry per cleanup, ranked most-severe first. Each entry carries `file`, `line`
+(optional), `category` (`reuse` / `simplification` / `efficiency` /
+`altitude`), `summary` (one line, Chinese), `failure_scenario` (the concrete
+cost — Chinese), and `outcome`:
+
+- `fully_achieved` — applied and verification passed (or no verification command
+  existed and the change was kept).
+- `mostly_achieved` / `partially_achieved` — applied but only partly addresses
+  the issue.
+- `not_achieved` — skipped, or reverted by the auto-revert in Step 3a.
+- `unclear_from_transcript` — could not determine.
+
+Do **not** write a free-text summary as the primary record — the structured
+`review_report` call IS the summary (it renders the report AND writes JSON to
+`<cwd>/.pi/review/` for CI). If `review_report` is unavailable, fall back to a
+brief text summary listing each finding's outcome.
+
+Set `fanned_out` honestly in the call: `true` only if the 4-agent fan-out
+(subagent) actually ran; `false` for single-pass. The report header shows this
+so a reader is not misled about what ran.
+
+## Step 5 — Clean up
+
+```
+rm -rf /tmp/pi-simplify-baseline
+```
+
+Remove the baseline snapshots once the report is delivered.
