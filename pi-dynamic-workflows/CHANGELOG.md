@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-10
+
 ### Added
 
 - **workflow 子 agent 系统提示（B1+B2）**：每次 agent 派发注入基础系统提示（verbatim 返回纪律——禁止 "Done." 寒暄、纯 JSON 不加 fence），step 的 `systemPrompt` 覆盖追加在其后；judge/rank 任务 prompt 瘦身为只含 schema（此前重复的 "ONLY JSON" 措辞移除）。
@@ -17,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **错误分类法（A5）**：`WorkflowError` + `category` 判别（budget-exceeded / determinism / size-limit / control-chars / compile / policy-gate / killed / dispatch-error / unexpected-state）；`BudgetExceededError`/`DeterminismError` 改为继承它并携带类别；重试默认仅针对 `dispatch-error`/`unexpected-state`。`RunResult.errorCategory` 把终止类别的分类透传到运行结果边界（policy-gate / size-limit / budget-exceeded 等）。
 - **输入尺寸与策略守卫（A6）**：`maxPromptBytes`（默认 256 KB）在派发前拒绝超大 prompt（`size-limit`）；拒绝非打印控制字符（`control-chars`）；可选 `policyGate` 在首个 agent 派发前门控（`policy-gate`）。
 - **流式文本预览（C3）**：`pi-subagent-core` 的 `spawnAgent` 新增可选 `onUpdate` 回调转发 `message_update` delta；经 `dispatchAgentCall` 桥接到 `onUpdate` 监听器；进度组件展示最近启动调用（最晚 3 行）的流式尾部。
+- **run_workflow 子进程递归 opt-in（review）**：`RunWorkflowOptions.allowChildRecursion`（默认 false）——工作流 agent 子进程默认不再注册 subagent/fan-out 工具（抽取共享核心后行为回退，此前静默丢失）；显式 opt-in 恢复，受 `PI_SUBAGENT_MAX_SPAWN_DEPTH` 上限约束。
 
 ### Changed
 
@@ -26,10 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 预算的 `maxDurationMs` 维度改用活时钟（引擎守卫点用 `Date.now()`；引擎代码不受 AST 守卫约束，确定性仅约束 workflow 本体）：墙钟超时真正触发 `budget-exceeded`，不再是 advisory。
 - `AgentLifecycleListeners` 新增 `onLog`/`onUpdate`；`onAgentEnd` 新增 `model` 参数（向后兼容，均为可选）。
 - **模板解析严格性（review F3，行为变更）**：`fill()` 对 prompt 中任何未知/越界 `{{...}}`（如 agent prompt 里的 `{{item}}`、fan_out item prompt 里的 `{{step.X}}`、字面量花括号模板）从 0.1.0 的原样透传改为抛 `compile` 类别错误并中止运行；README 已声明该破坏，含字面量花括号的既有 prompt 需要调整。
-
-### Added
-
-- **run_workflow 子进程递归 opt-in（review）**：`RunWorkflowOptions.allowChildRecursion`（默认 false）——工作流 agent 子进程默认不再注册 subagent/fan-out 工具（抽取共享核心后行为回退，此前静默丢失）；显式 opt-in 恢复，受 `PI_SUBAGENT_MAX_SPAWN_DEPTH` 上限约束。
+- dispatch 底层抽取到共享包 `@fyeeme/pi-subagent-core`：`src/agent/dispatch.ts` 的 `spawnAgent`/`mapWithConcurrencyLimit`/`createSpawnRegistry`/`abortAgent`/共享类型改从核心导入并 re-export；workflows 专属的 `skipAgent`/`retryAgent`/`AbortReason`/lifecycle 通知层保留在本包。行为不变（cache-resume、per-agent abort、预算/上限均不受影响）。
+- 新增公开 barrel `sessions/spawn.ts`（README §7 文档化的 `createSpawnRegistry`/`abortAgent`/`skipAgent`/`retryAgent` 导出路径，此前未实现）；`files` 加入 `sessions/**/*.ts`。
+- 新增 `@fyeeme/pi-subagent-core` 依赖（`^0.1.0`，从 npm registry 解析）。
 
 ### Fixed
 
@@ -52,11 +54,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **manifest.keys 死重移除（review F15）**：`RunManifest.keys` 写入/解析从未被读取（缓存命中统计早已改为运行期观测），删除字段与收集遍历，`writeManifest` 只写 `runId`/`at`。
 - **共享 UI/解析助手（review F14）**：`stepIdOf`/`fmtTokens`/ANSI 颜色助手抽到新模块 `src/format.ts`，`index.ts`/`src/inspect.ts`/`src/runner/stage-executor.ts` 三处逐字重复的本地拷贝删除。
 - **fan_out/复合步骤失败快速终止在飞兄弟（review F5）**：`dispatchAgentCall` 在任一失败点（settle 失败、dispatch 抛错、A6 size/control 拒绝）经 `abortStepCalls` SIGTERM 同步骤在飞调用——allSettled 等待不再因一个挂死子进程而永久阻塞，失败能及时传播（降级/abort 不触发，不误杀兄弟）。统一收口在 `dispatchAgentCall` 内部，不依赖共享库新 API（消费方依赖 npm `@fyeeme/pi-subagent-core@^0.3.2`）。
-
-## [0.1.1] - 2026-08-08
-
-### Changed
-
-- dispatch 底层抽取到共享包 `@fyeeme/pi-subagent-core`：`src/agent/dispatch.ts` 的 `spawnAgent`/`mapWithConcurrencyLimit`/`createSpawnRegistry`/`abortAgent`/共享类型改从核心导入并 re-export；workflows 专属的 `skipAgent`/`retryAgent`/`AbortReason`/lifecycle 通知层保留在本包。行为不变（cache-resume、per-agent abort、预算/上限均不受影响）。
-- 新增公开 barrel `sessions/spawn.ts`（README §7 文档化的 `createSpawnRegistry`/`abortAgent`/`skipAgent`/`retryAgent` 导出路径，此前未实现）；`files` 加入 `sessions/**/*.ts`。
-- 新增 `@fyeeme/pi-subagent-core` 依赖（`^0.1.0`，从 npm registry 解析）。
