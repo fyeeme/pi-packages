@@ -120,6 +120,24 @@ describe("spawnAgent", () => {
 	beforeEach(() => spawnMock.mockReset());
 	afterEach(() => vi.useRealTimers());
 
+	it("passes --thinking to the child process when set, omits it otherwise", async () => {
+		const proc = fakeProc();
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const p = spawnAgent(registry, { callId: "c-t1", task: "hi", thinking: "high" });
+		proc.emit("close", 0);
+		await p;
+		expect(spawnMock.mock.calls[0]![1]).toContain("--thinking");
+		expect(spawnMock.mock.calls[0]![1]).toContain("high");
+
+		spawnMock.mockClear();
+		spawnMock.mockReturnValue(proc);
+		const p2 = spawnAgent(registry, { callId: "c-t2", task: "hi" });
+		proc.emit("close", 0);
+		await p2;
+		expect(spawnMock.mock.calls[0]![1]).not.toContain("--thinking");
+	});
+
 	it("parses message_end NDJSON events into messages", async () => {
 		const proc = fakeProc();
 		spawnMock.mockReturnValue(proc);

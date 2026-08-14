@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-11
+
+### Added
+
+- `AgentSpawnOptions.thinking`：透传 `--thinking` 层级（off|minimal|low|medium|high|xhigh|max）给子进程；省略时子进程跑模型默认层级。fan-out 子代理的思考深度首次可控制（此前独立子进程不继承主会话 thinking）。
+
 ## [0.3.2] - 2026-08-09
 
 ### Fixed

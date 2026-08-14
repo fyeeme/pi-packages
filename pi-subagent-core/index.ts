@@ -113,10 +113,6 @@ function childSpawnEnv(options: AgentSpawnOptions): NodeJS.ProcessEnv {
  * Run `fn` over `items` with at most `concurrency` in flight, preserving
  * input order in the output array. parallel mode builds on this.
  */
-/**
- * Run `fn` over `items` with at most `concurrency` in flight, preserving
- * input order in the output array. parallel mode builds on this.
- */
 export async function mapWithConcurrencyLimit<TIn, TOut>(
 	items: TIn[],
 	concurrency: number,
@@ -203,6 +199,8 @@ export interface AgentSpawnOptions {
 	readonly cwd?: string;
 	/** `--model` override. */
 	readonly model?: string;
+	/** `--thinking` level for the spawned process (off|minimal|low|medium|high|xhigh|max). Omit to use the model default. */
+	readonly thinking?: string;
 	/** `--tools` whitelist (comma-joined). */
 	readonly tools?: string[];
 	/** System prompt appended via a temp file (`--append-system-prompt`). */
@@ -286,7 +284,7 @@ export async function spawnAgent(
 	registry: AgentSpawnRegistry,
 	options: AgentSpawnOptions,
 ): Promise<AgentSpawnResult> {
-	const { callId, task, cwd, model, tools, systemPrompt, signal } = options;
+	const { callId, task, cwd, model, thinking, tools, systemPrompt, signal } = options;
 
 	// Per-call controller — the per-agent abort entry point.
 	const controller = new AbortController();
@@ -304,6 +302,7 @@ export async function spawnAgent(
 
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
 	if (model) args.push("--model", model);
+	if (thinking) args.push("--thinking", thinking);
 	if (tools && tools.length > 0) args.push("--tools", tools.join(","));
 
 	let tmpPromptDir: string | null = null;
