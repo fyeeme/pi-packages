@@ -41,12 +41,13 @@ function readScriptsAt(cwd: string): Record<string, string> | null {
  * Decide simplify mode deterministically from real context usage + tool availability.
  * Pure function — unit-testable.
  *
- * CC parity note: CC's /simplify guard (_Yo) is a SPAWN-DEPTH recursion limit, NOT a
- * context check — `RO(ctx) >= dne()` where RO returns the agent's depth and dne()
- * returns CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH (default 3). That is N/A on Pi: the
+ * CC parity note: CC's /simplify guard (Dii, verified in the 2.1.227 binary) is
+ * a SPAWN-DEPTH recursion limit, NOT a context check — `ok(ctx.agentContext) >= wV()`
+ * where ok() returns the agent's depth (main=0) and wV() returns
+ * CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH (default 3). That is N/A on Pi: the
  * `subagent` tool spawns a fresh subprocess (depth 0), so depth never accumulates.
  * The context-fraction heuristic below is a Pi-specific substitute (don't fan out
- * when the parent's context is near-full), NOT a mirror of _Yo. The other _Yo clause
+ * when the parent's context is near-full), NOT a mirror of Dii. The other Dii clause
  * — the Agent tool must be in the allowlist — IS mirrored here as `hasSubagent`.
  */
 export function decideSimplifyMode(opts: {

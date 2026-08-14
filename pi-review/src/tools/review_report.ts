@@ -9,29 +9,32 @@
  * a machine-readable JSON (findings + level + outcome) to
  * `<cwd>/.pi/review/<id>.json` so CI / --fix / --comment can consume it.
  *
- * `verdict` (CONFIRMED/PLAUSIBLE/REFUTED) and `outcome` (5-state) enums follow
- * the CC ReportFindings shape (outcome values copied from the CC binary). The
- * code-review skill drops REFUTED findings before reporting, so that value is
- * accepted by the schema but rarely seen in practice.
+ * `verdict` (CONFIRMED/PLAUSIBLE) and `outcome` (fixed/skipped/no_change_needed)
+ * enums follow the CC ReportFindings shape — values verified against the CC
+ * v2.1.227 binary (consistent across 2.1.223/226/227). REFUTED is deliberately
+ * absent: the verify flow drops it before reporting. The tool entry also
+ * normalizes stray invalid values (drop the finding / coerce to skipped) rather
+ * than failing the whole call.
  */
 import { defineTool, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Markdown } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 // --- enums following the CC ReportFindings shape ----------------------------
+// 值域实证来源：CC v2.1.227 bin/claude.exe（ReportFindings 工具 schema）。
+// verdict 两值与 outcome 三档在 2.1.223/226/227 三版本中一致。
 
-const Verdict = Type.Union([Type.Literal("CONFIRMED"), Type.Literal("PLAUSIBLE"), Type.Literal("REFUTED")]);
+const VERDICT_VALUES = ["CONFIRMED", "PLAUSIBLE"] as const;
+const Verdict = Type.Union(VERDICT_VALUES.map((v) => Type.Literal(v)));
 
-/** CC ReportFindings `outcome` 5 档（v2.1.226 二进制实证）。re-report after --fix 时填。 */
-const Outcome = Type.Union([
-	Type.Literal("fully_achieved"),
-	Type.Literal("mostly_achieved"),
-	Type.Literal("partially_achieved"),
-	Type.Literal("not_achieved"),
-	Type.Literal("unclear_from_transcript"),
-]);
+const OUTCOME_VALUES = ["fixed", "skipped", "no_change_needed"] as const;
+/** CC ReportFindings `outcome` 三档（2.1.227 二进制实证）。fixed-later 再上报时更新。 */
+const Outcome = Type.Union(OUTCOME_VALUES.map((v) => Type.Literal(v)));
+
+// 供 SKILL-schema 同步测试引用（防漂移：SKILL 流程契约不得与常量脱节）。
+export { OUTCOME_VALUES, VERDICT_VALUES };
 
 const Level = Type.Union([
 	Type.Literal("low"),
@@ -54,6 +57,12 @@ const FindingParams = Type.Object({
 			"产生该发现的角度 slug：correctness / reuse / simplification / efficiency / altitude / conventions（或更具体如 test-coverage）。",
 	}),
 	verdict: Type.Optional(Verdict),
+	short_summary: Type.Optional(
+		Type.String({
+			description:
+				"≤60 字符的纯声明标签（去掉理由与后果）。汇总表概述列优先使用它；详情块仍显示完整 summary。流程层面必填（CC 输出模板契约），schema 层面 optional（与 CC tool schema 一致）。中文。",
+		}),
+	),
 	summary: Type.String({ description: "一句话说明（≤80字），同时作紧凑标签。中文。" }),
 	failure_scenario: Type.String({
 		description:
@@ -72,6 +81,12 @@ const ReviewReportParams = Type.Object({
 	findings: Type.Array(FindingParams, {
 		description: "已验证、去重、按严重度从高到低排序的发现列表（most-severe first）。空数组表示无发现存活。",
 	}),
+	report_id: Type.Optional(
+		Type.String({
+			description:
+				"报告标识（如 review-<ts>）。首次上报生成；fixed-later 再上报传同一 id，消费方按 id 归并，同 id 最新 generatedAt 为最终状态。",
+		}),
+	),
 });
 
 interface ReviewReportDetails {
@@ -79,6 +94,56 @@ interface ReviewReportDetails {
 	findingsCount: number;
 	/** 结构化 JSON 落盘路径；落盘失败时为 null（仍返回渲染报告）。 */
 	outFile: string | null;
+	reportId: string | null;
+}
+
+/**
+ * execute 入口的宽松 finding 形态——绕过 schema 校验的直接调用（如单测）
+ * 可能携带旧五档 outcome 或已废弃的 REFUTED verdict。
+ */
+type LooseFinding = {
+	file: string;
+	line?: number;
+	category: string;
+	verdict?: string;
+	short_summary?: string;
+	summary: string;
+	failure_scenario: string;
+	outcome?: string;
+};
+
+/**
+ * 单条清洗：非法 verdict（含已废弃的 REFUTED）返回 null（剔除）；非法 outcome
+ * 归一化为 skipped 并附注原始值。schema 保持严格，清洗在 schema 校验之前。
+ */
+function sanitizeFinding(f: LooseFinding): { f: LooseFinding; note?: string } | null {
+	if (f.verdict !== undefined && !(VERDICT_VALUES as readonly string[]).includes(f.verdict)) return null;
+	let outcome = f.outcome;
+	let note: string | undefined;
+	if (outcome !== undefined && !(OUTCOME_VALUES as readonly string[]).includes(outcome)) {
+		note = `（outcome "${outcome}" 非法，已归一化为 skipped）`;
+		outcome = "skipped";
+	}
+	return { f: { ...f, outcome }, note };
+}
+
+/**
+ * 批量清洗，note 按清洗后数组索引记录（渲染层附注用）。
+ * `prepareArguments`（主防御，schema 校验前）与 `execute` 入口（双保险，
+ * 防绕过 prepareArguments 的直接调用）共用——模型路径的非法值在进入
+ * execute 前已被清洗，validateToolArguments 不会因边缘值 throw 掉整份报告。
+ */
+function normalizeFindings(findings: LooseFinding[]): { findings: LooseFinding[]; notes: Map<number, string> } {
+	const out: LooseFinding[] = [];
+	const notes = new Map<number, string>();
+	for (const raw of findings) {
+		const s = sanitizeFinding(raw);
+		if (!s) continue;
+		const idx = out.length;
+		out.push(s.f);
+		if (s.note) notes.set(idx, s.note);
+	}
+	return { findings: out, notes };
 }
 
 // --- render -----------------------------------------------------------------
@@ -88,15 +153,19 @@ interface FindingInput {
 	line?: number;
 	category: string;
 	verdict?: string;
+	short_summary?: string;
 	summary: string;
 	failure_scenario: string;
 	outcome?: string;
+	/** normalize 附注（如非法 outcome 归一化说明），仅渲染进详情块。 */
+	note?: string;
 }
 interface ReportInput {
 	level: string;
 	target?: string;
 	files_changed?: number;
 	fanned_out?: boolean;
+	reportId?: string;
 	findings: FindingInput[];
 }
 
@@ -118,7 +187,8 @@ function renderReport(p: ReportInput): string {
 	const fanLabel = p.fanned_out === true ? "多智能体" : p.fanned_out === false ? "单遍自审" : "未标注";
 	const targetStr = (p.target ?? "(whole diff)").replace(/`/g, "\\`"); // backtick inside the inline-code cell would close it early
 	const filesStr = p.files_changed != null ? `${p.files_changed} 个文件` : "文件数未标注";
-	lines.push(`\`${p.level}\` · \`${targetStr}\` · ${filesStr} · ${p.findings.length} 条发现 · ${fanLabel}`);
+	const idStr = p.reportId ? ` · 报告 \`${escapeCell(p.reportId)}\`` : "";
+	lines.push(`\`${p.level}\` · \`${targetStr}\` · ${filesStr} · ${p.findings.length} 条发现 · ${fanLabel}${idStr}`);
 	lines.push("");
 
 	if (p.findings.length === 0) {
@@ -130,7 +200,7 @@ function renderReport(p: ReportInput): string {
 	lines.push("|---|------|------|------|------|");
 	for (let i = 0; i < p.findings.length; i++) {
 		const f = p.findings[i]!;
-		lines.push(`| ${i + 1} | ${escapeCell(f.verdict ?? "")} | ${escapeCell(f.category)} | ${escapeCell(fmtLoc(f))} | ${escapeCell(f.summary)} |`);
+		lines.push(`| ${i + 1} | ${escapeCell(f.verdict ?? "")} | ${escapeCell(f.category)} | ${escapeCell(fmtLoc(f))} | ${escapeCell(f.short_summary ?? f.summary)} |`);
 	}
 	lines.push("");
 	lines.push("**详情**");
@@ -138,9 +208,10 @@ function renderReport(p: ReportInput): string {
 	p.findings.forEach((f, i) => {
 		const v = f.verdict ? ` *(${f.verdict})*` : "";
 		const out = f.outcome ? `\n修复结果：\`${f.outcome}\`` : "";
+		const note = f.note ? `\n${f.note}` : "";
 		lines.push(`**${i + 1}. ${fmtLoc(f)} — ${f.category}**${v}`);
 		lines.push(`概述：${f.summary}`);
-		lines.push(`场景：${f.failure_scenario}${out}`);
+		lines.push(`场景：${f.failure_scenario}${out}${note}`);
 		lines.push("");
 	});
 	return lines.join("\n").trimEnd();
@@ -156,13 +227,41 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 	promptSnippet: "review_report — report structured code-review findings (renders Markdown + writes JSON for CI)",
 	promptGuidelines: [
 		"After verify + dedup, call `review_report` once with { level, findings } (most-severe first; empty array if none survived). Do not also hand-write the Markdown table — this tool renders it.",
-		"On re-report after --fix, set each finding's `outcome` (fully_achieved / mostly_achieved / partially_achieved / not_achieved / unclear_from_transcript).",
+		"On re-report after --fix, set each finding's `outcome` (fixed / skipped / no_change_needed).",
 		"Use this tool only when the code-review skill instructs reporting findings; otherwise follow the active output format.",
 	],
 	parameters: ReviewReportParams,
 
+	// 主防御：schema 校验之前清洗非法值（模型路径下校验失败即 throw、工具不执行，
+	// 因此 execute 内的防御对模型不可达）。返回符合 schema 的对象——非法 verdict
+	// 的 finding 剔除、非法 outcome 归一化为 skipped；note 附注由 execute 层基于
+	// 清洗结果生成（schema 对象不含 note 字段）。
+	prepareArguments(args) {
+		if (typeof args !== "object" || args === null) return args as Static<typeof ReviewReportParams>;
+		const raw = args as { findings?: unknown };
+		if (!Array.isArray(raw.findings)) return args as Static<typeof ReviewReportParams>;
+		const { findings } = normalizeFindings(raw.findings as unknown as LooseFinding[]);
+		return { ...raw, findings } as Static<typeof ReviewReportParams>;
+	},
+
 	async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-		const report = renderReport(params);
+		// normalize（双保险）——绕过 prepareArguments 的直接调用（如单测）可能携带
+		// 旧五档 outcome 或已废弃的 REFUTED verdict。归一化而非整单拒绝：非法
+		// verdict 的 finding 剔除，非法 outcome 归一化为 skipped 并附注；渲染与落盘
+		// 永远只含合法值（spec: 消费方永远看到合法值）。
+		const { findings: cleaned, notes } = normalizeFindings(
+			(params.findings ?? []) as unknown as LooseFinding[],
+		);
+		const findings: FindingInput[] = cleaned.map((f, i) => ({ ...f, note: notes.get(i) }));
+
+		const report = renderReport({
+			level: params.level,
+			target: params.target,
+			files_changed: params.files_changed,
+			fanned_out: params.fanned_out,
+			reportId: params.report_id,
+			findings,
+		});
 
 		let outFile: string | null = null;
 		let writeError: string | null = null;
@@ -178,11 +277,12 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 				JSON.stringify(
 					{
 						level: params.level,
+						reportId: params.report_id ?? null,
 						target: params.target ?? null,
 						filesChanged: params.files_changed ?? null,
 						fannedOut: params.fanned_out ?? null,
 						generatedAt: now.toISOString(),
-						findings: params.findings,
+						findings,
 					},
 					null,
 					2,
@@ -200,8 +300,9 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 			: `\n\n[结构化落盘失败（${writeError ?? "未知原因"}），仅渲染报告]`;
 		const details: ReviewReportDetails = {
 			level: params.level,
-			findingsCount: params.findings.length,
+			findingsCount: findings.length,
 			outFile,
+			reportId: params.report_id ?? null,
 		};
 		return {
 			content: [{ type: "text" as const, text: report + tail }],
@@ -217,8 +318,8 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 	// throw, so a failure here degrades to the pre-change behavior rather than erroring.
 	renderResult(result, _options, _theme, _context) {
 		const text = result.content
-			.filter((c) => c.type === "text")
-			.map((c) => (c.type === "text" ? c.text : ""))
+			.filter((c): c is Extract<(typeof result.content)[number], { type: "text" }> => c.type === "text")
+			.map((c) => c.text)
 			.join("\n");
 		return new Markdown(text, 0, 0, getMarkdownTheme());
 	},

@@ -90,6 +90,33 @@ describe("subagent tool", () => {
 		expect(r.details.results[0]?.text).toBe("done");
 	});
 
+	it("forwards the thinking level to every spawned agent", async () => {
+		spawnAgentMock.mockImplementation(async (_reg: unknown, opts: { callId: string }) =>
+			fakeResult(`out-${opts.callId}`, { callId: opts.callId }),
+		);
+		await subagentTool.execute(
+			"t-think",
+			{ mode: "parallel", prompts: ["a", "b"], thinking: "high" },
+			undefined,
+			undefined,
+			fakeCtx,
+		);
+		expect(spawnAgentMock).toHaveBeenCalledTimes(2);
+		for (const [ , opts ] of spawnAgentMock.mock.calls) {
+			expect((opts as { thinking?: string }).thinking).toBe("high");
+		}
+		// omitted → undefined, never a stale value
+		spawnAgentMock.mockClear();
+		await subagentTool.execute(
+			"t-think2",
+			{ mode: "single", prompts: ["x"] },
+			undefined,
+			undefined,
+			fakeCtx,
+		);
+		expect((spawnAgentMock.mock.calls[0]![1] as { thinking?: string }).thinking).toBeUndefined();
+	});
+
 	it("parallel mode runs all prompts and preserves order", async () => {
 		spawnAgentMock.mockImplementation(async (_reg: unknown, opts: { callId: string }) =>
 			fakeResult(`out-${opts.callId}`, { callId: opts.callId }),
@@ -180,11 +207,11 @@ describe("subagent tool", () => {
 
 	// --- recursion-guard + cost-guard (harden-code-simplify) ---
 
-	it("default maxTurns applies when omitted", async () => {
+	it("default maxTurns applies when omitted (CC FORKED_AGENT_DEFAULT_MAX_TURNS=50)", async () => {
 		spawnAgentMock.mockResolvedValue(fakeResult("ok"));
 		await subagentTool.execute("tm", { mode: "single", prompts: ["a"] }, undefined, undefined, fakeCtx);
 		const opts = spawnAgentMock.mock.calls[0]![1] as { maxTurns?: number };
-		expect(opts.maxTurns).toBe(25);
+		expect(opts.maxTurns).toBe(50);
 	});
 
 	it("explicit maxTurns overrides the default (0 honored, not unset)", async () => {

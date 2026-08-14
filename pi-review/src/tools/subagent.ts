@@ -28,8 +28,9 @@ import {
 	type AgentSpawnResult,
 } from "@fyeeme/pi-subagent-core";
 
-/** Default concurrency ceiling when PI_MAX_CONCURRENT_SUBAGENTS is unset/invalid. */
-const DEFAULT_MAX_CONCURRENCY = 8;
+/** Default concurrency ceiling when PI_MAX_CONCURRENT_SUBAGENTS is unset/invalid.
+ *  20 = CC's CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS ?? 20 (2.1.227 binary empirical). */
+const DEFAULT_MAX_CONCURRENCY = 20;
 
 /**
  * Effective concurrency ceiling, configurable via PI_MAX_CONCURRENT_SUBAGENTS
@@ -46,8 +47,9 @@ function getMaxConcurrency(): number {
  * runaway agent cannot otherwise be bounded. Generous (well above the ~10–15
  * turns the 4-angle finder/verify agents need) so legitimate work is not
  * truncated; callers may override with a smaller or larger explicit value.
+ * 50 = CC's FORKED_AGENT_DEFAULT_MAX_TURNS (2.1.227 binary empirical).
  */
-const DEFAULT_FANOUT_MAX_TURNS = 25;
+const DEFAULT_FANOUT_MAX_TURNS = 50;
 
 // Module-level registry so abortAgent can reach in-flight calls. callIds are
 // unique per tool call (toolCallId#index), so a single registry is safe.
@@ -61,6 +63,12 @@ const SubagentParams = Type.Object({
 		description: "Prompt(s) for the sub-agent(s). single/chain use order; parallel runs all.",
 	}),
 	model: Type.Optional(Type.String({ description: "Full model id (e.g. claude-sonnet-5). Omit for the session default." })),
+	thinking: Type.Optional(
+		Type.Union(
+			["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((l) => Type.Literal(l)),
+			{ description: "Thinking level for the sub-agent(s), passed as --thinking. Omit for the model default." },
+		),
+	),
 	systemPrompt: Type.Optional(Type.String({ description: "Appended to the sub-agent's system prompt." })),
 	tools: Type.Optional(Type.Array(Type.String(), { description: "Tool whitelist for the sub-agent. Omit for default tools." })),
 	parallelism: Type.Optional(
@@ -251,6 +259,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 		const baseOpts: Omit<AgentSpawnOptions, "callId" | "task"> = {
 			cwd,
 			model: params.model,
+			thinking: params.thinking,
 			tools: params.tools,
 			signal,
 			// Default turn budget applies when omitted; an explicit 0 is honored by

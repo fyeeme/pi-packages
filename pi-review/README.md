@@ -93,9 +93,11 @@ An LLM-callable tool that spawns one or more real pi subprocesses:
   receive the `subagent` tool in its default toolset, so it cannot recurse. A
   caller opts in by listing `subagent` in the child's `tools` whitelist; set
   `PI_SUBAGENT_MAX_SPAWN_DEPTH` to allow multi-level fan-out up to a hard cap.
-- **Default turn budget** — fan-out agents get a finite default `maxTurns` (25)
+- **Default turn budget** — fan-out agents get a finite default `maxTurns` (50,
+  aligned to CC's `FORKED_AGENT_DEFAULT_MAX_TURNS` in 2.1.227)
   when the caller omits it; an explicit `0` is honored.
-- **Configurable concurrency** — `PI_MAX_CONCURRENT_SUBAGENTS` (default 8;
+- **Configurable concurrency** — `PI_MAX_CONCURRENT_SUBAGENTS` (default 20,
+  aligned to CC's `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS ?? 20` in 2.1.227;
   invalid values fall back to the default).
 
 Each sub-agent is a full `pi --mode json -p --no-session` run. Progress streams
@@ -144,6 +146,12 @@ sub-agents are spawned and *which mode* is chosen.
 
 ## Status
 
-MVP. Phase 2 (not yet built): a `review_verify` tool encapsulating 3-vote
-adversarial verify, and a `review_report` tool enforcing the output schema /
-`--share` lavish artifact.
+`review_report` is built — schema aligned to CC `ReportFindings` (2.1.227
+empirical): 3-state `outcome` (`fixed`/`skipped`/`no_change_needed`), 2-value
+`verdict` (`CONFIRMED`/`PLAUSIBLE`), `short_summary` (≤60, table overview),
+`report_id` for fixed-later re-reports; renders the Chinese Markdown report
+and writes JSON to `<cwd>/.pi/review/` for CI / `--fix` / `--comment`.
+
+Remaining Phase 2 item (not yet built): a `review_verify` tool encapsulating
+3-vote adversarial verify. `--share` already routes through lavish-axi (see
+the code-review skill).

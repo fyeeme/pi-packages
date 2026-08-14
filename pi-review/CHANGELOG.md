@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-14
+
+### Breaking Changes
+
+- `review_report` 的 `outcome` 枚举由 5 档（`fully_achieved` / `mostly_achieved` / `partially_achieved` / `not_achieved` / `unclear_from_transcript`）替换为 CC `ReportFindings` 实证三档 `fixed` / `skipped` / `no_change_needed`（2.1.227 二进制实证，2.1.223/226/227 三版本一致）。simplify 的 apply-outcome 同步重映射：`fixed` = 应用且验证通过；`skipped` = 真实但未应用（含部分应用与回滚）；`no_change_needed` = 不适用。工具入口对旧五档值归一化为 `skipped` 并附注，调用不失败。
+- `review_report` 的 `verdict` 枚举收窄为 `CONFIRMED` / `PLAUSIBLE`（去除 `REFUTED`，与 CC schema 一致）；携带非法 verdict（含 `REFUTED`）的 finding 在工具入口被剔除，其余正常处理。
+- `/code-review` 的 finder 分配由「每正确性角度一 finder + 1 合并 cleanup」改为 CC inline 8/10 finder：medium/high = 3 correctness（A/B/C）+ 3 cleanup 各一 + altitude + conventions；xhigh/max = 5 correctness（A–E）+ 同上。effort 差异由四元组 `{correctnessAngles, perAngle, maxFindings, sweep}` 参数化：medium `{3,6,8,false}`、high `{3,6,10,false}`、xhigh `{5,8,15,true}`、max 同 xhigh。
+
+### Added
+
+- `review_report` 新增 `short_summary`（≤60 字符纯声明）——汇总表概述列优先使用，详情块保留完整 `summary`；schema optional、流程必填（CC 输出模板契约）。
+- `review_report` 新增 `report_id`——落盘 JSON 与报告头部携带，fixed-later 再上报复用同 id 供消费方归并。
+- code-review skill 新增 Phase 0.5 Scope 先行：主会话统一确定 diff/文件清单/CLAUDE.md conventions/变更摘要，组装范围块嵌入所有 finder/verifier/gap-hunt 的 subagent prompt；空 diff 提前终止。
+- code-review skill 验证阶段改为按 `(file, line)` 分组、每组一个 verifier 返回逐一 verdict（吸收 CC workflow group-verify，~40% verifier 减员为期望值）；遗漏索引的候选丢弃，不臆造 PLAUSIBLE。
+- code-review skill 新增 fixed-later 义务（CC `Q8m`）：本会话后续修复已上报 findings 必须再次调用 `review_report` 更新 `outcome`，先于任何文字总结。
+- 新增 `test/skill-schema-sync.test.ts`：断言两份 SKILL.md 的 outcome 枚举文本与 schema 常量一致（防漂移），旧五档值不得残留。
+- `subagent` 工具新增 `thinking` 参数（`off|minimal|low|medium|high|xhigh|max`）：透传 `--thinking` 给每个子进程——fan-out 子代理不再跑在模型默认思考层级（CC 的 Agent fork 继承主会话 effort，pi 的独立子进程此前无法控制）。/code-review 的 effort→thinking 映射由调用方（skill 流程）决定。
+
+### Changed
+
+- `subagent` 工具 fan-out 默认值对齐 CC 2.1.227：并发上限默认 8 → **20**（对齐 `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS ?? 20`，`PI_MAX_CONCURRENT_SUBAGENTS` env 仍可覆盖）；默认回合预算 25 → **50**（对齐 `FORKED_AGENT_DEFAULT_MAX_TURNS`，显式 `maxTurns` 仍优先）。**BREAKING（行为）**：fan-out 并发更宽、单 agent 成本上限翻倍。
+- simplify SKILL 出处注释升级为 2.1.227 符号级实证（`Dii` 模式守卫 / `ok` 深度 / `wV` 深度上限 / `Pa` allowlist 匹配 / `mi`="Agent"（别名 `oj`="Task"）/ `VBv`/`KBv` 模式体 / `$u` 命令注册 / `nJu`/`lKs` 参数默认值）；`code-simplify.ts` 的 parity 注释同步 `_Yo` → `Dii` 符号名。
+- simplify 技能体逐字核对（见 change 内 `skill-verification.md`）：四角度正文、Phase 1 派发指令、SINGLE-PASS 前提段恢复 CC 2.1.227 逐字（含换行与角度间空行）；code-review SKILL 共享角度段同步修正，`angle-sync` 保持通过。
+- code-review skill effort 语义区分 recall 档：high/xhigh/max 单非 REFUTED 票即保留（不得因不确定性丢弃）；medium 保持 precision。
+- code-review skill xhigh/max 新增 suppression 禁令：不同 finder 对同一行不同理由的候选全部记录（record both），互不抑制。
+- xhigh/max 报告上限数值化（15），gap-hunt 上限 8 个新候选。
+- `review_report.ts` 的 `renderResult` 用类型谓词收窄替代 filter 后二次类型判断。
+- `pi-subagent-core` 的 `mapWithConcurrencyLimit` 重复 JSDoc 注释块去重（无行为变化）。
+
+### Fixed
+
+- 修正 1.0.1 中「verdict/outcome 枚举对齐 CC v2.1.226 二进制实证」的错误声明（见下方勘误）；README "Status" 段同步更新。
+
 ## [1.0.1] - 2026-08-10
 
 ### Added
@@ -14,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/code-simplify` 安全网（harden-code-simplify）：Phase 2 现在是 apply→verify→revert 闭环——快照受改文件、应用修复、跑 handler 从 `package.json` 探测到的验证命令（`check`/`test`/`lint`/`typecheck`，注入到 trigger 消息，可观测）；验证失败按文件粒度自动回滚（Decision B4：常态只跑 1 次验证，失败才升级到逐文件隔离），绝不留验证失败的树。复用既有 `review_report`（新增 `level: "simplify"`）上报结构化 apply-outcome（`fully/mostly/partially/not_achieved`）替代自由文本 summary。
 - `subagent` 工具并发上限可配：`PI_MAX_CONCURRENT_SUBAGENTS` env（默认 8，与 CC `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` 对等）；非法值回退默认。
 - `subagent` 工具默认 turn 预算：调用方省略 `maxTurns` 时应用默认 25（防止 fan-out agent 无界消耗）；显式 `0` 仍被忠实兑现。
-- `review_report` 工具：CC `ReportFindings` 的 Pi 对等物（verdict/`outcome` 枚举对齐 CC v2.1.226 二进制实证）。code-review skill 验证去重后调用它上报结构化 findings——渲染中文 Markdown 报告（表 + 详情）回对话，并落盘机器可读 JSON 到 `<cwd>/.pi/review/` 供 CI / `--fix` / `--comment` 消费。补上 pi-review 最大短板（无结构化输出），打开 CI 集成通路。
+- `review_report` 工具：CC `ReportFindings` 的 Pi 对等物。code-review skill 验证去重后调用它上报结构化 findings——渲染中文 Markdown 报告（表 + 详情）回对话，并落盘机器可读 JSON 到 `<cwd>/.pi/review/` 供 CI / `--fix` / `--comment` 消费。补上 pi-review 最大短板（无结构化输出），打开 CI 集成通路。**勘误**：本版宣称「verdict/`outcome` 枚举对齐 CC v2.1.226 二进制实证」不实——当时 shipped 的 5 档 `outcome`（`fully_achieved`…）与 3 值 `verdict`（含 `REFUTED`）并非 CC 形状；2.1.227 逆向实证 CC 实为 3 档 outcome（`fixed`/`skipped`/`no_change_needed`）与 2 值 verdict（`CONFIRMED`/`PLAUSIBLE`），2.0.0 已修正。
 
 ### Changed
 
