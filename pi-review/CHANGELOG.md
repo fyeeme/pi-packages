@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-08-16
+
+### Changed
+
+- 依赖 `@fyeeme/pi-subagent-core` `^0.3.3` → `^0.4.0`（tracking 升级：core 新增 `DEFAULT_MAX_CONCURRENCY` 常量与可省略 `concurrency` 的重载，本包所有调用点均显式传入 concurrency，行为不变）。
+
+### Removed
+
+- 删除空占位文件 `README.zh-CN.md`（pack 清单从未包含它，无分发影响）。
+
 ## [1.0.2] - 2026-08-14
 
 ### Breaking Changes
