@@ -9,6 +9,7 @@ vi.mock("node:child_process", () => ({ spawn: spawnMock }));
 import {
 	abortAgent,
 	createSpawnRegistry,
+	DEFAULT_MAX_CONCURRENCY,
 	getPiInvocation,
 	mapWithConcurrencyLimit,
 	spawnAgent,
@@ -48,6 +49,43 @@ describe("mapWithConcurrencyLimit", () => {
 
 	it("returns [] for empty input", async () => {
 		expect(await mapWithConcurrencyLimit([], 4, async (n) => n)).toEqual([]);
+	});
+
+	// --- max-concurrency option (hardcoded default 5) ---
+
+	it("DEFAULT_MAX_CONCURRENCY is 5 (hardcoded, no env / config)", () => {
+		expect(DEFAULT_MAX_CONCURRENCY).toBe(5);
+	});
+
+	it("omitting concurrency caps in-flight work at the hardcoded 5", async () => {
+		let active = 0;
+		let peak = 0;
+		const out = await mapWithConcurrencyLimit([1, 2, 3, 4, 5, 6, 7, 8], async (n) => {
+			active++;
+			peak = Math.max(peak, active);
+			await new Promise((r) => setTimeout(r, 5));
+			active--;
+			return n * 10;
+		});
+		expect(peak).toBe(5); // 8 items, hardcoded ceiling 5
+		expect(out).toEqual([10, 20, 30, 40, 50, 60, 70, 80]); // order preserved
+	});
+
+	it("an env var does NOT change the omitted-concurrency default (hardcoded)", async () => {
+		process.env.PI_MAX_CONCURRENT_SUBAGENTS = "50";
+		try {
+			let active = 0;
+			let peak = 0;
+			await mapWithConcurrencyLimit([1, 2, 3, 4, 5, 6], async () => {
+				active++;
+				peak = Math.max(peak, active);
+				await new Promise((r) => setTimeout(r, 5));
+				active--;
+			});
+			expect(peak).toBe(5); // still 5: the default is a constant, not env-driven
+		} finally {
+			delete process.env.PI_MAX_CONCURRENT_SUBAGENTS;
+		}
 	});
 
 	it("stops dispatching new items after a rejection (no orphan workers)", async () => {

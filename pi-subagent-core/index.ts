@@ -109,15 +109,36 @@ function childSpawnEnv(options: AgentSpawnOptions): NodeJS.ProcessEnv {
 // Concurrency limiter (ported from examples/extensions/subagent)
 // ---------------------------------------------------------------------------
 
+/** Default concurrency ceiling for sub-agent fan-out (the "max concurrency"
+ *  option): 5. Hardcoded by design — no env var, no config file. Callers
+ *  needing a different ceiling pass `concurrency` explicitly. */
+export const DEFAULT_MAX_CONCURRENCY = 5;
+
 /**
  * Run `fn` over `items` with at most `concurrency` in flight, preserving
  * input order in the output array. parallel mode builds on this.
+ *
+ * The `concurrency` argument is optional (the "max concurrency" option):
+ * when omitted, the ceiling is the hardcoded `DEFAULT_MAX_CONCURRENCY` (5).
+ * An explicit value is clamped to `[1, items.length]` as before; existing
+ * callers that pass it explicitly are unaffected.
  */
+export async function mapWithConcurrencyLimit<TIn, TOut>(
+	items: TIn[],
+	fn: (item: TIn, index: number) => Promise<TOut>,
+): Promise<TOut[]>;
 export async function mapWithConcurrencyLimit<TIn, TOut>(
 	items: TIn[],
 	concurrency: number,
 	fn: (item: TIn, index: number) => Promise<TOut>,
+): Promise<TOut[]>;
+export async function mapWithConcurrencyLimit<TIn, TOut>(
+	items: TIn[],
+	concurrencyOrFn: number | ((item: TIn, index: number) => Promise<TOut>),
+	maybeFn?: (item: TIn, index: number) => Promise<TOut>,
 ): Promise<TOut[]> {
+	const fn = typeof concurrencyOrFn === "function" ? concurrencyOrFn : maybeFn!;
+	const concurrency = typeof concurrencyOrFn === "number" ? concurrencyOrFn : DEFAULT_MAX_CONCURRENCY;
 	if (items.length === 0) return [];
 	const limit = Math.max(1, Math.min(concurrency, items.length));
 	const results: TOut[] = new Array(items.length);

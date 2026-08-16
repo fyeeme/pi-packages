@@ -10,6 +10,10 @@ Shared dispatch core for spawning pi subprocess agents. Not a pi extension (no
 - `spawnAgent(registry, options)` — spawn one `pi --mode json -p --no-session`
   subprocess, parse `{message_end, tool_result_end}` NDJSON events, AbortSignal →
   SIGTERM with a 5s SIGKILL escalation.
+- `DEFAULT_MAX_CONCURRENCY` — hardcoded max-concurrency ceiling for fan-out:
+  **5**. `mapWithConcurrencyLimit(items, fn)` (concurrency omitted) runs at this
+  ceiling; pass `concurrency` explicitly for a different one. No env var, no
+  config file — by design.
 - `mapWithConcurrencyLimit(items, concurrency, fn)` — bounded-parallel map
   preserving input order; stops dispatching after a rejection (no orphan workers).
 - `createSpawnRegistry()` / `abortAgent(registry, callId)` — per-call abort

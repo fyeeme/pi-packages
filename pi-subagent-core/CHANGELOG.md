@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-16
+
+### Added
+
+- **Max concurrency 选项（写死默认 5）**：导出常量 `DEFAULT_MAX_CONCURRENCY`（= 5，源码写死，无 env、无配置文件）；`mapWithConcurrencyLimit` 新增可省略 `concurrency` 的重载 `mapWithConcurrencyLimit(items, fn)` —— 省略时上限即该常量。需要不同上限的调用方显式传 `concurrency`（显式传入的既有调用行为不变，零破坏）。
+
 ## [0.3.3] - 2026-08-11
 
 ### Added
