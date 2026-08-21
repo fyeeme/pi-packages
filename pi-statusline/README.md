@@ -8,6 +8,7 @@ A rich custom status bar for [pi](https://pi.dev) that replaces the default foot
 ## Features
 
 - **Provider-aware usage** — special support for DeepSeek and GLM/ZAI (see [Provider Support](#provider-support))
+- **DeepSeek peak/off-peak pricing** — session cost follows DeepSeek's 2026-08-17 peak/off-peak billing (peak 9:00-12:00 / 14:00-18:00 Beijing time, off-peak half price), priced per-message by timestamp, with a live `peak`/`off-peak` indicator in the footer (see [DeepSeek](#deepseek))
 - **Token usage**: input, output, cache read/write, total per session, with cache hit rate
 - **Cost**: cumulative session cost with currency auto-detection (¥ for DeepSeek/CNY, $ otherwise)
 - **Context window**: usage percentage and size
@@ -20,7 +21,29 @@ This extension uses a provider-aware strategy: when the active model belongs to 
 
 ### DeepSeek
 
-Shows live **account balance** and **weekly token usage**.
+Shows live **account balance**, **weekly token usage**, and **peak/off-peak aware session cost**. Since DeepSeek introduced peak/off-peak pricing on 2026-08-17, pi-statusline tracks it automatically.
+
+#### Peak / Off-peak pricing (since 2026-08-17)
+
+DeepSeek now bills in two periods — **peak hours are 9:00-12:00 and 14:00-18:00 Beijing time** (UTC+8), all other hours are off-peak, and **off-peak is half the peak price**. Official CNY prices per million tokens:
+
+| Model | Period | Cache-hit input | Cache-miss input | Output |
+|---|---|---|---|---|
+| deepseek-v4-flash | off-peak / peak | ¥0.05 / ¥0.10 | ¥1.5 / ¥3.0 | ¥4.5 / ¥9.0 |
+| deepseek-v4-pro | off-peak / peak | ¥0.15 / ¥0.30 | ¥4.5 / ¥9.0 | ¥13.5 / ¥27.0 |
+
+- **Per-message pricing by timestamp** — each message is priced at the rate of its own time (`AssistantMessage.timestamp`), so a long session spanning a period boundary (9:00/12:00/14:00/18:00) accounts every message correctly instead of using a single fixed rate.
+- **Peak/off-peak indicator** — the footer appends the current period so you always know which rate is in effect: `peak` during 9:00-12:00 / 14:00-18:00 Beijing time, `off-peak` otherwise:
+
+  ```
+  ¥0.12/50.00 · 7d:1.2M · off-peak
+  ¥0.12/50.00 · 7d:1.2M · peak
+  ```
+
+- **Registry pricing patch** — for CNY-billed accounts the model registry cost is aligned to the current period at runtime (and re-aligned automatically when the period flips), so pi's recorded `usage.cost` tracks the period too.
+- **USD-billed accounts** keep pi's built-in USD prices (no CNY override, no peak/off-peak indicator).
+
+#### Balance & weekly tokens
 
 | Segment | Example | Source |
 |---------|---------|--------|
@@ -28,7 +51,6 @@ Shows live **account balance** and **weekly token usage**.
 | Weekly tokens | `7d:1.2M` | Local session file scan (rolling 7 days) |
 
 - Currency auto-detected as `¥` (CNY) from the balance API response
-- Session cost follows DeepSeek's peak/off-peak pricing (since 2026-08-17): peak hours are 9:00-12:00 and 14:00-18:00 Beijing time, off-peak is half price. Each message is priced at the rate of its own timestamp; the footer marks the current period (`peak` / `off-peak`).
 - Balance is fetched on startup and refreshed in the background; cached for 5 minutes
 - Triggered when `model.provider === "deepseek"`
 
@@ -97,12 +119,12 @@ See the Pi Packages guide on [pi.dev](https://pi.dev) for the full list of sourc
 
 ```
 ~/projects/my-repo (main)                    deepseek-v4-pro · xhigh
-tokens 65k(in 12k, out 8k, cache 45k) · ¥0.12/50.00 · 7d:1.2M · 45.2%/64k · 2m30s 38.2tok/s
+tokens 65k(in 12k, out 8k, cache 45k) · ¥0.12/50.00 · 7d:1.2M · off-peak · 45.2%/64k · 2m30s 38.2tok/s
 ```
 
 **Line 1**: cwd + git branch (left) | model + thinking level (right)
 
-**Line 2**: token stats · provider usage · context window · timing
+**Line 2**: token stats · provider usage (incl. DeepSeek peak/off-peak indicator) · context window · timing
 
 ### GLM/ZAI example
 
