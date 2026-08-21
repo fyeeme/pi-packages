@@ -1,7 +1,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TokenUsage, TokenUsageCalculator } from "./types.ts";
-import { deepSeekBilledInCny, deepseekMessageCostCny } from "./cost.ts";
+import { getPricingStrategy } from "./pricing/index.ts";
 
 export class SessionTokenUsageCalculator implements TokenUsageCalculator {
 	private getCurrencyOverride: () => "\u00a5" | "$" | undefined;
@@ -18,7 +18,8 @@ export class SessionTokenUsageCalculator implements TokenUsageCalculator {
 		let total = 0;
 		let cost = 0;
 
-		const billedInCny = deepSeekBilledInCny();
+		// 定价策略按当前 provider 接管成本重算；未注册（或策略不接管）时回退 pi 记录的 cost。
+		const strategy = getPricingStrategy(ctx.model?.provider);
 
 		// Use getBranch() (current branch only) so token/cost stats exclude abandoned
 		// sibling branches after /fork or /tree navigation. getEntries() would sum
@@ -31,9 +32,12 @@ export class SessionTokenUsageCalculator implements TokenUsageCalculator {
 				cacheRead += m.usage.cacheRead;
 				cacheWrite += m.usage.cacheWrite;
 				total += m.usage.totalTokens;
-				// DeepSeek 仅按 CNY 计价时重算（pi 内置 USD 价低估约 7 倍）；USD 结算用户沿用 pi 记录的 cost
-				const dsCost = billedInCny ? deepseekMessageCostCny(m.model, m.usage) : null;
-				cost += dsCost !== null ? dsCost : (m.usage.cost?.total ?? 0);
+				// 策略接管时按消息时刻重算（如 DeepSeek CNY 峰谷价：跨 9:00/12:00/14:00/18:00
+				// 边界的长会话各条消息各算各的）；否则沿用 pi 记录的 cost。
+				const priced = strategy
+					? strategy.messageCost(m.model, m.usage, m.timestamp ? new Date(m.timestamp) : new Date())
+					: null;
+				cost += priced !== null ? priced : (m.usage.cost?.total ?? 0);
 			}
 		}
 
@@ -44,8 +48,7 @@ export class SessionTokenUsageCalculator implements TokenUsageCalculator {
 		if (override) {
 			currency = override;
 		} else {
-			const p = ctx.model?.provider ?? "";
-			if (p.toLowerCase().includes("deepseek")) currency = billedInCny ? "\u00a5" : "$";
+			currency = strategy?.defaultCurrency() ?? "$";
 		}
 
 		return { input, output, cacheRead, cacheWrite, total, hitRate, cost, currency };

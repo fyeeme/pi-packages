@@ -22,11 +22,7 @@ import { DeepSeekUsageProvider } from "./providers/deepseek.ts";
 import { ZaiUsageProvider } from "./providers/zai.ts";
 import type { UsageProvider } from "./providers/types.ts";
 import { SessionTokenUsageCalculator } from "./token-usage.ts";
-import {
-	applyDeepSeekPricingPatch,
-	setCostCurrencyOverride,
-	getCostCurrencyOverride,
-} from "./cost.ts";
+import { deepSeekPricing } from "./pricing/deepseek.ts";
 import { refreshUsage, getCachedUsage, getUsageCacheAge, resetUsageCache } from "./cache.ts";
 import { formatCwd, buildStatLine, buildInfoLine } from "./footer.ts";
 
@@ -51,7 +47,7 @@ let agentRunning = false;
 let lastElapsedSec = 0;
 let lastTps = 0;
 
-const tokenCalculator = new SessionTokenUsageCalculator(() => getCostCurrencyOverride());
+const tokenCalculator = new SessionTokenUsageCalculator(() => deepSeekPricing.getCurrencyOverride());
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -157,20 +153,20 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const a = args.trim().toLowerCase();
 			if (a === "auto" || a === "") {
-				setCostCurrencyOverride(undefined);
+				deepSeekPricing.setCurrencyOverride(undefined);
 				ctx.ui.notify("Currency: auto (deepseek→¥ or balance currency)", "info");
 			} else if (a === "¥" || a === "rmb" || a === "cny") {
-				setCostCurrencyOverride("¥");
+				deepSeekPricing.setCurrencyOverride("¥");
 				ctx.ui.notify("Currency: ¥", "info");
 			} else if (a === "$" || a === "usd") {
-				setCostCurrencyOverride("$");
+				deepSeekPricing.setCurrencyOverride("$");
 				ctx.ui.notify("Currency: $", "info");
 			} else {
 				ctx.ui.notify("Usage: /currency [auto|¥|$]", "warning");
 				return;
 			}
-			// 币种变更后立即对齐注册表定价（CNY→覆盖为官方价；USD→还原 pi 内置价）
-			applyDeepSeekPricingPatch(ctx.modelRegistry);
+			// 币种变更后立即对齐注册表定价（CNY→覆盖为当前时段官方价；USD→还原 pi 内置价）
+			deepSeekPricing.applyPricingPatch(ctx.modelRegistry);
 		},
 	});
 
@@ -178,7 +174,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("model_select", (event) => {
 		if (lastCtx) {
 			lastModel = event.model;
-			applyDeepSeekPricingPatch(lastCtx.modelRegistry);
+			deepSeekPricing.applyPricingPatch(lastCtx.modelRegistry);
 			void refreshUsage(providers, lastCtx.modelRegistry, event.model);
 		}
 	});
@@ -198,7 +194,7 @@ export default function (pi: ExtensionAPI) {
 		lastTps = 0;
 
 		// 根治：运行时修正 deepseek 定价（pi 内置定价低估约 7 倍），使后续 usage.cost 记录全局正确
-		applyDeepSeekPricingPatch(ctx.modelRegistry);
+		deepSeekPricing.applyPricingPatch(ctx.modelRegistry);
 
 		// Prime usage cache on startup (non-blocking)
 		lastCtx = ctx;
@@ -212,6 +208,11 @@ export default function (pi: ExtensionAPI) {
 				dispose: unsub,
 				invalidate() {},
 				render(width: number): string[] {
+					// 峰谷时段翻转（如跨 9:00/12:00/14:00/18:00 边界）后重新对齐注册表定价，使 pi 后续
+					// 记录的 usage.cost 跟随时段；幂等，仅在翻转时 registerProvider 一次。
+					if (deepSeekPricing.shouldRefreshPatch()) {
+						deepSeekPricing.applyPricingPatch(ctx.modelRegistry);
+					}
 					const stats = tokenCalculator.compute(ctx);
 					const cu = ctx.getContextUsage();
 					const model = ctx.model;

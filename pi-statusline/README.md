@@ -28,6 +28,7 @@ Shows live **account balance** and **weekly token usage**.
 | Weekly tokens | `7d:1.2M` | Local session file scan (rolling 7 days) |
 
 - Currency auto-detected as `¥` (CNY) from the balance API response
+- Session cost follows DeepSeek's peak/off-peak pricing (since 2026-08-17): peak hours are 9:00-12:00 and 14:00-18:00 Beijing time, off-peak is half price. Each message is priced at the rate of its own timestamp; the footer marks the current period (`peak` / `off-peak`).
 - Balance is fetched on startup and refreshed in the background; cached for 5 minutes
 - Triggered when `model.provider === "deepseek"`
 

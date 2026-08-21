@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-21
+
+### Added
+
+- Adopt DeepSeek's peak/off-peak pricing (effective 2026-08-17): the price table is split into peak/off-peak columns (flash: cache-hit input ¥0.05/0.10, cache-miss input ¥1.5/3.0, output ¥4.5/9.0; pro: cache-hit input ¥0.15/0.30, cache-miss input ¥4.5/9.0, output ¥13.5/27.0 per million tokens); `isDeepSeekPeakTime()` determines peak hours in Beijing time (UTC+8, no DST; 9:00-12:00, 14:00-18:00), independent of the host timezone.
+- Session cost is recomputed per message using the peak/off-peak rate of the message's own timestamp (`AssistantMessage.timestamp`), so long sessions spanning 9:00/12:00/14:00/18:00 boundaries price each message correctly; the DeepSeek usage segment appends the current period (`peak`/`off-peak`).
+- The registry pricing patch follows the current period (peak or off-peak); the footer render detects period flips and re-aligns the registry so pi's recorded `usage.cost` tracks the period.
+
+### Changed
+
+- Pricing logic refactored into a strategy pattern (new `pricing/` module): the `PricingStrategy` interface (`messageCost`/`defaultCurrency`/`applyPricingPatch`/`shouldRefreshPatch`/`footerTag`) defines each provider's price model; DeepSeek is implemented as `DeepSeekPricingStrategy`, dispatched by provider via `getPricingStrategy()`; `cost.ts` removed. Session stats and rendering depend only on the interface — future DeepSeek price changes or GLM/ZAI pricing models only touch/add the corresponding strategy, never the `token-usage`/`index` core flow.
+
 ## [1.1.1] - 2026-08-08
 
 ### Fixed

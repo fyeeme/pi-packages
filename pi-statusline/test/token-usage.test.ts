@@ -7,11 +7,15 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeMessage(overrides: Partial<AssistantMessage["usage"]> = {}): AssistantMessage {
+function makeMessage(
+	overrides: Partial<AssistantMessage["usage"]> & { model?: string; timestamp?: number } = {},
+): AssistantMessage {
+	const { model, timestamp, ...usageOverrides } = overrides;
 	return {
 		role: "assistant",
 		content: [{ type: "text", text: "hello" }],
-		model: "test-model",
+		model: model ?? "test-model",
+		timestamp: timestamp ?? Date.now(),
 		usage: {
 			input: 0,
 			output: 0,
@@ -19,7 +23,7 @@ function makeMessage(overrides: Partial<AssistantMessage["usage"]> = {}): Assist
 			cacheWrite: 0,
 			totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			...overrides,
+			...usageOverrides,
 		},
 	} as unknown as AssistantMessage;
 }
@@ -150,5 +154,69 @@ describe("SessionTokenUsageCalculator", () => {
 
 		const stats = calc.compute(ctx);
 		expect(stats.currency).toBe("$");
+	});
+
+	// ---- DeepSeek 峰谷计价（按消息时刻选单价） ----
+
+	it("recomputes deepseek CNY cost with peak rates for peak-time messages", () => {
+		const calc = new SessionTokenUsageCalculator(() => undefined);
+		const msg = makeMessage({
+			model: "deepseek-v4-flash",
+			input: 1_000_000,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 1_000_000,
+			timestamp: new Date("2026-08-21T10:00:00+08:00").getTime(), // 北京时间 10:00（高峰）
+		});
+		const ctx = makeCtx([msg], "deepseek");
+
+		const stats = calc.compute(ctx);
+		// 1M 未命中输入 × ¥3/1M（高峰）
+		expect(stats.cost).toBeCloseTo(3.0, 9);
+	});
+
+	it("uses off-peak rates for off-peak-time deepseek messages (半价)", () => {
+		const calc = new SessionTokenUsageCalculator(() => undefined);
+		const msg = makeMessage({
+			model: "deepseek-v4-flash",
+			input: 1_000_000,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 1_000_000,
+			timestamp: new Date("2026-08-21T02:00:00+08:00").getTime(), // 北京时间 02:00（空闲）
+		});
+		const ctx = makeCtx([msg], "deepseek");
+
+		const stats = calc.compute(ctx);
+		// 1M 未命中输入 × ¥1.5/1M（空闲）
+		expect(stats.cost).toBeCloseTo(1.5, 9);
+	});
+
+	it("sums deepseek messages across peak/off-peak boundary with per-message rates", () => {
+		const calc = new SessionTokenUsageCalculator(() => undefined);
+		const peak = makeMessage({
+			model: "deepseek-v4-pro",
+			input: 1_000_000,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 1_000_000,
+			timestamp: new Date("2026-08-21T10:00:00+08:00").getTime(), // 高峰 ¥9/1M
+		});
+		const off = makeMessage({
+			model: "deepseek-v4-pro",
+			input: 1_000_000,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 1_000_000,
+			timestamp: new Date("2026-08-21T02:00:00+08:00").getTime(), // 空闲 ¥4.5/1M
+		});
+		const ctx = makeCtx([peak, off], "deepseek");
+
+		const stats = calc.compute(ctx);
+		expect(stats.cost).toBeCloseTo(9.0 + 4.5, 9);
 	});
 });

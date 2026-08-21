@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DeepSeekUsageProvider } from "../providers/deepseek.ts";
 import type { ProviderUsageResult, DeepSeekResult } from "../types.ts";
+import { deepSeekPricing } from "../pricing/deepseek.ts";
 
 // ---------------------------------------------------------------------------
 // Mock session-scanner
@@ -50,6 +51,7 @@ describe("DeepSeekUsageProvider", () => {
 
 	beforeEach(() => {
 		provider = new DeepSeekUsageProvider();
+		deepSeekPricing.reset();
 		vi.restoreAllMocks();
 	});
 
@@ -231,6 +233,16 @@ describe("DeepSeekUsageProvider", () => {
 	// ---- formatForFooter ----
 
 	describe("formatForFooter", () => {
+		// 冻结到空闲时段（北京时间 02:00），使末尾时段标注（off-peak）可断言
+		beforeEach(() => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date("2026-08-21T02:00:00+08:00"));
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
 		it("returns empty for non-deepseek result", () => {
 			const result: NonNullable<ProviderUsageResult> = {
 				provider: "zai",
@@ -254,7 +266,7 @@ describe("DeepSeekUsageProvider", () => {
 			};
 
 			const out = provider.formatForFooter(result, 0, "$");
-			expect(out).toBe("¥100.00");
+			expect(out).toBe("¥100.00 · off-peak");
 		});
 
 		it("shows session cost over balance", () => {
@@ -266,7 +278,7 @@ describe("DeepSeekUsageProvider", () => {
 			};
 
 			const out = provider.formatForFooter(result, 0.05, "$");
-			expect(out).toBe("$0.05/¥100.00");
+			expect(out).toBe("$0.05/¥100.00 · off-peak");
 		});
 
 		it("shows weekly tokens when present", () => {
@@ -278,7 +290,7 @@ describe("DeepSeekUsageProvider", () => {
 			};
 
 			const out = provider.formatForFooter(result, 0, "$");
-			expect(out).toBe("¥100.00 · 7d:42k");
+			expect(out).toBe("¥100.00 · 7d:42k · off-peak");
 		});
 
 		it("shows session cost, balance, and weekly tokens together", () => {
@@ -290,10 +302,24 @@ describe("DeepSeekUsageProvider", () => {
 			};
 
 			const out = provider.formatForFooter(result, 0.05, "¥");
-			expect(out).toBe("¥0.05/¥100.00 · 7d:42k");
+			expect(out).toBe("¥0.05/¥100.00 · 7d:42k · off-peak");
 		});
 
-		it("uses $ for non-CNY currency", () => {
+		it("labels current peak period with peak when billed in peak hours", () => {
+			vi.setSystemTime(new Date("2026-08-21T10:00:00+08:00")); // 高峰
+			const result: NonNullable<ProviderUsageResult> = {
+				provider: "deepseek",
+				totalBalance: "100.00",
+				currency: "CNY",
+				weeklyTokens: 0,
+			};
+
+			const out = provider.formatForFooter(result, 0.05, "¥");
+			expect(out).toBe("¥0.05/¥100.00 · peak");
+		});
+
+		it("uses $ for non-CNY currency, no peak/off-peak label (USD 走 pi 内置价)", () => {
+			deepSeekPricing.setDetectedCurrency("USD");
 			const result: NonNullable<ProviderUsageResult> = {
 				provider: "deepseek",
 				totalBalance: "50.00",
