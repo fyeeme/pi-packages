@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-08-21
+
+### Fixed
+
+- Support `deepseek-v4-flash-vision-exp` (V4 Flash Vision): the model was missing from the CNY price table, so its cost fell back to pi's recorded USD price (understated ~7x for CNY accounts, often rendering `¥0.00`). Official pricing is identical to V4-Flash (images are billed as tokens, no vision surcharge); the model now follows the same peak/off-peak rates.
+
 ## [1.2.0] - 2026-08-21
 
 ### Added

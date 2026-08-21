@@ -29,7 +29,7 @@ DeepSeek now bills in two periods — **peak hours are 9:00-12:00 and 14:00-18:0
 
 | Model | Period | Cache-hit input | Cache-miss input | Output |
 |---|---|---|---|---|
-| deepseek-v4-flash | off-peak / peak | ¥0.05 / ¥0.10 | ¥1.5 / ¥3.0 | ¥4.5 / ¥9.0 |
+| deepseek-v4-flash / deepseek-v4-flash-vision-exp | off-peak / peak | ¥0.05 / ¥0.10 | ¥1.5 / ¥3.0 | ¥4.5 / ¥9.0 |
 | deepseek-v4-pro | off-peak / peak | ¥0.15 / ¥0.30 | ¥4.5 / ¥9.0 | ¥13.5 / ¥27.0 |
 
 - **Per-message pricing by timestamp** — each message is priced at the rate of its own time (`AssistantMessage.timestamp`), so a long session spanning a period boundary (9:00/12:00/14:00/18:00) accounts every message correctly instead of using a single fixed rate.

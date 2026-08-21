@@ -155,6 +155,27 @@ describe("messageCost (official CNY 峰谷定价)", () => {
 			expect(p.offPeak.cacheRead).toBeCloseTo(p.peak.cacheRead / 2, 9);
 		}
 	});
+
+	it("deepseek-v4-flash-vision-exp 与 flash 同价（官方：图片按 token 计费，无视觉附加费），峰谷价重算生效", () => {
+		expect(DEEPSEEK_CNY_PRICES["deepseek-v4-flash-vision-exp"]).toEqual(
+			DEEPSEEK_CNY_PRICES["deepseek-v4-flash"],
+		);
+		const s = newStrategy();
+		// 高峰未命中输入：1M × ¥3/1M
+		const peak = s.messageCost(
+			"deepseek-v4-flash-vision-exp",
+			{ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 },
+			bjTime("2026-08-21T10:00"),
+		);
+		expect(peak).toBeCloseTo(3.0, 9);
+		// 空闲未命中输入：1M × ¥1.5/1M
+		const off = s.messageCost(
+			"deepseek-v4-flash-vision-exp",
+			{ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 },
+			bjTime("2026-08-21T02:00"),
+		);
+		expect(off).toBeCloseTo(1.5, 9);
+	});
 });
 
 describe("defaultCurrency", () => {

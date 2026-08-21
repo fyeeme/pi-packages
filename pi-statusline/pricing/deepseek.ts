@@ -38,6 +38,11 @@ export const DEEPSEEK_CNY_PRICES: Record<string, DeepSeekCnyPrice> = {
 		peak: { input: 3.0, output: 9.0, cacheRead: 0.1, cacheWrite: 0 },
 		offPeak: { input: 1.5, output: 4.5, cacheRead: 0.05, cacheWrite: 0 },
 	},
+	// 视觉变体：官方定价与 V4-Flash 完全相同（图片按 token 计费，单张最高 384 tokens，无视觉专项费用）
+	"deepseek-v4-flash-vision-exp": {
+		peak: { input: 3.0, output: 9.0, cacheRead: 0.1, cacheWrite: 0 },
+		offPeak: { input: 1.5, output: 4.5, cacheRead: 0.05, cacheWrite: 0 },
+	},
 	"deepseek-v4-pro": {
 		peak: { input: 9.0, output: 27.0, cacheRead: 0.3, cacheWrite: 0 },
 		offPeak: { input: 4.5, output: 13.5, cacheRead: 0.15, cacheWrite: 0 },
