@@ -69,6 +69,31 @@ describe("isDeepSeekPeakTime (北京时间峰谷时段判定)", () => {
 		expect(isDeepSeekPeakTime(bjTime("2026-08-21T23:59"))).toBe(false);
 	});
 
+	it("2026-08-23 起周末全天为低谷：周六/周日任何时刻均非高峰（含跨 UTC 日期边界）", () => {
+		// 生效后首个周六 2026-08-29：原高峰时段 → 低谷
+		expect(isDeepSeekPeakTime(bjTime("2026-08-29T09:00"))).toBe(false);
+		expect(isDeepSeekPeakTime(bjTime("2026-08-29T10:00"))).toBe(false);
+		expect(isDeepSeekPeakTime(bjTime("2026-08-29T15:00"))).toBe(false);
+		// 生效后周日 2026-08-30：北京时间周日 09:00 = UTC 周六 01:00，按北京日期判周末
+		expect(isDeepSeekPeakTime(new Date("2026-08-30T01:00:00Z"))).toBe(false);
+		// 周末深夜/凌晨仍为低谷（与小时规则一致）
+		expect(isDeepSeekPeakTime(bjTime("2026-08-30T23:59"))).toBe(false);
+	});
+
+	it("生效前（2026-08-22 周六）仍按旧规则：高峰时段照常计峰", () => {
+		// 2026-08-22 周六 10:00，早于 2026-08-23 00:00 北京时间生效点
+		expect(isDeepSeekPeakTime(bjTime("2026-08-22T10:00"))).toBe(true);
+		expect(isDeepSeekPeakTime(bjTime("2026-08-22T15:00"))).toBe(true);
+		expect(isDeepSeekPeakTime(bjTime("2026-08-22T02:00"))).toBe(false);
+		// 生效边界：2026-08-22T16:00Z = 北京时间 2026-08-23 00:00 起，周六已过、周日开始
+		expect(isDeepSeekPeakTime(new Date("2026-08-22T16:00:00Z"))).toBe(false);
+	});
+
+	it("工作日不受周末规则影响", () => {
+		expect(isDeepSeekPeakTime(bjTime("2026-09-04T10:00"))).toBe(true); // 周五
+		expect(isDeepSeekPeakTime(bjTime("2026-08-31T10:00"))).toBe(true); // 周一
+	});
+
 	it("按北京时间判定：UTC 与北京时区之外传入的时刻也正确换算", () => {
 		// 2026-08-21 01:00 UTC = 北京时间 09:00 → 高峰
 		expect(isDeepSeekPeakTime(new Date("2026-08-21T01:00:00Z"))).toBe(true);
@@ -95,6 +120,17 @@ describe("messageCost (official CNY 峰谷定价)", () => {
 			"deepseek-v4-flash",
 			{ input: 136, output: 235, cacheRead: 193_152, cacheWrite: 0 },
 			bjTime("2026-08-21T02:00"),
+		);
+		expect(c).not.toBeNull();
+		expect(c).toBeCloseTo((136 * 1.5 + 235 * 4.5 + 193_152 * 0.05) / 1e6, 12);
+	});
+
+	it("周末全天低谷价（2026-08-23 起）：周六高峰时刻也按空闲单价计费", () => {
+		const s = newStrategy();
+		const c = s.messageCost(
+			"deepseek-v4-flash",
+			{ input: 136, output: 235, cacheRead: 193_152, cacheWrite: 0 },
+			bjTime("2026-08-29T10:00"), // 周六原高峰时段
 		);
 		expect(c).not.toBeNull();
 		expect(c).toBeCloseTo((136 * 1.5 + 235 * 4.5 + 193_152 * 0.05) / 1e6, 12);

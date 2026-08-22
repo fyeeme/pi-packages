@@ -8,7 +8,7 @@ A rich custom status bar for [pi](https://pi.dev) that replaces the default foot
 ## Features
 
 - **Provider-aware usage** — special support for DeepSeek and GLM/ZAI (see [Provider Support](#provider-support))
-- **DeepSeek peak/off-peak pricing** — session cost follows DeepSeek's 2026-08-17 peak/off-peak billing (peak 9:00-12:00 / 14:00-18:00 Beijing time, off-peak half price), priced per-message by timestamp, with a live `peak`/`off-peak` indicator in the footer (see [DeepSeek](#deepseek))
+- **DeepSeek peak/off-peak pricing** — session cost follows DeepSeek's 2026-08-17 peak/off-peak billing (peak 9:00-12:00 / 14:00-18:00 Beijing time on weekdays; weekends are off-peak all day since 2026-08-23), priced per-message by timestamp, with a live `peak`/`off-peak` indicator in the footer (see [DeepSeek](#deepseek))
 - **Token usage**: input, output, cache read/write, total per session, with cache hit rate
 - **Cost**: cumulative session cost with currency auto-detection (¥ for DeepSeek/CNY, $ otherwise)
 - **Context window**: usage percentage and size
@@ -25,7 +25,7 @@ Shows live **account balance**, **weekly token usage**, and **peak/off-peak awar
 
 #### Peak / Off-peak pricing (since 2026-08-17)
 
-DeepSeek now bills in two periods — **peak hours are 9:00-12:00 and 14:00-18:00 Beijing time** (UTC+8), all other hours are off-peak, and **off-peak is half the peak price**. Official CNY prices per million tokens:
+DeepSeek now bills in two periods — **peak hours are 9:00-12:00 and 14:00-18:00 Beijing time** (UTC+8) on weekdays, all other hours are off-peak, and **off-peak is half the peak price**. Since **2026-08-23 00:00 Beijing time**, weekends (Saturday/Sunday) no longer distinguish periods and bill at the off-peak price all day. Official CNY prices per million tokens:
 
 | Model | Period | Cache-hit input | Cache-miss input | Output |
 |---|---|---|---|---|
@@ -33,7 +33,7 @@ DeepSeek now bills in two periods — **peak hours are 9:00-12:00 and 14:00-18:0
 | deepseek-v4-pro | off-peak / peak | ¥0.15 / ¥0.30 | ¥4.5 / ¥9.0 | ¥13.5 / ¥27.0 |
 
 - **Per-message pricing by timestamp** — each message is priced at the rate of its own time (`AssistantMessage.timestamp`), so a long session spanning a period boundary (9:00/12:00/14:00/18:00) accounts every message correctly instead of using a single fixed rate.
-- **Peak/off-peak indicator** — the footer appends the current period so you always know which rate is in effect: `peak` during 9:00-12:00 / 14:00-18:00 Beijing time, `off-peak` otherwise:
+- **Peak/off-peak indicator** — the footer appends the current period so you always know which rate is in effect: `peak` during weekday 9:00-12:00 / 14:00-18:00 Beijing time, `off-peak` otherwise (including all day on weekends since 2026-08-23):
 
   ```
   ¥0.12/50.00 · 7d:1.2M · off-peak

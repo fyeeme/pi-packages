@@ -10,7 +10,8 @@
  * 因此所有「修正」都必须跟随结算币种与峰谷时段：
  *   1. `billedInCny()`：判定是否按 CNY 计价 —— 用户显式 `/currency` 优先；否则按 balance API
  *      探测到的账户币种（探测失败/未知时按 CNY，保持原有「deepseek → ¥」默认行为）。
- *   2. `isDeepSeekPeakTime()`：按北京时间（UTC+8，无夏令时）判定指定时刻是否高峰时段。
+ *   2. `isDeepSeekPeakTime()`：按北京时间（UTC+8，无夏令时）判定指定时刻是否高峰时段
+ *      （2026-08-23 00:00 起周末周六、周日全天不再区分峰谷，统一按低谷价）。
  *   3. `messageCost()`：按消息时刻对应的峰谷单价重算单条消息成本（仅 CNY 计价时接管；USD 计价
  *      返回 null 回退 pi 记录的 cost —— 会话文件里已记录的 cost 无法追溯修正）。
  *   4. `applyPricingPatch()`：运行时把注册表中 deepseek 模型定价覆盖为当前时段的官方 CNY 价
@@ -51,12 +52,26 @@ export const DEEPSEEK_CNY_PRICES: Record<string, DeepSeekCnyPrice> = {
 
 const PER_MILLION = 1_000_000;
 
+const BJ_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+/** 周末全天低谷价生效起点：2026-08-23 00:00 北京时间 = 2026-08-22T16:00Z。 */
+const WEEKEND_OFFPEAK_SINCE_MS = Date.parse("2026-08-22T16:00:00Z");
+
 /**
  * DeepSeek 高峰时段判定：北京时间（UTC+8，无夏令时）9:00-12:00、14:00-18:00 为高峰，
  * 其余为空闲时段（官方定价页备注）。`at` 可指定时刻，默认当前时间。
+ *
+ * 2026-08-23（周日）00:00 北京时间起，官方调整：周末（周六、周日）全天不再区分峰谷，
+ * 统一按低谷价收取 —— 即生效后的周六/周日任何时刻均判为空闲时段。生效前（如 2026-08-22
+ * 周六）的历史消息仍按旧规则计价，保证跨生效日的长会话逐条重算正确。
  */
 export function isDeepSeekPeakTime(at: Date = new Date()): boolean {
-	const beijingHour = (at.getUTCHours() + 8) % 24;
+	const beijing = new Date(at.getTime() + BJ_OFFSET_MS);
+	if (at.getTime() >= WEEKEND_OFFPEAK_SINCE_MS) {
+		const bjDay = beijing.getUTCDay(); // 0=周日 6=周六（按北京日期，非 UTC 日期）
+		if (bjDay === 0 || bjDay === 6) return false;
+	}
+	const beijingHour = beijing.getUTCHours();
 	return (beijingHour >= 9 && beijingHour < 12) || (beijingHour >= 14 && beijingHour < 18);
 }
 
