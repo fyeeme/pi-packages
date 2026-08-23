@@ -17,6 +17,9 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 	defineTool: <T>(def: T): T => def,
 	DEFAULT_MAX_BYTES: 51_200,
 	DEFAULT_MAX_LINES: 2_000,
+	// pi-subagent-core's settings.ts resolves the global config dir through
+	// this export — point it at a non-existent path so defaults apply.
+	getAgentDir: (): string => "/nonexistent/pi-agent-dir",
 	formatSize: (bytes: number): string => `${(bytes / 1024).toFixed(1)}KB`,
 	truncateHead: (
 		text: string,
@@ -88,6 +91,19 @@ describe("subagent tool", () => {
 		expect(spawnAgentMock).toHaveBeenCalledTimes(1);
 		expect(r.details.results).toHaveLength(1);
 		expect(r.details.results[0]?.text).toBe("done");
+	});
+
+	it("interim assistant chatter is dropped — only the final report reaches the parent", async () => {
+		spawnAgentMock.mockResolvedValue({
+			...fakeResult("", { callId: "t1b#0" }),
+			messages: [
+				{ role: "assistant", content: "Let me check the shared modules first." },
+				{ role: "toolResult", content: "ok" },
+				{ role: "assistant", content: "### Findings\nfinal report" },
+			] as unknown as AgentSpawnResult["messages"],
+		});
+		const r = await subagentTool.execute("t1b", { mode: "single", prompts: ["review"] }, undefined, undefined, fakeCtx);
+		expect(r.details.results[0]?.text).toBe("### Findings\nfinal report");
 	});
 
 	it("forwards the thinking level to every spawned agent", async () => {

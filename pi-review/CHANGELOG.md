@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `/code-simplify` 起手对齐 CC 观感（可见 Phase 0 + 工具门控 fan-out）：两种模式的触发消息都携带 handler 已解析的 scope、变更文件索引与**精确复现命令**（`getRepoDiff` ok 结果新增 `gitCommand`，含 `-C <gitRoot>`/range/路径限定），指令模型先可见跑该命令通读 diff、写 2–4 行变更意图总结，之后才允许启动任何东西——PARALLEL 模式不再由命令 handler 直接派发，而是模型在 Phase 0 完成后调用新工具 `simplify_fanout`（CC Agent 调用的对等物）：工具自行重解析 diff（不信任模型传 diff 文本，也修复 CC 实测其模型不内嵌 diff 的缺陷）、用新鲜 context usage 复检 fan-out 条件（不满足则回退 single-pass 并指示 `fanned_out: false`）、内嵌 diff 进 4 个角度 task 并经共享 subagent core 派发（maxTurns 15 / 只读白名单 / maxConcurrency 约束 / onUpdate 进度计数），findings 作为 tool result 回到同一轮进入 Phase 2。新增纯函数 `buildParallelTrigger`/`buildSinglePassTrigger`/`formatFanoutResults` 及测试；`simplify_fanout` 与 `subagent` 同受 `isFanoutToolAllowed()` 递归护栏约束注册。
+
+- `/code-simplify` diff 范围改为**路径/子模块感知**（`findGitRoot`/`resolveDiffScope`）：target 为路径时定位其最近的 git 根——target 位于 git 子模块内（如 `@packages/extensions/pi-review/`）时在**子模块自己的仓库**里取 diff（父仓库 `git diff` 只能看到 dirty 指针，看不到子模块内真实改动），并按相对路径限定范围；target 恰为 git 根时全量。非路径 target（分支/PR）保持 whole-diff。`git` 调用改用数组 argv 的 `execFile`（无 shell 注入风险，且不阻塞 TUI 主线程）。修复实测：此前 4 个清理 agent 只审到 journal/manifest 运行时产物与子模块指针，现在能拿到子模块内真实代码改动。
+- `/code-simplify` PARALLEL 模式改为**命令直调 `@fyeeme/pi-subagent-core`** 并行跑 4 个清理 agent（Reuse/Simplification/Efficiency/Altitude）：handler 用 `getRepoDiff`（git diff，非 git/无改动时提示并退出）+ `buildSimplifyTasks` + `spawnAgent`/`mapWithConcurrencyLimit`（每个 agent `maxTurns:15`、只读工具白名单 read/grep/find/ls/bash、模型继承会话模型、`displayName` 为角度名）——agent 实时出现在 agent widget / FleetView 并受 `maxConcurrency` 配置约束；完成后把 4 份 findings 汇总发给模型执行 Phase 2（apply/verify/report，`fanned_out: true`）。不再依赖模型自行调用 subagent 工具。SINGLE-PASS 模式维持原行为（发消息让模型内联四角度）。simplify skill 的 PARALLEL 段同步更新（Phase 1 由命令完成，模型只做合并去重 + Phase 2）。
+- `subagent` 工具并发 ceiling 改为配置驱动：`PI_MAX_CONCURRENT_SUBAGENTS` env → pi-subagent-core 设置 `maxConcurrency`（选项 3/5/8/10，默认 5，配置文件 `pi-subagent.json` 全局/项目两层）→ 5。默认由 20 降为 5（调用时读取，改文件即生效）；env 覆盖保持最高优先级，`parallelism` 参数显式传值不变。
+- 接入 `@fyeeme/pi-subagent-core` 的子代理 UI 层：`pi` manifest 新增 `./node_modules/@fyeeme/pi-subagent-core/sub-agent.ts` 扩展入口，从与 `subagent` 工具相同的依赖副本加载 —— 编辑器上方 agent widget、下方 FleetView、会话查看器与 `/agents` 命令随包启用，与工具共享 monitor 状态。依赖同步升为 `^0.5.0`。本地开发需先将 core 包同步进本包的 `node_modules` 副本（见其 README “Wiring”）。
+- 4 个清理 agent 的 task 注入零 token 上下文包（`buildContextPackage`，handler 侧从 diff 解析，不耗父上下文）：repo 根路径、命中的 diff scope 标签、带增删行数的变更文件索引（>200 文件截断并标注剩余数）；single-pass 触发消息同样携带，省掉各 agent 自行 `git diff --stat` 摸底的 1–3 轮。
+
+### Changed
+
+- `/code-simplify` diff 范围由「仅未暂存 `git diff`」扩为完整 changed code 级联：优先 `git diff <merge-base @{upstream} HEAD>`（未推送提交 + 暂存 + 未暂存，与 simplify skill Phase 0 口径一致），无 upstream 回退 `git diff HEAD`，无提交新仓回退 `--staged` / 未暂存；`getRepoDiff` 返回判别联合 `DiffOutcome`（ok / no-repo / empty / git-error，ok 携带 gitRoot + scope 标签），实际命中的 scope 写入 agent prompt 与触发消息。空 diff 在两种模式下都提前退出（此前 single-pass 会放模型空跑一轮）。
+- `/code-simplify` 模式判定新增 diff 大小护栏：`DIFF_TOO_LARGE_CHARS = 400_000`（≈10 万 token/份，4 份 fan-out 仅 prompt 即 ~40 万 input token）以上降级 single-pass；`decideSimplifyMode` 改返回 `{mode, reasons}`，理由（上下文未知 / 无 subagent / 上下文近满 / diff 过大）直接进触发消息，判定可观察。
+- `/code-simplify` 模式判定移除残留的 `hasSubagent` 门控：PARALLEL 模式早已改为 handler 直调 `@fyeeme/pi-subagent-core` 派发，不再依赖 subagent 工具注册；清理 agent 的工具白名单（read/grep/find/ls/bash）从不含 fan-out 工具，递归仍物理有界。simplify skill 的前置条件与 SINGLE-PASS 段同步改写。
+- `/code-simplify` 的 git 调用由 `execFileSync` 改为 promisify 的 `execFile`（`GitRunner` 签名异步化，`getRepoDiff` 返回 Promise）：handler 是 async 函数，大仓库 diff 不再阻塞 TUI 主线程（此前最坏串行 5 个 git 进程全程冻结 spinner/输入）。
+- `/code-simplify` 的 fan-out ceiling 与 `subagent` 工具共享同一解析器（导出 `getMaxConcurrency`）：`PI_MAX_CONCURRENT_SUBAGENTS` env → `maxConcurrency` 设置的优先级在包内两条 fan-out 路径一致（此前 handler 侧只读设置文件、忽略 env 覆盖）。
+- `Message.content` 防御性文本解析收敛为 pi-subagent-core 的单一实现（`contentText`/`lastAssistantText`）：删除 `code-simplify.ts` 与 `subagent.ts` 各自的手写拷贝。
+- 每个清理 agent 的 task 不再重复携带角度定义全文（定义只经 systemPrompt 注入，每 agent 省一份定义 token）；`callId` 去除无意义的 `-index-Date.now()` 后缀；`DIFF_SCOPES` 扁平化为 `Record<DiffScopeKind, string>` 标签表（kind 不再在值内重复存储）；`resolveDiffScope` 两个相同分支合并。
+- `SIMPLIFY_ANGLES`（TS）与 skill 角度正文纳入 `angle-sync` 同步测试（措辞漂移即红），Reuse 定义与 skill 正文对齐（句号 → 破折号）。
+- `resultText` 只取最后一条非空 assistant 文本并导出测试，中间轮次的进度口水话（“Let me check…”）不再混入回传父上下文的 findings。
+
+### Fixed
+
+- `getRepoDiff` 的 git 失败不再被吞成「无改动」：所有候选都失败（坏仓库、diff 超 maxBuffer 10MB）时报 `git-error` 并透出真实错误消息。
+- `subagent` 工具不再把中间轮次的 assistant 口水话（"Let me check …"）拼进内联结果：文本提取收敛到 pi-subagent-core 共享的 `lastAssistantText`（取最后一条非空 assistant 消息），与 `/code-simplify` 同一语义 —— 此前两份手写解析器同名不同义，修复只落在其中一份上。（新增回归测试）
+- `/code-simplify` fan-out 中被中止的 agent 不再伪装成「(no findings)」：`failed` 判定改为 `exitCode !== 0` 单条件，aborted 单独标注（保留已写出的部分 findings）。
 ## [1.0.3] - 2026-08-16
 
 ### Changed

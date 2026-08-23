@@ -50,18 +50,36 @@ description: "Review the changed code for reuse, simplification, efficiency, and
        agent depth >= CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH (default 3); (b) the
        Agent tool must be in the allowlist. On Pi: (a) is N/A — the `subagent`
        tool spawns a fresh subprocess (always depth 0), so depth never accumulates
-       — so decideSimplifyMode substitutes a context-fraction heuristic
-       (tokens/contextWindow >= 0.8 → single-pass), a Pi addition NOT a mirror of
-       Dii; (b) is mirrored as "the `subagent` tool must be registered". The
-       decision is made DETERMINISTICALLY by the /code-simplify handler — it can
+       — so decideSimplifyMode substitutes three Pi-added guards: a context-fraction
+       heuristic (tokens/contextWindow >= 0.8 → single-pass), a diff-size
+       guard (diff >= 400K chars → single-pass; the 4-copy fan-out would burn
+       ~400K input tokens on prompt text alone), and fan-out availability
+       (the fan-out tools must be registered for this process — the Pi
+       counterpart of Dii's allowlist clause) — Pi additions NOT mirrors of
+       Dii. The cleanup agents' tool whitelist (read/grep/find/ls/bash) never
+       includes a fan-out tool, so recursion stays physically bounded
+       regardless of tool registration. The decision is made
+       DETERMINISTICALLY by the /code-simplify handler — it can
        read ctx.getContextUsage(), which a pure-prompt skill cannot — and announced
        in the trigger message; this skill just provides the two mode bodies.
     3. Command     — CC: /simplify; Pi: /code-simplify.
+    4. Dispatch    — CC's lead model writes the 4 Agent prompts itself after its
+       visible Phase 0. Pi keeps the same TIMELINE but moves the packaging into
+       code: the trigger message carries the handler-resolved scope, the
+       changed-file index, and the exact `git -C … diff …` command; the model
+       runs it, reads the diff, writes a change-intent summary, and THEN calls
+       the `simplify_fanout` tool (the counterpart of CC's Agent call). The
+       tool re-resolves the diff itself (never trusting model-passed diff
+       text — CC's own transcripts show its model skipping the diff inlining),
+       embeds it in each task, and spawns the agents; its result carries the
+       findings back into the same turn for Phase 2.
 
-  Prerequisite: the `subagent` tool (provided by the pi-review extension) for
-                PARALLEL MODE, and the `review_report` tool (same extension) for
-                the Phase 2 structured outcome report. SINGLE-PASS MODE runs
-                standalone apart from `review_report`.
+  Prerequisite: the `review_report` tool (provided by the pi-review extension)
+                for the Phase 2 structured outcome report. PARALLEL MODE
+                additionally needs the `simplify_fanout` tool (same extension;
+                registered whenever fan-out is allowed for this process — the
+                recursion guard; the command only picks PARALLEL when it is).
+                SINGLE-PASS MODE runs standalone apart from `review_report`.
 -->
 
 You are improving the quality of the changed code, not hunting for bugs. Review
@@ -71,29 +89,53 @@ find. Do not look for correctness bugs — that is what `/code-review` is for.
 The `/code-simplify` handler has already chosen the mode (PARALLEL or
 SINGLE-PASS) from real context usage and announced it in the trigger message.
 Follow the body that matches; do not fake the mode you weren't asked to run.
+Both modes open the same way: the trigger message carries the handler-resolved
+scope, a changed-file index, and the exact git command — Phase 0 below is a
+VISIBLE, model-run step before anything launches.
 
 ## Phase 0 — Gather the diff
 
-Run `git diff @{upstream}...HEAD` (or `git diff main...HEAD` / `git diff HEAD~1`
+When the trigger message carries a handler-resolved scope (it always does for
+/code-simplify), use THAT: run the exact `git -C … diff …` command the trigger
+provides — the handler already ran the cascade (merge-base → HEAD → staged →
+unstaged) to pick it — read the full diff, and write a 2–4 line change-intent
+summary before anything else. Do not re-derive a different range. That summary
+and your first-hand reading are what you will use to merge, dedup, and judge
+findings in Phase 2.
+
+(No trigger scope — e.g. the skill invoked standalone? Then: run
+`git diff @{upstream}...HEAD` (or `git diff main...HEAD` / `git diff HEAD~1`
 if there's no upstream) to get the unified diff under review. If there are
 uncommitted changes, or the range diff is empty, also run `git diff HEAD` and
 include the working-tree changes in scope — the review often runs before the
 commit. If a PR number, branch name, or file path was passed as an argument,
-review that target instead. Treat this diff as the review scope.
+review that target instead. Treat this diff as the review scope.)
 
 ---
 
-# PARALLEL MODE  (subagent tool available AND context not near-full)
+# PARALLEL MODE  (context not near-full AND diff under the fan-out threshold AND fan-out available)
 
-`/code-simplify → 4 cleanup agents in parallel → apply the fixes`
+`/code-simplify → visible Phase 0 (read the diff, summarize) → simplify_fanout tool → 4 cleanup agents → apply the fixes`
 
 ## Phase 1 — Review (4 cleanup agents in parallel)
 
-Launch **4 independent review agents** via the subagent tool, all in a
-single message so they run concurrently. Pass each agent the diff and one of
-the four angles below. Each returns its findings with `file`, `line`, a
-one-line `summary`, and the concrete cost (what is duplicated, wasted, or
-harder to maintain).
+After your Phase 0 summary, call the `simplify_fanout` tool exactly as the
+trigger message instructs (passing the target through verbatim when one was
+given). The tool re-resolves the same diff deterministically, embeds it in
+each agent's task together with the zero-token context package, and dispatches
+4 independent pi subprocesses — one per angle below — with `maxTurns: 15` and
+a read-only tool whitelist (read/grep/find/ls/bash). Each returns its findings
+with `file`, `line`, a one-line `summary`, and the concrete cost (what is
+duplicated, wasted, or harder to maintain). The agent rows appear live in the
+agent widget / FleetView and respect the `maxConcurrency` setting.
+
+Do NOT write the four agent prompts yourself, inline the diff into any
+prompt, or call the generic `subagent` tool for this — `simplify_fanout` owns
+the packaging. If the tool reports that fan-out conditions no longer hold
+(context grew while you read the diff), fall back to the SINGLE-PASS body
+below and report `fanned_out: false`. When the tool result arrives, merge and
+deduplicate the findings against your first-hand Phase 0 reading. The four
+angles below are what the agents were asked to find.
 
 ### Reuse
 
@@ -125,17 +167,20 @@ isn't deep enough — prefer generalizing the underlying mechanism over adding
 special cases.
 ## Phase 2 — Apply, verify, and report
 
-Follow the shared **Phase 2** procedure at the end of this skill (snapshot → apply → verify → auto-revert on failure → report via `review_report`). The parallel fan-out only changes how findings are gathered (Phase 1); applying, verifying, and reporting are identical across modes. Set `fanned_out: true` in the report since the 4-agent fan-out actually ran.
+Follow the shared **Phase 2** procedure at the end of this skill (snapshot → apply → verify → auto-revert on failure → report via `review_report`). The parallel fan-out only changes how findings are gathered (Phase 1 — done by the handler); applying, verifying, and reporting are identical across modes. Set `fanned_out: true` in the report since the 4-agent fan-out actually ran.
 
 ---
 
-# SINGLE-PASS MODE  (subagent tool unavailable OR context near-full)
+# SINGLE-PASS MODE  (context near-full OR diff too large OR fan-out unavailable)
 
-`/code-simplify → subagent tool unavailable → single-pass inline cleanup → apply the fixes`
+`/code-simplify → handler decided single-pass (reasons in the trigger message) → inline cleanup → apply the fixes`
 
-The subagent tool isn't available in this context, so the usual
-4-agent fan-out can't run. Work through all four angles below yourself, in
-this same context, in one pass — do not skip an angle for lack of fan-out.
+The handler decided against the 4-agent fan-out (context near-full, diff too
+large, fan-out unavailable, or usage unmeasurable — the exact reasons are in
+the trigger message), so work through all four angles below yourself, in this
+same context, in one pass — do not skip an angle for lack of fan-out. Phase 0
+is the same visible opening: run the exact git command from the trigger
+message, read the diff, write the change-intent summary.
 
 ## Phase 1 — Review (4 cleanup angles, single pass)
 

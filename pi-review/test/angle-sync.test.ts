@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { SIMPLIFY_ANGLES } from "../src/commands/code-simplify.ts";
 
 /**
  * The four cleanup angle bodies (Reuse / Simplification / Efficiency / Altitude)
@@ -50,4 +51,22 @@ describe("shared angle bodies stay in sync across code-review and simplify", () 
 			}
 		});
 	}
+});
+
+describe("SIMPLIFY_ANGLES (TS) stay in sync with the skill bodies", () => {
+	const normalize = (s: string): string => s.replace(/\s+/g, " ").trim();
+
+	it("covers exactly the four angles in skill order", () => {
+		expect(SIMPLIFY_ANGLES.map((a) => a.displayName)).toEqual([...ANGLES]);
+	});
+
+	it("each TS definition matches the canonical skill body verbatim (whitespace-normalized)", () => {
+		for (const angle of SIMPLIFY_ANGLES) {
+			const canonical = angleBodies(REVIEW, angle.displayName)[0]!;
+			expect(
+				normalize(angle.definition),
+				`TS definition of ${angle.displayName} must match the skill body — update both or neither`,
+			).toBe(normalize(canonical));
+		}
+	});
 });

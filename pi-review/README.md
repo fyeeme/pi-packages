@@ -2,8 +2,9 @@
 
 Review & cleanup extension for [pi](https://github.com/earendil-works/pi).
 
-Registers two commands (`/code-review` and `/code-simplify`) and a general-purpose
-`subagent` tool that spawns parallel pi subprocesses — providing the **real
+Registers two commands (`/code-review` and `/code-simplify`), a general-purpose
+`subagent` tool that spawns parallel pi subprocesses, and the
+`simplify_fanout` dispatch-gate tool — providing the **real
 fan-out capability** that the `code-review` and `simplify` skills
 (bundled in this package under `skills/`) need for their multi-agent flows.
 
@@ -54,17 +55,30 @@ and follow it — using the `subagent` tool for any fan-out / verify / gap-hunt.
 
 Cleanup (reuse / simplification / efficiency / altitude) via the `simplify`
 skill. **The handler decides parallel vs single-pass mode deterministically**
-from `ctx.getContextUsage()` (real token count) + whether the `subagent` tool is
-registered — mirroring CC's `Jvo` guard:
+from `ctx.getContextUsage()` (real token count), diff size, and whether
+fan-out tools are registered for this process:
 
-- context < 80% full AND `subagent` tool available → **parallel** (4 cleanup
-  agents via `subagent` mode: parallel)
+- context < 80% full AND diff < 400K chars AND fan-out allowed → **parallel**
 - otherwise → **single-pass** (inline 4 angles)
 
 This is the deterministic mode selection a pure-prompt skill cannot reproduce
 (the skill has no access to context-token count; only extension code can call
 `ctx.getContextUsage()`). The decision is announced in the trigger message so
 it is observable.
+
+**CC-parity opening (visible Phase 0, tool-gated fan-out).** Both modes open
+the way Claude Code's `/simplify` does — the session never "rushes" into
+agents. The trigger message carries the handler-resolved scope, a
+changed-file index, and the exact `git -C … diff …` command; the model runs
+that command visibly, reads the diff, and writes a 2–4 line change-intent
+summary BEFORE anything launches. In PARALLEL mode the fan-out is dispatched
+by the model calling the **`simplify_fanout`** tool (the counterpart of CC's
+Agent-tool call): the tool re-resolves the diff itself (never trusting
+model-passed diff text), re-checks the fan-out guards with fresh context
+usage (the model just read the whole diff), embeds the diff in each of the 4
+angle tasks, and spawns real pi subprocesses (`maxTurns` 15, read-only tool
+whitelist). The findings come back as that tool's result — same turn, ready
+for Phase 2.
 
 **Apply → verify → revert safety net** (harden-code-simplify): after Phase 2
 applies the cleanups, the handler also injects a verification command detected
