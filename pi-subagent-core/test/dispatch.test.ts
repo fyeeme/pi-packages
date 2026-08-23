@@ -6,10 +6,14 @@ import type { ChildProcess } from "node:child_process";
 const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: spawnMock }));
 
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	abortAgent,
 	createSpawnRegistry,
 	DEFAULT_MAX_CONCURRENCY,
+	getEffectiveMaxConcurrency,
 	getPiInvocation,
 	mapWithConcurrencyLimit,
 	spawnAgent,
@@ -51,13 +55,30 @@ describe("mapWithConcurrencyLimit", () => {
 		expect(await mapWithConcurrencyLimit([], 4, async (n) => n)).toEqual([]);
 	});
 
-	// --- max-concurrency option (hardcoded default 5) ---
+	// --- max-concurrency option (default 5, file-configurable 3/5/8/10) ---
+	//
+	// The omitted-concurrency ceiling reads the package settings files
+	// (settings.ts) at call time. Stub PI_CODING_AGENT_DIR (pi's agent-dir
+	// override, honored by getAgentDir) to a fresh temp dir so the global layer
+	// is empty and the tests stay deterministic regardless of the host machine.
 
-	it("DEFAULT_MAX_CONCURRENCY is 5 (hardcoded, no env / config)", () => {
+	let configDir: string;
+
+	beforeEach(() => {
+		configDir = mkdtempSync(join(tmpdir(), "pi-sa-cfg-"));
+		process.env.PI_CODING_AGENT_DIR = configDir;
+	});
+
+	afterEach(() => {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(configDir, { recursive: true, force: true });
+	});
+
+	it("DEFAULT_MAX_CONCURRENCY is 5 (the hardcoded fallback)", () => {
 		expect(DEFAULT_MAX_CONCURRENCY).toBe(5);
 	});
 
-	it("omitting concurrency caps in-flight work at the hardcoded 5", async () => {
+	it("omitting concurrency caps in-flight work at the default 5 (no settings file)", async () => {
 		let active = 0;
 		let peak = 0;
 		const out = await mapWithConcurrencyLimit([1, 2, 3, 4, 5, 6, 7, 8], async (n) => {
@@ -67,22 +88,64 @@ describe("mapWithConcurrencyLimit", () => {
 			active--;
 			return n * 10;
 		});
-		expect(peak).toBe(5); // 8 items, hardcoded ceiling 5
+		expect(peak).toBe(5); // 8 items, default ceiling 5
 		expect(out).toEqual([10, 20, 30, 40, 50, 60, 70, 80]); // order preserved
 	});
 
-	it("an env var does NOT change the omitted-concurrency default (hardcoded)", async () => {
-		process.env.PI_MAX_CONCURRENT_SUBAGENTS = "50";
+	it("a PI_CODING_AGENT_DIR env var does NOT change the default (file-based, not this env var)", () => {
+		expect(getEffectiveMaxConcurrency()).toBe(5);
+	});
+
+	it("maxConcurrency from the global settings file raises the ceiling to the configured option", async () => {
+		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: 8 }));
+		expect(getEffectiveMaxConcurrency()).toBe(8);
+		let active = 0;
+		let peak = 0;
+		await mapWithConcurrencyLimit([1, 2, 3, 4, 5, 6, 7, 8], async () => {
+			active++;
+			peak = Math.max(peak, active);
+			await new Promise((r) => setTimeout(r, 5));
+			active--;
+		});
+		expect(peak).toBe(8); // 8 items, configured ceiling 8 — all in flight
+	});
+
+	it("maxConcurrency from the project layer overrides the global layer", async () => {
+		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: 10 }));
+		// Hermetic project layer: chdir into a temp dir so its .pi/ is never the repo's.
+		const projDir = mkdtempSync(join(tmpdir(), "pi-sa-proj-"));
+		const prevCwd = process.cwd();
+		mkdirSync(join(projDir, ".pi"));
+		writeFileSync(join(projDir, ".pi", "pi-subagent.json"), JSON.stringify({ maxConcurrency: 3 }));
 		try {
+			process.chdir(projDir);
 			let active = 0;
 			let peak = 0;
-			await mapWithConcurrencyLimit([1, 2, 3, 4, 5, 6], async () => {
+			await mapWithConcurrencyLimit([1, 2, 3, 4, 5, 6, 7, 8], async () => {
 				active++;
 				peak = Math.max(peak, active);
 				await new Promise((r) => setTimeout(r, 5));
 				active--;
 			});
-			expect(peak).toBe(5); // still 5: the default is a constant, not env-driven
+			expect(peak).toBe(3); // project layer (3) wins over global (10)
+		} finally {
+			process.chdir(prevCwd);
+			rmSync(projDir, { recursive: true, force: true });
+		}
+	});
+
+	it("an out-of-option maxConcurrency value is dropped (fallback 5)", () => {
+		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: 20 }));
+		expect(getEffectiveMaxConcurrency()).toBe(5);
+	});
+
+	it("PI_MAX_CONCURRENT_SUBAGENTS is a consumer-level override the core itself does not read", async () => {
+		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: 3 }));
+		process.env.PI_MAX_CONCURRENT_SUBAGENTS = "50";
+		try {
+			// The core's effective default stays file-driven (3); pi-review
+			// resolves its own env var before calling in with an explicit ceiling.
+			expect(getEffectiveMaxConcurrency()).toBe(3);
 		} finally {
 			delete process.env.PI_MAX_CONCURRENT_SUBAGENTS;
 		}
