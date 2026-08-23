@@ -6,6 +6,7 @@ This directory contains official extensions for [pi](https://github.com/earendil
 
 | Package | Description |
 |---------|-------------|
+| [pi-ask-user](./pi-ask-user) | Structured `ask_user` tool — multi-question clarifying prompts with options, multi-select, recommended defaults, and free-form Other input |
 | [pi-dynamic-workflows](./pi-dynamic-workflows) | Deterministic TypeScript workflow orchestration — declarative typed steps with resumable, budget-bounded, abortable execution |
 | [pi-hooks](./pi-hooks) | Claude Code-compatible hooks runner — reads `.pi/hooks.json` and maps lifecycle events to hook scripts |
 | [pi-mermaid-viewer](./pi-mermaid-viewer) | Renders Mermaid diagrams from conversations as an HTML page in the default browser |

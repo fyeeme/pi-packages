@@ -1,2 +1,4 @@
 .serena/
 node_modules/
+package-lock.json
+.pi/review
