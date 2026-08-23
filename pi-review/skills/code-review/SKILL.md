@@ -188,6 +188,27 @@ finder agents in a single batch (mode: parallel) so they run concurrently;
 otherwise do not fake the fan-out — work the angles yourself in sequence in
 this same context, or report that the subagent capability is unavailable.
 
+**Finder turn budget（Pi adaptation — the same runaway-exploration guard the
+Phase 3 gap-hunt already carries）** — a finder that exhausts its turn cap
+mid-read returns NOTHING and silently loses its whole angle (observed on a
+168-file diff: 7/10 finders burned their full turn budget with zero output,
+and the coverage hole cascaded into two extra compensation waves). Constrain
+every finder batch:
+
+1. **Set `maxTurns: 20` on the `subagent` call** — the slowest finder pins
+   the wave's wall time; 20 turns covers the highest-risk hunks of any
+   single angle, and a capped finder still owes partial output (next item).
+2. **Declare the budget inside each finder prompt** — e.g. "You have ~15
+   tool calls. Spend them on the highest-risk hunks first; when half are
+   spent, stop opening new files."
+3. **Final-message contract** — the finder's LAST assistant message must be
+   its JSON candidate array (an empty `[]` is a valid answer). Partial
+   output beats none: candidates that never reach text never reach verify.
+4. **A finder that hits max-turns with no JSON is a FAILED finder**, not an
+   empty angle: re-dispatch that single angle on a narrower file slice
+   before Phase 2 (or fold it into the xhigh/max gap-hunt), and note the
+   re-dispatch in the report.
+
 **Finder allocation** (CC inline, verified 2.1.227): the number of correctness
 angles comes from the effort quad tuple, taken **in order A→E** (`slice(0, N)`
 — do not hand-pick angles; that makes runs unreproducible):
