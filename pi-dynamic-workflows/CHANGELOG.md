@@ -7,14 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-24
+
 ### Changed
 
-- 实时进度 UI 委托给共享包 `@fyeeme/pi-subagent-core`：`pi.extensions` manifest 追加注册 `./node_modules/@fyeeme/pi-subagent-core/extension.ts`，依赖从 `^0.3.2` 升到 `^0.5.0`（spawnAgent 通知进程级 monitor 的版本）；引擎 `dispatchOpts` 传入 `displayName`（step id），工作流 agent 在共享 agent widget / FleetView / `/agents` 中按步骤 id 展示。
+- Live progress UI delegated to the shared package `@fyeeme/pi-subagent-core`: the `pi.extensions` manifest additionally registers `./node_modules/@fyeeme/pi-subagent-core/sub-agent.ts`, and the dependency rises from `^0.3.2` to `^0.5.0` (the version whose `spawnAgent` notifies the process-level monitor); the engine's `dispatchOpts` passes `displayName` (the step id), so workflow agents appear in the shared agent widget / FleetView / `/agents` under their step ids.
 
 ### Removed
 
-- **移除自带进度 UI（破坏性变更）**：`buildProgressWidget`（`wf:progress` widget + `wf:summary` 状态行）与 `/wf-inspect` 命令、`WorkflowInspect`（`src/inspect.ts`）、`buildRenderGroups`（`src/ui-groups.ts`）随共享 UI 的接入一并移除——两套 agent 状态渲染在同一编辑器区域冲突。`format.ts` 仅保留引擎使用的 `stepIdOf`。
-- **`phases` 参数移除（破坏性变更）**：`run_workflow` 工具的 `phases` 参数与 `WorkflowDefinition.phases`/`PhaseDefinition`（types.ts）仅服务于进度树 UI 分组，随 UI 层一并移除。引擎的 `AgentLifecycleListeners`（含 `onLog`/`onUpdate`）保留为公开 API，嵌入方仍可自行消费。
+- **Built-in progress UI removed (breaking)**: `buildProgressWidget` (the `wf:progress` widget + `wf:summary` status line), the `/wf-inspect` command, `WorkflowInspect` (`src/inspect.ts`), and `buildRenderGroups` (`src/ui-groups.ts`) are removed along with the shared UI's arrival — two agent-state renderings conflict in the same editor region. `format.ts` keeps only `stepIdOf`, which the engine uses.
+- **`phases` parameter removed (breaking)**: the `run_workflow` tool's `phases` parameter and `WorkflowDefinition.phases`/`PhaseDefinition` (types.ts) existed only to group the progress-tree UI and are removed with the UI layer. The engine's `AgentLifecycleListeners` (including `onLog`/`onUpdate`) remain public API; embedders can still consume them.
+
 ## [0.1.1] - 2026-08-10
 
 ### Added

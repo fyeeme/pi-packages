@@ -29,7 +29,7 @@
   "pi": {
     "extensions": [
       "./index.ts",
-      "./node_modules/@fyeeme/pi-subagent-core/extension.ts"
+      "./node_modules/@fyeeme/pi-subagent-core/sub-agent.ts"
     ]
   },
   "scripts": {
