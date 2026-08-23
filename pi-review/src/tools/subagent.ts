@@ -20,27 +20,14 @@ import * as path from "node:path";
 import {
 	abortAgent,
 	createSpawnRegistry,
+	lastAssistantText,
 	mapWithConcurrencyLimit,
-	parsePositiveInt,
 	spawnAgent,
 	type AgentSpawnRegistry,
 	type AgentSpawnOptions,
 	type AgentSpawnResult,
 } from "@fyeeme/pi-subagent-core";
-
-/** Default concurrency ceiling when PI_MAX_CONCURRENT_SUBAGENTS is unset/invalid.
- *  20 = CC's CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS ?? 20 (2.1.227 binary empirical). */
-const DEFAULT_MAX_CONCURRENCY = 20;
-
-/**
- * Effective concurrency ceiling, configurable via PI_MAX_CONCURRENT_SUBAGENTS
- * (parity with CC's CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS). Unset, missing, or
- * non-positive/non-integer values fall back to the default. Read at call time
- * so a changed env takes effect without a reload.
- */
-function getMaxConcurrency(): number {
-	return parsePositiveInt(process.env.PI_MAX_CONCURRENT_SUBAGENTS) ?? DEFAULT_MAX_CONCURRENCY;
-}
+import { getMaxConcurrency } from "../concurrency.ts";
 
 /**
  * Default turn budget for a fan-out agent when the caller omits maxTurns. A
@@ -50,6 +37,13 @@ function getMaxConcurrency(): number {
  * 50 = CC's FORKED_AGENT_DEFAULT_MAX_TURNS (2.1.227 binary empirical).
  */
 const DEFAULT_FANOUT_MAX_TURNS = 50;
+
+/** os.tmpdir() entries swept for stale transcript dirs. */
+const TRANSCRIPT_DIR_PREFIX = "pi-cr-out-";
+/** Transcript dirs older than this are removed on the next fan-out call.
+ *  Recent transcripts must survive (the model reads them after the tool
+ *  returns); anything older than a day is dead weight on disk. */
+const TRANSCRIPT_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 // Module-level registry so abortAgent can reach in-flight calls. callIds are
 // unique per tool call (toolCallId#index), so a single registry is safe.
@@ -73,7 +67,8 @@ const SubagentParams = Type.Object({
 	tools: Type.Optional(Type.Array(Type.String(), { description: "Tool whitelist for the sub-agent. Omit for default tools." })),
 	parallelism: Type.Optional(
 		Type.Number({
-			description: `Max concurrent agents in parallel mode (integer ≥ 1; default min(prompts.length, ceiling)). The ceiling is PI_MAX_CONCURRENT_SUBAGENTS (default ${DEFAULT_MAX_CONCURRENCY}).`, 
+			description:
+				"Max concurrent agents in parallel mode (integer ≥ 1; default min(prompts.length, ceiling)). The ceiling is PI_MAX_CONCURRENT_SUBAGENTS, else the maxConcurrency setting in pi-subagent.json (options 3/5/8/10, default 5).",
 		}),
 	),
 	maxTurns: Type.Optional(
@@ -103,34 +98,11 @@ interface SubagentDetails {
 	stats: { agents: number; turns: number; cost: number; aborted: number };
 }
 
-/** Pull the assistant text out of a spawn result's messages. Defensive about
- *  the Message.content shape (string | content-block array). */
-function resultText(r: AgentSpawnResult): string {
-	const texts: string[] = [];
-	for (const m of r.messages) {
-		if (m.role !== "assistant") continue;
-		const content: unknown = (m as { content?: unknown }).content;
-		if (typeof content === "string") {
-			texts.push(content);
-			continue;
-		}
-		if (Array.isArray(content)) {
-			for (const block of content) {
-				if (block && typeof block === "object" && "text" in block) {
-					const text = (block as { text?: unknown }).text;
-					if (typeof text === "string") texts.push(text);
-				}
-			}
-		}
-	}
-	return texts.join("\n").trim();
-}
-
 /**
  * 提取单条消息的可读文本（string content 或 content block 数组）。
  *
  * 转录用：除 text 外也渲染 thinking 与 toolCall 块，否则转录会静默丢弃中间推理与
- * 工具调用——与“全量转录含 tool result”的声明不符。内联预览（resultText）仍只取
+ * 工具调用——与“全量转录含 tool result”的声明不符。内联预览（lastAssistantText）仍只取
  * assistant 的 text，保持简短。
  */
 function messageText(m: { role?: string; content?: unknown }): string {
@@ -190,6 +162,37 @@ async function writeTranscriptFile(tmpDir: string, callId: string, text: string)
 	const filePath = path.join(tmpDir, `agent-${safeName}.txt`);
 	await fs.promises.writeFile(filePath, text, { encoding: "utf-8", mode: 0o600 });
 	return filePath;
+}
+
+/**
+ * Best-effort sweep of stale transcript dirs left by earlier tool calls
+ * (transcripts are intentionally kept past the call — the model may read them
+ * later — but without a retention pass they accumulate forever). Fire-and-
+ * forget: never blocks or fails the spawn; errors are swallowed.
+ */
+async function sweepStaleTranscriptDirs(): Promise<void> {
+	try {
+		const tmp = os.tmpdir();
+		const entries = await fs.promises.readdir(tmp, { withFileTypes: true });
+		const now = Date.now();
+		await Promise.all(
+			entries
+				.filter((e) => e.isDirectory() && e.name.startsWith(TRANSCRIPT_DIR_PREFIX))
+				.map(async (e) => {
+					const dir = path.join(tmp, e.name);
+					try {
+						const st = await fs.promises.stat(dir);
+						if (now - st.mtimeMs > TRANSCRIPT_RETENTION_MS) {
+							await fs.promises.rm(dir, { recursive: true, force: true });
+						}
+					} catch {
+						/* per-dir errors are non-fatal */
+					}
+				}),
+		);
+	} catch {
+		/* tmpdir unreadable — skip hygiene, never fail the call */
+	}
 }
 
 /**
@@ -278,11 +281,13 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 		};
 
 		// 本次 tool call 内所有 agent 共享一个临时目录（N 个 agent → 1 个目录），
-		// 取代每个 agent 各自 mkdtemp。转录需保留供模型稍后 read，故此处不清理。
+		// 取代每个 agent 各自 mkdtemp。转录需保留供模型稍后 read，调用结束后不删除；
+		// 陈旧目录（>24h）由下一次 fan-out 惰性清扫。
 		let sharedTmpDir: string | null = null;
 		const getTmpDir = async (): Promise<string> => {
 			if (!sharedTmpDir) {
-				sharedTmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-cr-out-"));
+				void sweepStaleTranscriptDirs(); // disk hygiene, never blocks the spawn
+				sharedTmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), TRANSCRIPT_DIR_PREFIX));
 			}
 			return sharedTmpDir;
 		};
@@ -296,7 +301,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 			const entry: SubagentEntry = {
 				index,
 				exitCode: r.exitCode,
-				text: resultText(r),
+				text: lastAssistantText(r.messages),
 				aborted: r.aborted,
 				maxTurnsReached: r.maxTurnsReached,
 				errorMessage:

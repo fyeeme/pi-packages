@@ -16,6 +16,14 @@
  * Workflows-specific machinery (skipAgent/retryAgent/AbortReason/lifecycle
  * notifications) stays in pi-dynamic-workflows on top of this core.
  *
+ * UI observability: every spawn notifies the module-level `monitor` singleton
+ * (monitor.ts) - call start/end, assistant message ends, tool execution
+ * start/end, compactions, streamed text. Purely observational: the dispatch
+ * path never reads monitor state back, and every notification is wrapped in
+ * try/catch so the UI layer cannot break a spawn. The optional pi extension
+ * (sub-agent.ts + ui/) renders that state as the above-editor agent widget,
+ * the below-editor FleetView, and the /agents command.
+ *
  * When pi promotes spawnAgent to a public @earendil-works/pi-coding-agent
  * export, this package should be deleted in favor of that import.
  */
@@ -25,6 +33,28 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
+import { monitor } from "./monitor.ts";
+import { loadCoreSettings } from "./settings.ts";
+
+export { AgentMonitor, monitor } from "./monitor.ts";
+export type {
+	AgentCallEndInfo,
+	AgentCallStartMeta,
+	AgentCallState,
+	AgentCallStatus,
+} from "./monitor.ts";
+export { loadCoreSettings, MAX_CONCURRENCY_OPTIONS } from "./settings.ts";
+export type { MaxConcurrencyOption, SubagentCoreSettings, WidgetMode } from "./settings.ts";
+export { contentText, contentTextBlocks, lastAssistantText } from "./text.ts";
+
+/** Fire a monitor notification. UI observability must never break dispatch. */
+function notifyMonitor(fn: () => void): void {
+	try {
+		fn();
+	} catch {
+		/* ignore monitor errors */
+	}
+}
 
 /** Stable id for one agent call; the registry key for per-call abort. */
 export type AgentCallId = string;
@@ -109,19 +139,37 @@ function childSpawnEnv(options: AgentSpawnOptions): NodeJS.ProcessEnv {
 // Concurrency limiter (ported from examples/extensions/subagent)
 // ---------------------------------------------------------------------------
 
-/** Default concurrency ceiling for sub-agent fan-out (the "max concurrency"
- *  option): 5. Hardcoded by design — no env var, no config file. Callers
- *  needing a different ceiling pass `concurrency` explicitly. */
+/** Hardcoded fallback concurrency ceiling for sub-agent fan-out: 5. The
+ *  effective default is configurable via the package settings file
+ *  (`maxConcurrency` in pi-subagent.json, options 3/5/8/10 — see settings.ts); this constant
+ *  applies when no valid setting is present. Callers needing a different
+ *  ceiling pass `concurrency` explicitly. */
 export const DEFAULT_MAX_CONCURRENCY = 5;
+
+/**
+ * Effective default concurrency ceiling for fan-out (the "concurrent agents"
+ * setting): `maxConcurrency` from the package settings files (project
+ * layer overriding global; options 3/5/8/10), falling back to the hardcoded
+ * {@link DEFAULT_MAX_CONCURRENCY}. Read at call time so an edited file takes
+ * effect on the next fan-out without a restart. A consumer-level env override
+ * (e.g. pi-review's PI_MAX_CONCURRENT_SUBAGENTS) is resolved by the consumer
+ * and takes precedence over this value.
+ */
+export function getEffectiveMaxConcurrency(): number {
+	// loadCoreSettings is total by contract (malformed files are warned and
+	// dropped inside settings.ts — "never fatal"), so no guard is needed here.
+	return loadCoreSettings().maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+}
 
 /**
  * Run `fn` over `items` with at most `concurrency` in flight, preserving
  * input order in the output array. parallel mode builds on this.
  *
  * The `concurrency` argument is optional (the "max concurrency" option):
- * when omitted, the ceiling is the hardcoded `DEFAULT_MAX_CONCURRENCY` (5).
- * An explicit value is clamped to `[1, items.length]` as before; existing
- * callers that pass it explicitly are unaffected.
+ * when omitted, the ceiling is `getEffectiveMaxConcurrency()` — the
+ * `maxConcurrency` setting (options 3/5/8/10, default 5). An explicit
+ * value is clamped to `[1, items.length]` as before; existing callers that
+ * pass it explicitly are unaffected.
  */
 export async function mapWithConcurrencyLimit<TIn, TOut>(
 	items: TIn[],
@@ -138,7 +186,8 @@ export async function mapWithConcurrencyLimit<TIn, TOut>(
 	maybeFn?: (item: TIn, index: number) => Promise<TOut>,
 ): Promise<TOut[]> {
 	const fn = typeof concurrencyOrFn === "function" ? concurrencyOrFn : maybeFn!;
-	const concurrency = typeof concurrencyOrFn === "number" ? concurrencyOrFn : DEFAULT_MAX_CONCURRENCY;
+	const concurrency =
+		typeof concurrencyOrFn === "number" ? concurrencyOrFn : getEffectiveMaxConcurrency();
 	if (items.length === 0) return [];
 	const limit = Math.max(1, Math.min(concurrency, items.length));
 	const results: TOut[] = new Array(items.length);
@@ -163,9 +212,10 @@ export async function mapWithConcurrencyLimit<TIn, TOut>(
 	});
 	// Await every worker (including in-flight ones) before rethrowing, so an
 	// error from one item cannot orphan already-spawned subprocesses that keep
-	// running after the caller sees the rejection. The lowest-index worker's
-	// rejection wins (Promise.allSettled preserves input order) — deterministic,
-	// though not necessarily the earliest failure in time.
+	// running after the caller sees the rejection. The rejection of the
+	// lowest-index WORKER wins (Promise.allSettled preserves worker array order)
+	// — deterministic, though neither the lowest item index nor the earliest
+	// failure in time.
 	const settled = await Promise.allSettled(workers);
 	const firstRejection = settled.find((s): s is PromiseRejectedResult => s.status === "rejected");
 	if (firstRejection) throw firstRejection.reason;
@@ -243,6 +293,16 @@ export interface AgentSpawnOptions {
 	 *  event). Omit to keep the current behavior of discarding intermediate
 	 *  events; final `message_end` results are always collected regardless. */
 	readonly onUpdate?: (delta: string) => void;
+	/** UI display name for this call (widget / FleetView rows). Purely
+	 *  observational metadata consumed by the monitor + UI layer; defaults to
+	 *  "Agent". No effect on the spawned process or the returned result. */
+	readonly displayName?: string;
+	/** Whether this call is declared background (widget mode filter). Purely
+	 *  observational metadata: `true` = background, `false` = foreground (already
+	 *  rendered inline as the tool result - hidden from the widget's default
+	 *  "background" mode), omitted = undeclared (visible in every widget mode).
+	 *  No effect on the spawned process or the returned result. */
+	readonly background?: boolean;
 }
 
 export interface AgentSpawnResult {
@@ -301,6 +361,17 @@ export function abortAgent(registry: AgentSpawnRegistry, callId: AgentCallId): b
 // Spawn — the dispatch primitive
 // ---------------------------------------------------------------------------
 
+/** Single argv entries are capped by the kernel (Linux MAX_ARG_STRLEN =
+ *  128 KiB); a longer task would fail the spawn with E2BIG. Tasks over this
+ *  budget ride a temp file passed as the `@file` positional arg, which pi
+ *  expands into the prompt content (see spawnAgent). */
+const TASK_ARG_MAX_BYTES = 100 * 1024;
+
+/** Retained-tail size for child stderr (~64 KB chars). Diagnostics only need
+ *  the lines around the failure, and an uncapped buffer lets a chatty or
+ *  crash-looping child grow the parent's heap without bound. */
+const STDERR_RETAIN_CHARS = 64_000;
+
 export async function spawnAgent(
 	registry: AgentSpawnRegistry,
 	options: AgentSpawnOptions,
@@ -326,8 +397,10 @@ export async function spawnAgent(
 	if (thinking) args.push("--thinking", thinking);
 	if (tools && tools.length > 0) args.push("--tools", tools.join(","));
 
-	let tmpPromptDir: string | null = null;
-	let tmpPromptPath: string | null = null;
+	/** Temp files holding prompt text that must not ride an argv entry (the
+	 *  system prompt always; the task when over TASK_ARG_MAX_BYTES) — cleaned
+	 *  up in the finally block. */
+	const tmpPromptFiles: { dir: string; filePath: string }[] = [];
 
 	const result: AgentSpawnResult = {
 		callId,
@@ -339,16 +412,51 @@ export async function spawnAgent(
 		maxTurnsReached: false,
 	};
 
+	// Observability: register the call with the live-state monitor (UI layer).
+	// Defensive by contract - a UI-side failure is swallowed by notifyMonitor.
+	notifyMonitor(() =>
+		monitor.callStarted({
+			callId,
+			task,
+			displayName: options.displayName,
+			background: options.background,
+			model,
+			maxTurns: options.maxTurns,
+			controller,
+			messages: result.messages,
+		}),
+	);
+
 	try {
-		if (systemPrompt && systemPrompt.trim()) {
-			const tmp = await writePromptToTempFile(callId, systemPrompt);
-			tmpPromptDir = tmp.dir;
-			tmpPromptPath = tmp.filePath;
-			args.push("--append-system-prompt", tmpPromptPath);
+		// Pre-aborted caller signal (e.g. ESC fired while earlier siblings were
+		// still in flight): don't spawn a subprocess just to SIGTERM it a moment
+		// later. callStarted was already notified above, so the finally's
+		// callEnded settles this call visibly as aborted instead of leaving a
+		// phantom running row.
+		if (controller.signal.aborted) {
+			result.aborted = true;
+			result.exitCode = 1;
+			return result;
 		}
 
-		// The prompt is the final positional arg consumed by `-p`.
-		args.push(task);
+		if (systemPrompt && systemPrompt.trim()) {
+			const tmp = await writePromptToTempFile(callId, systemPrompt);
+			tmpPromptFiles.push(tmp);
+			args.push("--append-system-prompt", tmp.filePath);
+		}
+
+		// The prompt is the final positional arg consumed by `-p`. An oversized
+		// task would exceed the kernel's per-argument limit (Linux
+		// MAX_ARG_STRLEN = 128 KiB → E2BIG at spawn), so it rides a temp file
+		// instead: the `@file` positional arg makes pi expand the file's
+		// contents into the prompt text.
+		if (Buffer.byteLength(task, "utf8") > TASK_ARG_MAX_BYTES) {
+			const tmp = await writePromptToTempFile(callId, task);
+			tmpPromptFiles.push(tmp);
+			args.push(`@${tmp.filePath}`);
+		} else {
+			args.push(task);
+		}
 
 		const exitCode = await new Promise<number>((resolve) => {
 			const invocation = getPiInvocation(args);
@@ -396,6 +504,8 @@ export async function spawnAgent(
 						if (!result.model && msg.model) result.model = msg.model;
 						if (msg.stopReason) result.stopReason = msg.stopReason;
 						if (msg.errorMessage) result.errorMessage = msg.errorMessage;
+						// Observability: fold the assistant turn into the live state.
+						notifyMonitor(() => monitor.messageEnd(callId, msg));
 					}
 				}
 
@@ -403,22 +513,45 @@ export async function spawnAgent(
 					result.messages.push(event.message);
 				}
 
-				if (event.type === "message_update" && options.onUpdate) {
+				// Observability: in-flight tool activity and compaction count from
+				// the subprocess stream (activity lines + the annotation).
+				if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
+					const e = event as { toolCallId?: unknown; toolName?: unknown };
+					const toolCallId = typeof e.toolCallId === "string" ? e.toolCallId : "";
+					const toolName = typeof e.toolName === "string" ? e.toolName : "";
+					if (toolCallId) {
+						notifyMonitor(() =>
+							event.type === "tool_execution_start"
+								? monitor.toolStart(callId, toolCallId, toolName)
+								: monitor.toolEnd(callId, toolCallId, toolName),
+						);
+					}
+				}
+				if (event.type === "compaction_start") {
+					notifyMonitor(() => monitor.compacted(callId));
+				}
+
+				if (event.type === "message_update") {
 					// The JSON stream emits message_update as
 					// { type: "message_update", assistantMessageEvent: { type: "text_delta", delta } }
 					// (the cumulative `partial` is stripped by toJsonEvent). Forward only the
-				// visible assistant text delta; thinking_delta is internal reasoning.
+					// visible assistant text delta; thinking_delta is internal reasoning.
 					const e = (event as { assistantMessageEvent?: { type?: string; delta?: unknown } }).assistantMessageEvent;
 					if (e && e.type === "text_delta" && typeof e.delta === "string" && e.delta) {
-						// The consumer callback must not be able to break event parsing: a
-						// throwing onUpdate inside the stdout data handler would crash the
-						// host process, and one thrown from the close-path processLine call
-						// would skip resolve() and leave the spawnAgent promise unsettled
-						// (plus a leaked registry entry). Swallow callback errors.
-						try {
-							options.onUpdate(e.delta);
-						} catch {
-							/* ignore consumer callback errors */
+						const delta = e.delta;
+						// Observability: rolling text tail for the activity line.
+						notifyMonitor(() => monitor.textDelta(callId, delta));
+						if (options.onUpdate) {
+							// The consumer callback must not be able to break event parsing: a
+							// throwing onUpdate inside the stdout data handler would crash the
+							// host process, and one thrown from the close-path processLine call
+							// would skip resolve() and leave the spawnAgent promise unsettled
+							// (plus a leaked registry entry). Swallow callback errors.
+							try {
+								options.onUpdate(delta);
+							} catch {
+								/* ignore consumer callback errors */
+							}
 						}
 					}
 				}
@@ -436,6 +569,12 @@ export async function spawnAgent(
 
 			proc.stderr.on("data", (data) => {
 				result.stderr += data.toString();
+				// Keep only the retained tail: diagnostics need the lines around the
+				// failure, not the full stream. The ×2 headroom avoids slicing on
+				// every chunk once the cap is reached.
+				if (result.stderr.length > STDERR_RETAIN_CHARS * 2) {
+					result.stderr = result.stderr.slice(-STDERR_RETAIN_CHARS);
+				}
 			});
 
 			proc.on("close", (code) => {
@@ -487,23 +626,39 @@ export async function spawnAgent(
 
 		result.exitCode = exitCode;
 		return result;
+	} catch (err) {
+		// A failure before/during spawn (temp-file write, E2BIG, ENOENT on pi)
+		// rejects the promise — record it so the finally's monitor callEnded
+		// marks the call `error` (red) instead of a green `completed`.
+		result.errorMessage = err instanceof Error ? err.message : String(err);
+		throw err;
 	} finally {
+		// Observability: settle the call FIRST so the UI sees final state while
+		// registry slots / listeners / temp files are still being released.
+		notifyMonitor(() =>
+			monitor.callEnded(callId, {
+				exitCode: result.exitCode,
+				aborted: result.aborted,
+				maxTurnsReached: result.maxTurnsReached,
+				errorMessage: result.errorMessage,
+			}),
+		);
 		// Always release registry slots, the parent-signal listener, and temp files.
 		registry.processes.delete(callId);
 		registry.controllers.delete(callId);
 		if (signal) signal.removeEventListener("abort", onParentAbort);
-		if (tmpPromptPath)
+		for (const tmp of tmpPromptFiles) {
 			try {
-				fs.unlinkSync(tmpPromptPath);
+				fs.unlinkSync(tmp.filePath);
 			} catch {
 				/* ignore */
 			}
-		if (tmpPromptDir)
 			try {
-				fs.rmdirSync(tmpPromptDir);
+				fs.rmdirSync(tmp.dir);
 			} catch {
 				/* ignore */
 			}
+		}
 	}
 }
 
