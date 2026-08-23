@@ -2,7 +2,7 @@
 
 **为 [pi](https://github.com/earendil-works/pi-mono) 打造的确定性 TypeScript 工作流编排。**
 
-把工作流定义成一份类型化的声明式步骤列表，运行后即可获得**可恢复、受预算约束、可中止**的执行。融合 pi-dynamic-workflows 设计（9 个步骤原语 + 启发式 planner + outcome 收集器）与 Claude Code 工作流引擎的协调机制（确定性沙箱、缓存键恢复、按 agent 中止、动态预算、失控上限）。
+把工作流定义成一份类型化的声明式步骤列表，运行后即可获得**可恢复、受预算约束、可中止**的执行。融合 pi-dynamic-workflows 设计（10 个步骤原语 + 启发式 planner + outcome 收集器）与 Claude Code 工作流引擎的协调机制（确定性沙箱、缓存键恢复、按 agent 中止、动态预算、失控上限）。
 
 语言：[English](README.md) | **中文**
 
@@ -10,7 +10,7 @@
 
 ## 为什么需要它
 
-一次运行 = 一份步骤列表（`agent` / `code` / `fan_out` / `loop_until` / `adversarial` / `tournament` / `classify_route`）。引擎保证：
+一次运行 = 一份步骤列表（`agent` / `code` / `log` / `fan_out` / `loop_until` / `loop_until_dry` / `adversarial` / `tournament` / `classify_route` / `sub_workflow`）。引擎保证：
 
 - **确定性** —— workflow `.ts` 文件经 AST 守卫，禁止 `Date.now()` / `Math.random()` / `new Date()`；run id 是 `(timestamp, sequence)` 的纯函数。
 - **恢复即不重派** —— 每个 agent 调用以 `sha256(workflow + prompt + signature)` 为键写入 journal；重跑同一 workflow 会回放缓存的 agent（零子进程派发）。
@@ -28,7 +28,7 @@
 npm install --ignore-scripts   # 水合（本包是 workspace 依赖）
 ```
 
-这会解析 npm registry 上的 [`@fyeeme/pi-subagent-core`](https://www.npmjs.com/package/@fyeeme/pi-subagent-core)（`^0.3.0`，无需保持同级仓库目录结构）。
+这会解析 npm registry 上的 [`@fyeeme/pi-subagent-core`](https://www.npmjs.com/package/@fyeeme/pi-subagent-core)（`^0.5.0`，无需保持同级仓库目录结构）。
 
 随后从包根模块导入公共 API（TypeScript barrel，包直接以 `.ts` 源码分发）：
 
@@ -36,7 +36,7 @@ npm install --ignore-scripts   # 水合（本包是 workspace 依赖）
 import { defineWorkflow, runWorkflow } from "@fyeeme/pi-dynamic-workflows/src/index.ts";
 ```
 
-> 包的 `pi.extensions` 入口（`./index.ts`）目前仍是脚手架——把 `run_workflow` 工具接进 pi 是后续工作。引擎本身已可经上述导入直接使用。
+> 包的 `pi.extensions` 入口注册 `run_workflow` 工具，并接入 pi-subagent-core 的共享子代理 UI（编辑器上方实时 agent widget、下方 FleetView、`/agents` 转录查看器——每个工作流 agent 以其 step id 出现在其中）。引擎本身也可经上述导入直接使用。
 
 ---
 
@@ -298,6 +298,8 @@ const result = await runWorkflow({ workflow: wf, cwd: tempDir, now: 1000, dispat
 | `adversarial` | `produce`、`rubric[]`、`judges?`、`minPass?` | `{ candidate, passed, passCount, judges }` |
 | `tournament` | `candidates`、`judges`、`produce` | `{ candidates, winner, judges }` |
 | `classify_route` | `classifier`、`routes: Record<cat, Step[]>`、`fallback?` | `{ category, matched, route, routeStatus }` |
+| `sub_workflow` | `workflow: WorkflowDefinition`、`input?`、`inheritBudget?` | `{ steps, status, workflowName, error }` |
+| `loop_until_dry` | `agent(item, i)`、`keyOf?`、`merge?`、`maxRounds?`、`dryThreshold?` | 发现项组成的数组 |
 
 每个步骤都接受 `id`、`retry?: { maxRetries }` 与
 `onBudgetExhaust?: "throw" | "null"`——`"null"` 下预算耗尽时该步骤返回 `null`

@@ -247,23 +247,11 @@ export interface StepRetry {
 	 * spec revision; add `retryStage` back with implementation when ready. */
 }
 
-/** A phase groups related steps for UI progress-tree rendering.
- *  Steps not assigned to any phase render under an implicit default group. */
-export interface PhaseDefinition {
-	readonly title: string;
-	readonly detail?: string;
-	readonly stepIds: readonly string[];
-	/** Optional model override for all agents in this phase. */
-	readonly model?: string;
-}
-
 export interface WorkflowDefinition {
 	readonly name: string;
 	readonly description?: string;
 	readonly steps: readonly StepDefinition[];
 	readonly budget?: Budget;
-	/** Optional phase groupings for progress-tree UI rendering. */
-	readonly phases?: readonly PhaseDefinition[];
 }
 
 /** Typed identity helper: gives a workflow literal full union checking. */

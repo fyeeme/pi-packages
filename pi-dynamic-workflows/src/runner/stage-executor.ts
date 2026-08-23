@@ -985,6 +985,11 @@ function dispatchOpts(
 		systemPrompt: spec.systemPrompt,
 		signal,
 		allowChildRecursion,
+		// UI display name for the shared sub-agent widget/FleetView (purely
+		// observational metadata consumed by the pi-subagent-core monitor): the
+		// step id ("fan", "adv"), so workflow rows are distinguishable from other
+		// agents. Cache hits never spawn, so they never appear — zero dispatch.
+		displayName: stepIdOf(callId),
 		// C3: bridge the spawn's streamed deltas to the lifecycle onUpdate listener,
 		// attributed to this callId. When no listener is registered, the subprocess
 		// drops the deltas (its onUpdate stays undefined — same as before).

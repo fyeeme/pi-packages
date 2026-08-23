@@ -29,7 +29,7 @@ npm install --ignore-scripts   # hydrate (the package is a workspace dep)
 ```
 
 This resolves [`@fyeeme/pi-subagent-core`](https://www.npmjs.com/package/@fyeeme/pi-subagent-core)
-(`^0.3.0`, from the npm registry — no sibling-repo layout requirement).
+(`^0.5.0`, from the npm registry — no sibling-repo layout requirement).
 
 Then import the public API from the package root module (a TypeScript barrel; the package ships `.ts` source):
 
@@ -37,9 +37,11 @@ Then import the public API from the package root module (a TypeScript barrel; th
 import { defineWorkflow, runWorkflow } from "@fyeeme/pi-dynamic-workflows/src/index.ts";
 ```
 
-> The package's `pi.extensions` entry (`./index.ts`) registers the `run_workflow`
-> tool and the `/wf-inspect` command. The engine is also fully usable via the
-> imports shown here.
+> The package's `pi.extensions` entry registers the `run_workflow` tool plus
+> the shared sub-agent UI from pi-subagent-core (live agent widget above the
+> editor, FleetView below it, and the `/agents` transcript viewer — every
+> spawned workflow agent appears there under its step id). The engine is also
+> fully usable via the imports shown here.
 
 ---
 

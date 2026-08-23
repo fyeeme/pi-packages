@@ -5,27 +5,20 @@
  * workflow from within pi. The engine (src/runner) does the work; this entry
  * only adapts the agent's JSON args into the code-form WorkflowDefinition and
  * runs it with the default dispatch (real `pi --mode json` subprocesses).
+ *
+ * Live progress UI is delegated to the shared `@fyeeme/pi-subagent-core`
+ * extension (registered via the `pi.extensions` manifest alongside this
+ * entry): every spawned workflow agent notifies the process-global monitor
+ * through spawnAgent, rendering in the shared above-editor agent widget, the
+ * below-editor FleetView, and the `/agents` transcript viewer. This package
+ * ships no widget/command of its own — a former `wf:progress` widget and
+ * `/wf-inspect` command were removed in favor of that shared surface.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { buildRenderGroups, type PhaseDef } from "./src/ui-groups.ts";
-import { BOLD, CYAN, DIM, GREEN, RED, YELLOW, fmtTokens, stepIdOf } from "./src/format.ts";
 import { defineWorkflow, runWorkflow } from "./src/index.ts";
-import type { AgentCallId, Budget, RunResult, StageType, StepContext, StepDefinition, StepResult, StepStats, WorkflowDefinition } from "./src/types.ts";
+import type { Budget, StepContext, StepDefinition, WorkflowDefinition } from "./src/types.ts";
 import { WorkflowError } from "./src/errors.ts";
-import type { AgentLifecycleListeners } from "./src/lifecycle.ts";
-import { WorkflowInspect } from "./src/inspect.ts";
-
-/** Last completed run, exposed to /wf-inspect for interactive review. */
-let lastRunResult: RunResult | null = null;
-
-/** Phases of the most recent run — handed to /wf-inspect so the post-run view
- *  groups steps the same way the live widget did (C1 consistency). */
-let lastPhases: readonly PhaseDef[] | undefined;
-
-/** Active widget during a run — lets /wf-inspect show a live snapshot
- *  before the run completes (lastRunResult is only set post-run). */
-let activeWidget: { snapshot(): RunResult } | null = null;
 
 // ---------------------------------------------------------------------------
 // Parameter schema (the JSON-serializable workflow subset)
@@ -49,7 +42,7 @@ const StepSchema = Type.Union([
 	Type.Object({
 		id: Type.String(),
 		type: Type.Literal("log"),
-		message: Type.String({ description: "Narrative line emitted into the progress widget (zero dispatch / zero tokens)" }),
+		message: Type.String({ description: "Narrative line fired via the onLog lifecycle listener (zero dispatch / zero tokens)" }),
 		onBudgetExhaust: BudgetExhaustPolicy,
 	}),
 	Type.Object({
@@ -102,18 +95,11 @@ const BudgetSchema = Type.Object({
 	maxDurationMs: Type.Optional(Type.Number()),
 });
 
-const PhaseSchema = Type.Object({
-	title: Type.String({ description: "Phase display name" }),
-	detail: Type.Optional(Type.String({ description: "Short detail shown next to the phase title" })),
-	stepIds: Type.Array(Type.String(), { description: "Step ids belonging to this phase" }),
-});
-
 const WorkflowSchema = Type.Object({
 	name: Type.String(),
 	description: Type.Optional(Type.String()),
 	steps: Type.Array(StepSchema),
 	budget: Type.Optional(BudgetSchema),
-	phases: Type.Optional(Type.Array(PhaseSchema, { description: "Group steps into phases for progress-tree UI" })),
 });
 
 const RunWorkflowParams = Type.Object({
@@ -288,234 +274,6 @@ type StepData =
 	  };
 
 // ---------------------------------------------------------------------------
-// Progress widget — bridges lifecycle events → TUI setWidget
-// ---------------------------------------------------------------------------
-
-type CallStatus = "running" | "done" | "failed" | "skipped" | "retried" | "cached";
-
-interface CallInfo {
-	readonly stepId: string;
-	readonly status: CallStatus;
-	readonly tokens: number;
-	readonly model?: string;
-}
-
-export function buildProgressWidget(
-	steps: readonly { id: string; type: string }[],
-	setWidget: (lines: string[] | undefined) => void,
-	setStatus: (text: string | undefined) => void,
-	phases?: readonly PhaseDef[],
-): AgentLifecycleListeners & { cleanup(): void; snapshot(): RunResult } {
-	const start = Date.now();
-	let lastStreamRender = 0;
-	// Once cleanup() runs (run finished), late events from the abort window — the
-	// SIGTERM→SIGKILL grace period during which a child can still emit streamed
-	// deltas — must not re-create the panel via render()/setWidget.
-	let disposed = false;
-	const calls = new Map<AgentCallId, CallInfo>();
-	// C2: narrative lines emitted by `log` steps, keyed by step id.
-	const logLines = new Map<string, string>();
-	// C3: accumulated streaming text per in-flight call (delta chunks from onUpdate).
-	const streamText = new Map<string, string>();
-	// Live output capture: callId → the settled agent's final text (from onAgentEnd
-	// `output`), so a live snapshot shows REAL results, not fabricated progress text.
-	const callOutputs = new Map<string, string>();
-	// Every step starts at 0 expected agents; onAgentStart/onAgentCacheHit
-	// increment as calls fire (fan_out totals emerge at runtime). Pre-seeding
-	// non-fan_out steps to 1 double-counted (1→2 on start), leaving completed
-	// single-agent steps stuck showing [1/2].
-	const expected = new Map(steps.map((s) => [s.id, 0]));
-
-	// C1+D1: phase grouping — shared pure builder (also used by /wf-inspect).
-	const renderGroups = buildRenderGroups(steps, (s) => s.id, phases);
-
-	// callId format: `${stepId}#${n}` (e.g. "fan#2", "adv#produce") — see src/format.ts stepIdOf.
-
-	function render(): void {
-		const picons: Record<string, string> = {
-			done: GREEN("✓"),
-			failed: RED("✗"),
-			skipped: YELLOW("⏭"),
-			running: YELLOW("⏳"),
-			cached: GREEN("↻"),
-		};
-
-		const lines: string[] = [];
-		const renderStep = (s: { id: string; type: string }, indent: boolean): void => {
-			// C2: a `log` step renders as a distinct narrative line, not an agent row.
-			if (s.type === "log") {
-				const msg = logLines.get(s.id);
-				if (msg !== undefined) lines.push(`${indent ? "    " : "  "}${DIM(msg)}`);
-				return;
-			}
-			const total = expected.get(s.id) ?? 0;
-			const entries = [...calls.values()].filter((c) => c.stepId === s.id);
-			const running = entries.some((c) => c.status === "running");
-			const failed = entries.filter((c) => c.status === "failed").length;
-			const skipped = entries.filter((c) => c.status === "skipped").length;
-			const done = entries.filter((c) => c.status === "done" || c.status === "cached").length;
-			const cached = entries.filter((c) => c.status === "cached").length;
-			const tokens = entries.reduce((sum, c) => sum + c.tokens, 0);
-			const models = new Set(entries.map((c) => c.model).filter((m): m is string => Boolean(m)));
-
-			const icon = failed > 0 ? picons.failed
-				: skipped > 0 && done === 0 ? picons.skipped
-				: total > 0 && done >= total ? (cached > 0 ? picons.cached : picons.done)
-				: running ? picons.running
-				: DIM("○");
-
-			const progress = total > 1 ? ` [${done}/${total}]` : "";
-			const tok = tokens > 0 ? ` · ${fmtTokens(tokens)} tok` : "";
-			// A8/C4: show the serving model when known (single model shown; mixed
-			// fan_out models collapse to a count to avoid a noisy line).
-			const modelTag = models.size === 1 ? ` · ${[...models][0]}` : models.size > 1 ? ` · ${models.size} models` : "";
-			const pad = indent ? "    " : "  ";
-			lines.push(`${pad}${icon} ${s.id}${progress}${tok}${modelTag}`);
-		};
-
-		// Every phase group renders its header — a phase interrupted by ungrouped
-		// items produces two groups; deduplicating the second header would leave
-		// an indented, header-less orphan row (review L2).
-		for (const g of renderGroups) {
-			if (g.kind === "phase" && g.title) {
-				lines.push(`  ${BOLD(g.title)}${g.detail ? DIM(` — ${g.detail}`) : ""}`);
-			}
-			for (const s of g.items) renderStep(s, g.kind === "phase");
-		}
-
-		// C3: streaming tail — the most-recently-started running call's accumulated
-		// text, truncated to the last 3 lines, so concurrent fan-out previews only
-		// the active call instead of flooding the widget.
-		const running = [...calls.entries()].reverse().find(([id, c]) => c.status === "running" && streamText.has(id));
-		if (running) {
-			const [id] = running;
-			const text = streamText.get(id) ?? "";
-			const tail = text.split("\n").slice(-3);
-			for (const ln of tail) {
-				const clipped = ln.length > 100 ? `${ln.slice(0, 99)}…` : ln;
-				if (clipped) lines.push(DIM(`    ↳ ${clipped}`));
-			}
-		}
-
-
-		setWidget(lines.length > 0 ? lines : void 0);
-
-		const all = [...calls.values()];
-		const allDone = all.filter((c) => c.status !== "running").length;
-		const totalTokens = all.reduce((sum, c) => sum + c.tokens, 0);
-		const elapsed = ((Date.now() - start) / 1000).toFixed(0);
-		setStatus(`wf ${allDone}/${calls.size} agents · ${fmtTokens(totalTokens)} tok · ${elapsed}s`);
-	}
-
-	const record = (callId: string, status: CallStatus, tokens = 0, model?: string): void => {
-		if (disposed) return; // late settle after cleanup — do not re-create the panel
-		calls.set(callId, { stepId: stepIdOf(callId), status, tokens, model });
-		render();
-	};
-
-	return {
-		cleanup() {
-			disposed = true;
-			calls.clear();
-			streamText.clear();
-			setWidget(void 0);
-			setStatus(void 0);
-		},
-		/** Build a synthetic RunResult from the live calls map, so /wf-inspect
-		 *  can show in-progress agents before the run finishes. */
-		snapshot(): RunResult {
-			const snapSteps: StepResult[] = steps.map((s) => {
-				const entries = [...calls.values()].filter((c) => c.stepId === s.id);
-				const total = expected.get(s.id) ?? 0;
-				const done = entries.filter((c) => c.status === "done" || c.status === "cached").length;
-				const failed = entries.filter((c) => c.status === "failed").length;
-				const running = entries.filter((c) => c.status === "running").length;
-				const cached = entries.filter((c) => c.status === "cached").length;
-				const tokens = entries.reduce((sum, c) => sum + c.tokens, 0);
-				const status: StepResult["status"] = s.type === "log"
-					? "done" // narrative line, no agent call — never "skipped"
-					: failed > 0 ? "failed" : done >= total && total > 0 ? "done" : running > 0 ? "running" : "skipped";
-				// Real outputs from settled calls — NOT the fabricated `[n/m] running`
-				// progress string (that leaked into the detail pane as fake results).
-				const settled = [...calls.entries()]
-					.filter(([callId, c]) => c.stepId === s.id)
-					.map(([callId]) => callOutputs.get(callId))
-					.filter((o): o is string => Boolean(o));
-				const results = settled.length > 0
-					? (s.type === "fan_out" ? settled : settled[0])
-					: undefined;
-				return {
-					id: s.id,
-					type: s.type as StageType,
-					status,
-					results,
-					stats: { tokens, cost: 0, durationMs: 0, agents: entries.length, failures: failed },
-				};
-			});
-			const all = [...calls.values()];
-			const stats: StepStats = {
-				tokens: all.reduce((sum, c) => sum + c.tokens, 0),
-				cost: 0,
-				durationMs: Date.now() - start,
-				agents: all.length,
-				failures: all.filter((c) => c.status === "failed").length,
-			};
-			return { runId: "live", status: "completed", steps: snapSteps, stats };
-		},
-		onAgentStart(callId) {
-			const stepId = stepIdOf(callId);
-			expected.set(stepId, (expected.get(stepId) ?? 0) + 1);
-			record(callId, "running");
-		},
-		onAgentEnd(callId, ok, stats, model, output) {
-			// A skipped/retried/cached call's subprocess still settles (abort →
-			// notifyEnd(false)); do not overwrite the already-recorded terminal
-			// state with a "failed" stamp — the run's own bookkeeping marks the
-			// step skipped/retried, so the widget must show the same.
-			const cur = calls.get(callId);
-			if (cur && cur.status !== "running") {
-				streamText.delete(callId);
-				return;
-			}
-			record(callId, ok ? "done" : "failed", stats?.tokens ?? 0, model);
-			streamText.delete(callId); // free the accumulated tail once the call settles
-			if (output) callOutputs.set(callId, output);
-		},
-		onAgentSkip(callId) {
-			record(callId, "skipped");
-		},
-		onAgentRetry(callId) {
-			record(callId, "retried");
-		},
-		onAgentCacheHit(callId) {
-			const stepId = stepIdOf(callId);
-			expected.set(stepId, (expected.get(stepId) ?? 0) + 1);
-			record(callId, "cached");
-		},
-		onLog(stepId, message) {
-			if (disposed) return;
-			logLines.set(stepId, message);
-			render();
-		},
-		onUpdate(callId, partial) {
-			if (disposed) return;
-			// Bound the accumulated tail: the widget only ever renders the last 3
-			// lines (each clipped to ~100 chars), so keeping the full stream alive
-			// for the call's duration is pure memory growth on long generations.
-			streamText.set(callId, ((streamText.get(callId) ?? "") + partial).slice(-4096));
-			// Throttle: a high-frequency stream (fan_out × many deltas) would otherwise
-			// trigger a full O(steps×calls) render() per chunk. Bound to ~20fps; the
-			// final onAgentEnd render always fires, so the settled state is exact.
-			const nowMs = Date.now();
-			if (nowMs - lastStreamRender >= 50) {
-				lastStreamRender = nowMs;
-				render();
-			}
-		},
-	};
-}
-
-// ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
 
@@ -573,34 +331,15 @@ export default function (pi: ExtensionAPI): void {
 				ctx.ui.notify(`Invalid model(s) dropped, using default: ${dropped.join(", ")}`, "warning");
 			}
 			const sanitizedWorkflow = { ...params.workflow, steps: sanitizedSteps };
-			const widget = buildProgressWidget(
-				sanitizedWorkflow.steps,
-				(lines) => ctx.ui.setWidget("wf:progress", lines),
-				(text) => ctx.ui.setStatus("wf:summary", text),
-				sanitizedWorkflow.phases,
-			);
-			activeWidget = widget;
-			lastPhases = sanitizedWorkflow.phases;
 			try {
 				const workflow = buildWorkflow(sanitizedWorkflow);
-				const listeners: AgentLifecycleListeners = {
-					onAgentStart: widget.onAgentStart,
-					onAgentEnd: widget.onAgentEnd,
-					onAgentSkip: widget.onAgentSkip,
-					onAgentRetry: widget.onAgentRetry,
-					onAgentCacheHit: widget.onAgentCacheHit,
-					onLog: widget.onLog,
-					onUpdate: widget.onUpdate,
-				};
 				const result = await runWorkflow({
 					workflow,
 					input: params.input,
 					cwd: params.cwd ?? ctx.cwd,
 					now: params.now ?? Date.now(),
 					signal,
-					listeners,
 				});
-				lastRunResult = result;
 
 				const lines = [
 					`workflow "${workflow.name}" → ${result.status} (run ${result.runId})`,
@@ -616,29 +355,7 @@ export default function (pi: ExtensionAPI): void {
 			} catch (e) {
 				const msg = e instanceof Error ? e.message : String(e);
 				return { content: [{ type: "text" as const, text: `run_workflow failed: ${msg}` }], details: { error: msg }, isError: true };
-			} finally {
-				activeWidget = null;
-				ctx.ui.setWidget("wf:progress", void 0);
-				widget.cleanup();
 			}
-		},
-	});
-
-	pi.registerCommand("wf-inspect", {
-		description: "Inspect the current/last workflow run (↑↓ select, enter detail, esc exit)",
-		handler: async (_args, ctx) => {
-			// Prefer a live snapshot while a run is in progress; fall back to
-			// the last completed result once the run has finished.
-			const r = activeWidget?.snapshot() ?? lastRunResult;
-			if (!r) {
-				ctx.ui.notify("No workflow run yet — run run_workflow first", "warning");
-				return;
-			}
-			await ctx.ui.custom(
-				(tui, _theme, _kb, done) =>
-					new WorkflowInspect(r, tui, () => done(undefined), lastPhases),
-				{ overlay: true, overlayOptions: { anchor: "center", width: "90%", maxHeight: "80%" } },
-			);
 		},
 	});
 }
