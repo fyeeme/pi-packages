@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Review page: multi-question dialogs summarize all answers (custom inputs, notes, unanswered warnings) after the last question; `enter` confirms, `left` revises before submitting. Single-question dialogs keep submitting immediately.
+- Per-question status strip (`●`/`○` chips labeled with `header`) showing which questions are answered.
+- Inline free-text editor for `Other` answers and notes: the option list stays visible while typing, `esc` returns to the rows, an empty submit declines, and revising prefills the previous text. The dialog no longer closes and reopens around a plain input.
+- Numbered options: rows render `1. label` and answers echo the number back to the LLM (`auth: 1. JWT`).
+- `tab` / `shift+tab` as aliases for `right` / `left` question navigation.
+
+### Fixed
+
+- Single-select questions no longer look multi-selectable: `space` is now a no-op outside `multi` mode, and selecting a different option replaces the previous `(o)` marker instead of stacking another one.
+- Multi-select `enter` with nothing checked is now a no-op instead of recording an empty answer that lit the status chip `●` but echoed `(no selection)` back to the LLM. Users who mean "none of these" can say so via `Other`.
+
+### Changed
+
+- Submitting a custom `Other` answer now also clears stale checkbox marks from the same question.
+- Answering a revisited question now jumps to the next unanswered question (or straight to the review page when everything is answered) instead of always stepping one forward and forcing a re-walk of already-answered questions.
+
 ## [1.2.0] - 2026-07-20
 
 ### Added

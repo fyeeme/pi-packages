@@ -6,12 +6,14 @@ Ported from the interactive ask flow of [oh-my-pi](https://github.com/can1357/oh
 
 ## Features
 
-- **Multiple questions in one dialog** — all questions presented through a single dialog with a `[1/3]` progress counter; `←` revisits earlier questions to revise answers (cursor and selections preserved), `→` moves forward once the current question is answered.
-- **Single or multi select** — `multi: true` renders checkboxes (`space` toggles, `enter` records the set); single-select renders radio markers with the recommended option pre-cursored and suffixed `(Recommended)`.
+- **Multiple questions in one dialog** — all questions presented through a single dialog with a `[1/3]` progress counter and a per-question status strip (`● Framework  ○ Style`); `←` revisits earlier questions to revise answers (cursor and selections preserved), `→` moves forward once the current question is answered.
+- **Review before submit** — after the last question, multi-question dialogs show a summary page listing every answer (custom inputs, notes, unanswered warnings); `enter` confirms, `←` goes back to revise. Single-question dialogs still submit immediately.
+- **Smart advance** — answering jumps to the next unanswered question, or straight to the review page once everything is answered; revising an earlier answer never forces a re-walk of already-answered ones.
+- **Single or multi select** — `multi: true` renders checkboxes (`space` toggles, `enter` records the set and is a no-op while nothing is checked); single-select renders radio markers with the recommended option pre-cursored and suffixed `(Recommended)`.
 - **Timeout auto-selection** — optional `timeoutSeconds` budget for the whole dialog; on expiry unanswered questions auto-select the recommended option (or the first) and are flagged `timedOut` so the LLM knows no human chose them.
-- **Option descriptions & previews** — short tradeoff text under each label; an option's `preview` lines render while the cursor rests on it.
-- **Free-form "Other"** — every question gets an automatic `Other (type your own)` row that opens a text input; declining it reopens the dialog with state intact. Re-selecting an option clears a previous custom input.
-- **Answer notes** — press `n` to attach a free-text note to the current answer; notes are echoed back to the LLM.
+- **Option descriptions & previews** — short tradeoff text under each label; an option's `preview` lines render while the cursor rests on it. Options render and echo back numbered (`1. label`), so answers read `auth: 1. JWT`.
+- **Free-form "Other"** — every question gets an automatic `Other (type your own)` row that opens an editor embedded in the dialog: the option list stays visible while typing, `esc` returns to the rows, and an empty submit declines. Re-selecting an option clears a previous custom input.
+- **Answer notes** — press `n` to attach a note through the same inline editor (prefilled when revising); notes are echoed back to the LLM.
 - **"Chat about this" redirect** — a reserved row that ends the call with a `chatRedirect` result, telling the LLM the user prefers discussing over answering.
 - **Abort-safe** — if the agent turn is aborted while a question is open, the dialog closes and the tool settles as cancelled instead of hanging.
 - **Branch-safe state** — answers live in the tool result `details`, so `/tree` branching and session replay see exactly what was asked and answered.
@@ -45,16 +47,17 @@ ask_user(
 |-----|--------|
 | `up` / `down` | Move cursor across rows |
 | `space` | Toggle checkbox (multi-select only) |
-| `enter` | Select / record answer / advance (submit after last question) |
+| `enter` | Select / record answer / advance to the next unanswered question (no-op in multi-select with nothing checked); on the review page, submit |
 | `←` / `→` | Previous / next question (`→` requires an answer first) |
+| `tab` / `shift+tab` | Aliases for `→` / `←` |
 | `n` | Attach a note to the current answer |
-| `esc` | Cancel the whole call |
+| `esc` | Cancel the whole call (inside the inline editor: back to the rows) |
 
 ## Trying it out: `/ask-demo`
 
 The extension registers an interactive battery that exercises every feature end-to-end:
 
-1. **All question types** — single-select with `(Recommended)` + cursor-rest `preview`, multi-select checkboxes, and an `Other (type your own)` free-form answer (add a note with `n` on the last question).
+1. **All question types** — single-select with `(Recommended)` + cursor-rest `preview`, multi-select checkboxes, and an `Other (type your own)` free-form answer (add a note with `n` on the last question), then confirm on the review page.
 2. **Timeout** — a dialog with a 6-second budget; do nothing and watch it auto-select the recommended option.
 3. **Chat redirect** — pick the `Chat about this` row.
 4. **Cancel** — press `Esc` on the first of two questions and confirm the second is never asked.

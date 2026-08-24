@@ -3,8 +3,11 @@
  *
  * Registers an `ask_user` tool that lets the LLM surface clarifying questions
  * with options while it works: all questions presented through one dialog with
- * left/right navigation between them, single or multi select, a recommended
- * default, optional descriptions/previews, free-text "Other", answer notes,
+ * left/right (or tab/shift+tab) navigation between them, a per-question status
+ * strip, single or multi select, a recommended default, optional
+ * descriptions/previews, numbered options, free-text "Other" and answer notes
+ * captured by an editor embedded in the dialog (the option list stays visible
+ * while typing), a review page that summarizes every answer before submitting,
  * an optional overall timeout that auto-selects the recommended options, and a
  * "Chat about this" redirect for deferring the decision into conversation.
  *
@@ -14,7 +17,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionUIContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, Text, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Editor, type EditorTheme, Key, matchesKey, Text, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 // ---------------------------------------------------------------------------
@@ -193,17 +196,27 @@ export function autoSelectionForQuestion(question: AskQuestion): string[] {
 	return [stripRecommendedSuffix(question.options[index]!.label)];
 }
 
-/** Human-readable answer line for one question, e.g. `auth_method: JWT`. */
+/** Prefix a label with its 1-based option number, e.g. `2. OAuth2` (raw label when not found). */
+export function numberedLabel(options: readonly string[], label: string): string {
+	const index = options.indexOf(label);
+	return index >= 0 ? `${index + 1}. ${label}` : label;
+}
+
+/** Display form of an answer: `"custom text"`, `2. OAuth2`, `[1. A, 3. C]`, or `(no selection)`. */
+export function formatAnswerValue(
+	options: string[],
+	multi: boolean,
+	answer: { selectedOptions: string[]; customInput?: string },
+): string {
+	if (answer.customInput !== undefined) return `"${answer.customInput}"`;
+	if (answer.selectedOptions.length === 0) return "(no selection)";
+	const numbered = answer.selectedOptions.map((label) => numberedLabel(options, label));
+	return multi ? `[${numbered.join(", ")}]` : numbered[0]!;
+}
+
+/** Human-readable answer line for one question, e.g. `auth_method: 1. JWT`. */
 export function formatAnswerLine(result: QuestionResult): string {
-	let line: string;
-	if (result.customInput !== undefined) {
-		line = `${result.id}: "${result.customInput}"`;
-	} else if (result.selectedOptions.length > 0) {
-		const answer = result.multi ? `[${result.selectedOptions.join(", ")}]` : result.selectedOptions[0];
-		line = `${result.id}: ${answer}`;
-	} else {
-		line = `${result.id}: (no selection)`;
-	}
+	let line = `${result.id}: ${formatAnswerValue(result.options, result.multi, result)}`;
 	if (result.timedOut) line += " (auto-selected after timeout)";
 	if (result.note !== undefined) line += ` (note: ${result.note})`;
 	return line;
@@ -225,10 +238,10 @@ export function formatAnswerText(results: QuestionResult[], cancelled = false): 
 // Multi-question dialog (radio / checkbox list rendered via ctx.ui.custom)
 // ---------------------------------------------------------------------------
 
-type AskUi = Pick<ExtensionUIContext, "custom" | "input">;
+type AskUi = Pick<ExtensionUIContext, "custom">;
 
 interface DialogAction {
-	kind: "submit" | "other" | "note" | "chat" | "cancel";
+	kind: "submit" | "chat" | "cancel";
 	timedOut?: boolean;
 }
 
@@ -253,6 +266,7 @@ function initialDialogState(questions: AskQuestion[]): DialogState {
 const MAX_PREVIEW_LINES = 6;
 
 function createAskDialog(
+	tui: TUI,
 	theme: Theme,
 	questions: AskQuestion[],
 	state: DialogState,
@@ -262,6 +276,8 @@ function createAskDialog(
 ): { render: (width: number) => string[]; invalidate: () => void; handleInput: (data: string) => boolean; dispose: () => void } {
 	let cachedLines: string[] | undefined;
 	let settled = false;
+	/** Free-text overlay: "other" captures a custom answer, "note" annotates the current one. */
+	let inputMode: "other" | "note" | null = null;
 
 	const settle = (action: DialogAction): void => {
 		if (settled) return;
@@ -276,25 +292,68 @@ function createAskDialog(
 	}
 	signal?.addEventListener("abort", onAbort, { once: true });
 
-	// Overall budget across reopenings: recompute remaining time each open.
 	const remainingMs = deadline === undefined ? undefined : Math.max(0, deadline - Date.now());
 	const timerId =
-		remainingMs === undefined
-			? undefined
-			: setTimeout(() => settle({ kind: "submit", timedOut: true }), remainingMs);
+		remainingMs === undefined ? undefined : setTimeout(() => settle({ kind: "submit", timedOut: true }), remainingMs);
 	if (typeof timerId === "object" && timerId !== null && "unref" in timerId) timerId.unref();
 
-	const question = () => questions[state.index]!;
+	const question = () => questions[state.index];
+	const onSummary = () => state.index === questions.length;
+	const allAnswered = () => questions.every((_q, i) => state.answers[i] !== undefined);
+
+	// Embedded single-line editor for "Other" answers and notes: the option
+	// list stays visible while typing and Esc returns to the rows.
+	const editorTheme: EditorTheme = {
+		borderColor: (s) => theme.fg("accent", s),
+		selectList: {
+			selectedPrefix: (t) => theme.fg("accent", t),
+			selectedText: (t) => theme.fg("accent", t),
+			description: (t) => theme.fg("muted", t),
+			scrollInfo: (t) => theme.fg("dim", t),
+			noMatch: (t) => theme.fg("warning", t),
+		},
+	};
+	const editor = new Editor(tui, editorTheme);
+
+	editor.onSubmit = (value: string): void => {
+		if (inputMode === "other") {
+			if (value.length > 0) {
+				state.answers[state.index] = { selectedOptions: [], customInput: value };
+				state.checked[state.index] = new Set();
+				advanceAfterAnswer();
+			} else {
+				exitInputMode(); // empty submit declines the custom input
+			}
+		} else if (inputMode === "note") {
+			state.notes[state.index] = value.length > 0 ? value : undefined;
+			exitInputMode();
+		}
+	};
+
+	function enterInputMode(mode: "other" | "note"): void {
+		inputMode = mode;
+		const prefill = mode === "note" ? state.notes[state.index] : state.answers[state.index]?.customInput;
+		editor.setText(prefill ?? "");
+		cachedLines = undefined;
+	}
+
+	function exitInputMode(): void {
+		inputMode = null;
+		editor.setText("");
+		cachedLines = undefined;
+	}
 
 	function move(delta: number): void {
+		if (onSummary()) return;
 		const rows = question().options.length + 2; // + Other + Chat
 		state.cursors[state.index] = Math.min(Math.max(state.cursors[state.index]! + delta, 0), rows - 1);
 		cachedLines = undefined;
 	}
 
 	function toggle(): void {
+		const q = question();
 		const cursor = state.cursors[state.index]!;
-		if (cursor < question().options.length) {
+		if (cursor < q.options.length) {
 			const checked = state.checked[state.index]!;
 			if (checked.has(cursor)) checked.delete(cursor);
 			else checked.add(cursor);
@@ -317,10 +376,27 @@ function createAskDialog(
 		}
 	}
 
+	/**
+	 * Advance after an answer. Single-question dialogs submit immediately;
+	 * multi-question dialogs jump to the next unanswered question, or the
+	 * review page once every question has an answer (revising an earlier
+	 * answer skips the already-answered ones instead of re-walking them).
+	 */
+	function advanceAfterAnswer(): void {
+		exitInputMode();
+		if (questions.length === 1) {
+			settle({ kind: "submit" });
+			return;
+		}
+		const next = questions.findIndex((_q, i) => state.answers[i] === undefined);
+		state.index = next === -1 ? questions.length : next; // -1 → review page
+		cachedLines = undefined;
+	}
+
 	return {
 		render(width: number): string[] {
 			if (cachedLines) return cachedLines;
-			const q = question();
+			const q = onSummary() ? undefined : question();
 			const lines: string[] = [];
 			const renderWidth = Math.max(1, width);
 
@@ -335,45 +411,117 @@ function createAskDialog(
 
 			lines.push(theme.fg("accent", "-".repeat(renderWidth)));
 
-			const progress = `[${state.index + 1}/${questions.length}]`;
-			const headerChip = q.header ? ` ${theme.fg("muted", q.header)}` : "";
-			const noteMark = state.notes[state.index] !== undefined ? theme.fg("dim", " · n") : "";
-			wrapWithPrefix(" ", `${theme.fg("accent", progress)}${headerChip}${noteMark} ${theme.fg("text", q.question)}`);
-			lines.push("");
+			// Per-question status strip (multi-question dialogs only).
+			if (questions.length > 1) {
+				const chips = questions.map((question_, i) => {
+					const answered = state.answers[i] !== undefined;
+					const marker = theme.fg(answered ? "success" : "dim", answered ? "●" : "○");
+					const label = question_.header ?? `Q${i + 1}`;
+					const color = i === state.index ? "text" : answered ? "muted" : "dim";
+					return `${marker} ${theme.fg(color, label)}`;
+				});
+				wrapWithPrefix(" ", chips.join("  "));
+			}
 
-			const labels = addRecommendedSuffix(q.options, q.multi ? undefined : q.recommended);
-			q.options.forEach((option, i) => {
-				const cursorHere = state.cursors[state.index] === i;
-				const checked = state.checked[state.index]!.has(i);
-				const marker = q.multi
-					? checked
-						? theme.fg("success", "[x]")
-						: theme.fg("dim", "[ ]")
-					: checked
-						? theme.fg("success", "(o)")
-						: theme.fg("dim", "( )");
-				const cursorPrefix = cursorHere ? theme.fg("accent", "> ") : "  ";
-				wrapWithPrefix(cursorPrefix, `${marker} ${theme.fg(checked ? "accent" : "text", labels[i])}`);
-				if (option.description) wrapWithPrefix("     ", theme.fg("muted", option.description));
-				if (cursorHere && option.preview) {
-					for (const previewLine of option.preview.split("\n").slice(0, MAX_PREVIEW_LINES)) {
-						wrapWithPrefix("       ", theme.fg("dim", previewLine));
+			if (!q) {
+				// Review page: summarize every answer, confirm on Enter.
+				const answeredCount = questions.filter((_question, i) => state.answers[i] !== undefined).length;
+				wrapWithPrefix(
+					" ",
+					`${theme.fg("accent", "Review")} ${theme.fg("muted", `(${answeredCount}/${questions.length} answered)`)}`,
+				);
+				lines.push("");
+				questions.forEach((question_, i) => {
+					const answer = state.answers[i];
+					const label = question_.header ?? question_.question;
+					if (!answer) {
+						wrapWithPrefix(" ", `${theme.fg("dim", "○")} ${theme.fg("warning", `${label}: (unanswered)`)}`);
+						return;
 					}
+					const value = formatAnswerValue(
+						question_.options.map((option) => option.label),
+						question_.multi,
+						answer,
+					);
+					wrapWithPrefix(" ", `${theme.fg("success", "●")} ${theme.fg("muted", `${label}: `)}${theme.fg("accent", value)}`);
+					if (state.notes[i] !== undefined) {
+						wrapWithPrefix("   ", theme.fg("dim", `note: ${state.notes[i]}`));
+					}
+				});
+				lines.push("");
+				if (allAnswered()) {
+					wrapWithPrefix(" ", theme.fg("success", "Press Enter to submit"));
+					wrapWithPrefix(" ", theme.fg("dim", "left revise - esc cancel"));
+				} else {
+					const missing = questions
+						.filter((_question, i) => state.answers[i] === undefined)
+						.map((question_) => question_.header ?? question_.question)
+						.join(", ");
+					wrapWithPrefix(" ", theme.fg("warning", `Unanswered: ${missing}`));
 				}
-			});
+			} else {
+				const progress = `[${state.index + 1}/${questions.length}]`;
+				const headerChip = q.header ? ` ${theme.fg("muted", q.header)}` : "";
+				const noteMark = state.notes[state.index] !== undefined ? theme.fg("dim", " · n") : "";
+				wrapWithPrefix(" ", `${theme.fg("accent", progress)}${headerChip}${noteMark} ${theme.fg("text", q.question)}`);
+				lines.push("");
 
-			lines.push("");
-			const cursor = state.cursors[state.index]!;
-			const otherCursor = cursor === q.options.length;
-			const chatCursor = cursor === q.options.length + 1;
-			wrapWithPrefix(otherCursor ? theme.fg("accent", "> ") : "  ", theme.fg(otherCursor ? "accent" : "text", OTHER_OPTION));
-			wrapWithPrefix(chatCursor ? theme.fg("accent", "> ") : "  ", theme.fg(chatCursor ? "accent" : "text", CHAT_OPTION));
+				const labels = addRecommendedSuffix(q.options, q.multi ? undefined : q.recommended);
+				q.options.forEach((option, i) => {
+					const cursorHere = state.cursors[state.index] === i;
+					const checked = state.checked[state.index]!.has(i);
+					const marker = q.multi
+						? checked
+							? theme.fg("success", "[x]")
+							: theme.fg("dim", "[ ]")
+						: checked
+							? theme.fg("success", "(o)")
+							: theme.fg("dim", "( )");
+					const cursorPrefix = cursorHere ? theme.fg("accent", "> ") : "  ";
+					wrapWithPrefix(cursorPrefix, `${marker} ${theme.fg(checked ? "accent" : "text", `${i + 1}. ${labels[i]}`)}`);
+					if (option.description) wrapWithPrefix("     ", theme.fg("muted", option.description));
+					if (cursorHere && option.preview) {
+						for (const previewLine of option.preview.split("\n").slice(0, MAX_PREVIEW_LINES)) {
+							wrapWithPrefix("       ", theme.fg("dim", previewLine));
+						}
+					}
+				});
 
-			lines.push("");
-			const hints = q.multi
-				? "space toggle - enter next - left/right question - n note - esc cancel"
-				: "enter select - left/right question - n note - esc cancel";
-			wrapWithPrefix(" ", theme.fg("dim", hints));
+				lines.push("");
+				const cursor = state.cursors[state.index]!;
+				const otherCursor = cursor === q.options.length;
+				const chatCursor = cursor === q.options.length + 1;
+				const otherLabel = inputMode === "other" ? `${OTHER_OPTION} ✎` : OTHER_OPTION;
+				wrapWithPrefix(
+					otherCursor ? theme.fg("accent", "> ") : "  ",
+					theme.fg(otherCursor ? "accent" : "text", otherLabel),
+				);
+				wrapWithPrefix(
+					chatCursor ? theme.fg("accent", "> ") : "  ",
+					theme.fg(chatCursor ? "accent" : "text", CHAT_OPTION),
+				);
+
+				if (inputMode !== null) {
+					lines.push("");
+					wrapWithPrefix(" ", theme.fg("muted", inputMode === "other" ? "Your answer:" : "Note:"));
+					for (const line of editor.render(Math.max(1, renderWidth - 2))) {
+						lines.push(` ${line}`);
+					}
+					lines.push("");
+					wrapWithPrefix(" ", theme.fg("dim", "enter submit - esc back"));
+				} else {
+					lines.push("");
+					const hints = q.multi
+						? questions.length > 1
+							? "space toggle - enter next - left/right/tab question - n note - esc cancel"
+							: "space toggle - enter submit - n note - esc cancel"
+						: questions.length > 1
+							? "enter select - left/right/tab question - n note - esc cancel"
+							: "enter select - n note - esc cancel";
+					wrapWithPrefix(" ", theme.fg("dim", hints));
+				}
+			}
+
 			lines.push(theme.fg("accent", "-".repeat(renderWidth)));
 
 			cachedLines = lines;
@@ -385,6 +533,17 @@ function createAskDialog(
 		},
 
 		handleInput(data: string): boolean {
+			// Free-text mode: everything except Esc routes to the embedded editor.
+			if (inputMode !== null) {
+				if (matchesKey(data, Key.escape)) {
+					exitInputMode();
+					return true;
+				}
+				editor.handleInput(data);
+				cachedLines = undefined;
+				return true;
+			}
+
 			if (matchesKey(data, Key.up)) {
 				move(-1);
 				return true;
@@ -397,29 +556,47 @@ function createAskDialog(
 				settle({ kind: "cancel" });
 				return true;
 			}
-			if (matchesKey(data, Key.left)) {
+
+			// Question navigation: arrows plus tab/shift+tab aliases. Forward
+			// moves require an answer for the current question; the review
+			// page is the last stop.
+			if (matchesKey(data, Key.left) || matchesKey(data, Key.shift("tab"))) {
 				if (state.index > 0) {
 					state.index -= 1;
 					cachedLines = undefined;
 				}
 				return true;
 			}
-			if (matchesKey(data, Key.right)) {
-				if (state.index < questions.length - 1 && state.answers[state.index] !== undefined) {
-					state.index += 1;
+			if (matchesKey(data, Key.right) || matchesKey(data, Key.tab)) {
+				if (
+					questions.length > 1 &&
+					state.index < questions.length &&
+					state.answers[state.index] !== undefined
+				) {
+					state.index += 1; // may land on the review page
 					cachedLines = undefined;
 				}
 				return true;
 			}
-			if (data === "n" || data === "N") {
-				settle({ kind: "note" });
+
+			// Review page: Enter submits once everything is answered.
+			if (onSummary()) {
+				if (matchesKey(data, Key.return) && allAnswered()) {
+					settle({ kind: "submit" });
+				}
 				return true;
 			}
+
+			if (data === "n" || data === "N") {
+				enterInputMode("note");
+				return true;
+			}
+
 			if (matchesKey(data, Key.return)) {
 				const q = question();
 				const cursor = state.cursors[state.index]!;
 				if (cursor === q.options.length) {
-					settle({ kind: "other" });
+					enterInputMode("other");
 					return true;
 				}
 				if (cursor === q.options.length + 1) {
@@ -428,21 +605,23 @@ function createAskDialog(
 				}
 				if (q.multi) {
 					// Enter records the current checkbox set as-is; space does the toggling.
-				} else if (!state.checked[state.index]!.has(cursor)) {
-					// Single mode: entering an unchecked row marks it before recording.
-					state.checked[state.index]!.add(cursor);
+					// An empty set is not an answer: enter stays put instead of marking
+					// the question answered with a misleading "(no selection)".
+					if (state.checked[state.index]!.size === 0) return true;
+				} else {
+					// Single mode: exactly one marker — selecting a row replaces the
+					// previous one instead of stacking another (o).
+					state.checked[state.index] = new Set([cursor]);
 				}
 				recordCurrentAnswer();
-				if (state.index < questions.length - 1) {
-					state.index += 1;
-					cachedLines = undefined;
-				} else {
-					settle({ kind: "submit" });
-				}
+				advanceAfterAnswer();
 				return true;
 			}
+
 			if (matchesKey(data, Key.space)) {
-				toggle();
+				// Toggling is multi-select only: in single mode space is a no-op so
+				// one question can never accumulate several (o) markers.
+				if (!onSummary() && question().multi) toggle();
 				return true;
 			}
 			return false;
@@ -463,9 +642,9 @@ interface DialogOutcome {
 }
 
 /**
- * Run the multi-question dialog to completion. The "Other"/"note" rows close
- * the component and open a plain input dialog (avoids nested focus); the
- * dialog then reopens with its full navigation state intact.
+ * Run the multi-question dialog to completion. "Other"/"note" free text is
+ * captured by an editor embedded in the dialog itself, so the component keeps
+ * keyboard focus and its navigation state throughout.
  */
 async function runAskDialog(
 	ui: AskUi,
@@ -473,43 +652,10 @@ async function runAskDialog(
 	options_: { deadline?: number; signal?: AbortSignal },
 ): Promise<DialogOutcome> {
 	const state = initialDialogState(questions);
-
-	while (true) {
-		const action = await ui.custom<DialogAction>((_tui, theme, _kb, done) =>
-			createAskDialog(theme as Theme, questions, state, options_.deadline, options_.signal, done),
-		);
-
-		if (action.kind === "cancel") {
-			return { kind: "cancel", timedOut: false, state };
-		}
-		if (action.kind === "chat") {
-			return { kind: "chat", timedOut: false, state };
-		}
-		if (action.kind === "submit") {
-			return { kind: "submit", timedOut: action.timedOut === true, state };
-		}
-
-		const q = questions[state.index]!;
-
-		if (action.kind === "other") {
-			const input = await ui.input(q.question, "Type your answer");
-			if (input !== undefined && input.trim().length > 0) {
-				state.answers[state.index] = { selectedOptions: [], customInput: input.trim() };
-				if (state.index === questions.length - 1) {
-					return { kind: "submit", timedOut: false, state };
-				}
-				state.index += 1;
-			}
-			continue;
-		}
-
-		if (action.kind === "note") {
-			const existing = state.notes[state.index];
-			const input = await ui.input(`Note for "${q.id}"`, existing ?? "Add a note");
-			state.notes[state.index] = input !== undefined && input.trim().length > 0 ? input.trim() : undefined;
-			continue;
-		}
-	}
+	const action = await ui.custom<DialogAction>((tui, theme, _kb, done) =>
+		createAskDialog(tui, theme, questions, state, options_.deadline, options_.signal, done),
+	);
+	return { kind: action.kind, timedOut: action.timedOut === true, state };
 }
 
 function buildResults(questions: AskQuestion[], state: DialogState, timedOut: boolean): QuestionResult[] {
@@ -753,7 +899,10 @@ async function runAskDemo(ctx: ExtensionCommandContext): Promise<void> {
 		}
 	};
 
-	ctx.ui.notify("ask-demo 1/4 all question types: single+recommended+preview, multi, Other free input (add a note with n on the last question)", "info");
+	ctx.ui.notify(
+		"ask-demo 1/4 all question types: single+recommended+preview, multi, Other free input, note with n, review page before submit",
+		"info",
+	);
 	await run("types", DEMO_TYPES);
 
 	await run("timeout", DEMO_TIMEOUT); // dialog itself says: wait 6s

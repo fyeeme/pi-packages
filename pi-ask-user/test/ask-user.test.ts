@@ -24,6 +24,7 @@ const passthroughTheme = {
 
 interface Picker {
 	handleInput: (data: string) => boolean;
+	render: (width: number) => string[];
 }
 
 /**
@@ -33,7 +34,6 @@ interface Picker {
  */
 function makeUi() {
 	const pickers: Picker[] = [];
-	const input = vi.fn<(title: string, placeholder?: string) => Promise<string | undefined>>();
 	const notify = vi.fn<(message: string, type?: "info" | "warning" | "error") => void>();
 
 	const custom = vi.fn(
@@ -46,7 +46,6 @@ function makeUi() {
 
 	return {
 		custom,
-		input,
 		notify,
 		pickers,
 		/** Open-count so far. */
@@ -163,15 +162,15 @@ describe("recommended suffix helpers", () => {
 });
 
 describe("answer formatting", () => {
-	it("formats selected, custom, and empty answers distinctly", () => {
+	it("formats selected, custom, and empty answers distinctly with option numbers", () => {
 		const base = { id: "q", question: "Q", options: ["x", "y"], multi: false };
 		const single: QuestionResult = { ...base, selectedOptions: ["y"] };
 		const multi: QuestionResult = { ...base, multi: true, selectedOptions: ["x", "y"] };
 		const custom: QuestionResult = { ...base, selectedOptions: [], customInput: "neither" };
 		const none: QuestionResult = { ...base, selectedOptions: [] };
 
-		expect(formatAnswerLine(single)).toBe("q: y");
-		expect(formatAnswerLine(multi)).toBe("q: [x, y]");
+		expect(formatAnswerLine(single)).toBe("q: 2. y");
+		expect(formatAnswerLine(multi)).toBe("q: [1. x, 2. y]");
 		expect(formatAnswerLine(custom)).toBe('q: "neither"');
 		expect(formatAnswerLine(none)).toBe("q: (no selection)");
 	});
@@ -217,22 +216,49 @@ describe("ask_user tool", () => {
 		expect(result.details.cancelled).toBeFalsy();
 		expect(result.details.results?.[0]).toMatchObject({ id: "auth", selectedOptions: ["JWT"] });
 		expect(result.content[0]?.text).toContain("User answer:");
-		expect(result.content[0]?.text).toContain("auth: JWT");
+		expect(result.content[0]?.text).toContain("auth: 1. JWT");
 	});
 
-	it("down arrow moves onto the Other row; enter routes through text input into customInput", async () => {
+	it("Other row opens the inline editor; typed text becomes customInput", async () => {
 		const ui = makeUi();
-		ui.input.mockResolvedValue("ssh keys via agent forwarding");
 		const tool = loadTool();
 		const questions: AskQuestion[] = [
 			{ id: "deploy", question: "Deploy target?", options: [{ label: "Vercel" }, { label: "Fly.io" }], multi: false },
 		];
 		const execution = tool.execute("t1", { questions }, undefined, undefined, makeCtx(ui));
-		await ui.drive(["\x1b[B", "\x1b[B", "\r"]); // cursor onto Other row, select it
+		// cursor onto Other, enter opens the embedded editor, type, enter submits
+		await ui.drive(["\x1b[B", "\x1b[B", "\r", "ssh keys via agent forwarding", "\r"]);
 		const result = await execution;
 
-		expect(ui.input).toHaveBeenCalledWith("Deploy target?", "Type your answer");
 		expect(result.details.results?.[0]?.customInput).toBe("ssh keys via agent forwarding");
+	});
+
+	it("escape inside the inline editor returns to the rows and discards the draft", async () => {
+		const ui = makeUi();
+		const tool = loadTool();
+		const questions: AskQuestion[] = [
+			{ id: "a", question: "Pick?", options: [{ label: "x" }, { label: "y" }], multi: false },
+		];
+		const execution = tool.execute("t1", { questions }, undefined, undefined, makeCtx(ui));
+		// Other -> type -> esc backs out; cursor preserved on Other; up up to row 0; enter x
+		await ui.drive(["\x1b[B", "\x1b[B", "\r", "draft", "\x1b", "\x1b[A", "\x1b[A", "\r"]);
+		const result = await execution;
+
+		expect(result.details.results?.[0]).toMatchObject({ selectedOptions: ["x"] });
+		expect(result.details.results?.[0]?.customInput).toBeUndefined();
+	});
+
+	it("submitting an empty Other input declines it and returns to the rows", async () => {
+		const ui = makeUi();
+		const tool = loadTool();
+		const questions: AskQuestion[] = [
+			{ id: "a", question: "Pick?", options: [{ label: "x" }, { label: "y" }], multi: false },
+		];
+		const execution = tool.execute("t1", { questions }, undefined, undefined, makeCtx(ui));
+		await ui.drive(["\x1b[B", "\x1b[B", "\r", "\r", "\x1b[A", "\x1b[A", "\r"]);
+		const result = await execution;
+
+		expect(result.details.results?.[0]).toMatchObject({ selectedOptions: ["x"] });
 	});
 
 	it("multi select: space toggles several options and enter submits them sorted", async () => {
@@ -255,7 +281,36 @@ describe("ask_user tool", () => {
 			multi: true,
 			selectedOptions: ["Telemetry", "Sentry"],
 		});
-		expect(result.content[0]?.text).toContain("extras: [Telemetry, Sentry]");
+		expect(result.content[0]?.text).toContain("extras: [1. Telemetry, 3. Sentry]");
+	});
+
+	it("single select: space is a no-op and only one row ever carries a marker", async () => {
+		const ui = makeUi();
+		const tool = loadTool();
+		const questions: AskQuestion[] = [
+			{ id: "a", question: "First?", options: [{ label: "x" }, { label: "y" }, { label: "z" }], multi: false },
+			{ id: "b", question: "Second?", options: [{ label: "p" }, { label: "q" }], multi: false },
+		];
+		const execution = tool.execute("t1", { questions }, undefined, undefined, makeCtx(ui));
+
+		const countMarked = () => ui.pickers[0]!.render(80).filter((line) => line.includes("(o)")).length;
+
+		// Space must not toggle anything in single mode.
+		void ui.drive([" ", "\x1b[B", " "]);
+		expect(countMarked()).toBe(0);
+
+		// Enter records y; back on the question exactly one marker shows.
+		void ui.drive(["\r", "\x1b[D"]);
+		expect(countMarked()).toBe(1);
+
+		// Revising to z replaces the marker instead of stacking a second one.
+		void ui.drive(["\x1b[B", "\r", "\x1b[D"]);
+		expect(countMarked()).toBe(1);
+
+		await ui.drive(["\r", "\r", "\r"]); // re-answer a, answer b, review page submits
+		const result = await execution;
+
+		expect(result.details.results?.map((r) => r.selectedOptions[0])).toEqual(["z", "p"]);
 	});
 
 	it("escape cancels: remaining questions are skipped and the LLM is told to proceed safely", async () => {
@@ -273,24 +328,6 @@ describe("ask_user tool", () => {
 		expect(result.details.results).toHaveLength(0);
 		expect(result.details.questions).toEqual(["First?", "Second?"]);
 		expect(result.content[0]?.text).toContain("cancelled");
-	});
-
-	it("declining the Other input reopens the picker instead of losing the answer", async () => {
-		const ui = makeUi();
-		ui.input.mockResolvedValueOnce("").mockResolvedValueOnce("fallback answer");
-		const tool = loadTool();
-		const questions: AskQuestion[] = [
-			{ id: "a", question: "Pick?", options: [{ label: "x" }, { label: "y" }], multi: false },
-		];
-		const execution = tool.execute("t1", { questions }, undefined, undefined, makeCtx(ui));
-
-		await ui.drive(["\x1b[B", "\x1b[B", "\r"]); // Other -> empty input -> picker reopens
-		await vi.waitFor(() => expect(ui.opened).toBe(2));
-		await ui.drive(["\r"]); // cursor was preserved on the Other row -> real answer
-		const result = await execution;
-
-		expect(ui.opened).toBe(2);
-		expect(result.details.results?.[0]?.customInput).toBe("fallback answer");
 	});
 
 	it("rejects reserved-label collisions at the execution path instead of rendering duplicate rows", async () => {
@@ -314,7 +351,7 @@ describe("ask_user tool", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Multi-question navigation, timeout, chat redirect, notes, abort
+// Multi-question navigation, review page, timeout, chat redirect, notes, abort
 // ---------------------------------------------------------------------------
 
 describe("ask_user multi-question dialog", () => {
@@ -326,10 +363,9 @@ describe("ask_user multi-question dialog", () => {
 			{ id: "b", question: "Second?", options: [{ label: "p" }, { label: "q" }], multi: false },
 		];
 		const execution = tool.execute("t1", { questions }, undefined, undefined, makeCtx(ui));
-		// a=x (auto-advance), left back to a, revise to y, forward to b, submit b.
-		// Matches omp: answering the last question submits, so revision happens
-		// by navigating back before finishing.
-		await ui.drive(["\r", "\x1b[D", "\x1b[B", "\r", "\r"]);
+		// a=x (auto-advance), left back to a, revise to y, forward through b and
+		// the review page, enter confirms on the review page.
+		await ui.drive(["\r", "\x1b[D", "\x1b[B", "\r", "\r", "\r"]);
 		const result = await execution;
 
 		expect(result.details.results?.map((r) => r.selectedOptions[0])).toEqual(["y", "p"]);
@@ -344,12 +380,46 @@ describe("ask_user multi-question dialog", () => {
 			{ id: "b", question: "Second?", options: [{ label: "p" }, { label: "q" }], multi: false },
 		];
 		const execution = tool.execute("t1", { questions }, undefined, undefined, makeCtx(ui));
-		// early right press must be a no-op; then answer both in order
-		await ui.drive(["\x1b[C", "\x1b[B", "\r", "\r"]);
+		// early right press must be a no-op; then answer both, confirm review
+		await ui.drive(["\x1b[C", "\x1b[B", "\r", "\r", "\r"]);
 		const result = await execution;
 
 		expect(result.details.results?.map((r) => r.id)).toEqual(["a", "b"]);
 		expect(result.details.results?.[0]?.selectedOptions).toEqual(["y"]);
+	});
+
+	it("multi-question dialogs end on a review page that allows revision before submit", async () => {
+		const ui = makeUi();
+		const tool = loadTool();
+		const questions: AskQuestion[] = [
+			{ id: "a", question: "First?", options: [{ label: "x" }, { label: "y" }], multi: false },
+			{ id: "b", question: "Second?", options: [{ label: "p" }, { label: "q" }], multi: false },
+		];
+		const execution = tool.execute("t1", { questions }, undefined, undefined, makeCtx(ui));
+		// a=x, b=p -> review page (dialog still open); shift+tab back to b,
+		// revise to q, return to the review page, enter submits.
+		const result = await ui.drive(["\r", "\r", "\x1b[Z", "\x1b[B", "\r", "\r"]);
+
+		expect(result).toBeTypeOf("object");
+		const toolResult = (await execution) as ToolResult;
+		expect(toolResult.details.cancelled).toBeFalsy();
+		expect(toolResult.details.results?.map((r) => r.selectedOptions[0])).toEqual(["x", "q"]);
+	});
+
+	it("tab moves forward between answered questions like right arrow", async () => {
+		const ui = makeUi();
+		const tool = loadTool();
+		const questions: AskQuestion[] = [
+			{ id: "a", question: "First?", options: [{ label: "x" }, { label: "y" }], multi: false },
+			{ id: "b", question: "Second?", options: [{ label: "p" }, { label: "q" }], multi: false },
+		];
+		const execution = tool.execute("t1", { questions }, undefined, undefined, makeCtx(ui));
+		// a=x, tab forward to b (answer required, satisfied), b=p -> review, submit
+		const result = await ui.drive(["\r", "\t", "\r", "\r"]);
+
+		expect(result).toBeTypeOf("object");
+		const toolResult = (await execution) as ToolResult;
+		expect(toolResult.details.results?.map((r) => r.selectedOptions[0])).toEqual(["x", "p"]);
 	});
 
 	it("timeout auto-selects the recommended option and flags the result as timedOut", async () => {
@@ -397,21 +467,18 @@ describe("ask_user multi-question dialog", () => {
 		expect(result.content[0]?.text).toContain("chose to chat");
 	});
 
-	it("n opens a note input and attaches it to the answer", async () => {
+	it("n attaches a note through the inline editor", async () => {
 		const ui = makeUi();
-		ui.input.mockResolvedValueOnce("prefer y: existing infra").mockResolvedValueOnce(undefined);
 		const tool = loadTool();
 		const questions: AskQuestion[] = [
 			{ id: "a", question: "Pick one?", options: [{ label: "x" }, { label: "y" }], multi: false },
 		];
 		const execution = tool.execute("t1", { questions }, undefined, undefined, makeCtx(ui));
-		// n -> note input; dialog reopens; enter selects x and submits
-		await ui.drive(["n"]);
-		await vi.waitFor(() => expect(ui.opened).toBe(2));
-		await ui.drive(["\r"]);
+		// n opens the inline note editor; enter saves the note and returns to
+		// the rows; enter selects x and submits.
+		await ui.drive(["n", "prefer y: existing infra", "\r", "\r"]);
 		const result = await execution;
 
-		expect(ui.input).toHaveBeenCalledWith('Note for "a"', "Add a note");
 		expect(result.details.results?.[0]).toMatchObject({ selectedOptions: ["x"], note: "prefer y: existing infra" });
 	});
 
@@ -436,7 +503,7 @@ describe("ask_user multi-question dialog", () => {
 // ---------------------------------------------------------------------------
 
 describe("ask-demo command", () => {
-	it("runs the four-phase battery: all types, custom input, chat redirect, cancel", async () => {
+	it("runs the four-phase battery: all types, custom input, review page, chat redirect, cancel", async () => {
 		const ui = makeUi();
 		const notify = vi.fn();
 
@@ -450,15 +517,14 @@ describe("ask-demo command", () => {
 		setupAskUser(fakePi);
 		if (!demoHandler) throw new Error("ask-demo was not registered");
 
-		ui.input.mockResolvedValue("custom plain JS"); // q3 "Other" free-form answer
-
 		const running = demoHandler("", { hasUI: true, mode: "tui", cwd: "/tmp", ui });
 
 		// Phase 1: one dialog, three questions — intermediate drives must NOT await
 		// the settle promise (it only resolves when the whole dialog closes).
 		void ui.drive(["\r"]); // q1 single: React (recommended)
 		void ui.drive([" ", "\x1b[B", " ", "\r"]); // q2 multi: toggle Telemetry + Auto-update, advance
-		await ui.drive(["\x1b[B", "\x1b[B", "\r"]); // q3 Other -> custom input -> submit
+		// q3 Other -> inline editor -> custom input -> review page -> enter submits
+		await ui.drive(["\x1b[B", "\x1b[B", "\r", "custom plain JS", "\r", "\r"]);
 		// Phase 2: answer instead of waiting out the 6s timeout.
 		await vi.waitFor(() => expect(ui.opened).toBe(2));
 		await ui.drive(["\r"]);
@@ -472,10 +538,10 @@ describe("ask-demo command", () => {
 
 		const phaseTexts = ui.notify.mock.calls.map((call) => String(call[0]));
 		const typesLine = phaseTexts.find((t) => t.includes("types →"));
-		expect(typesLine).toContain("framework: React");
-		expect(typesLine).toContain("features: [Telemetry, Auto-update]");
+		expect(typesLine).toContain("framework: 1. React");
+		expect(typesLine).toContain("features: [1. Telemetry, 2. Auto-update]");
 		expect(typesLine).toContain('style: "custom plain JS"');
-		expect(phaseTexts.find((t) => t.includes("timeout →"))).toContain("deploy_target: Staging");
+		expect(phaseTexts.find((t) => t.includes("timeout →"))).toContain("deploy_target: 1. Staging");
 		expect(phaseTexts.find((t) => t.includes("chat →"))).toContain("chose to chat");
 		expect(phaseTexts.find((t) => t.includes("cancel →"))).toContain("cancelled");
 		expect(phaseTexts.some((t) => t.includes("finished"))).toBe(true);
