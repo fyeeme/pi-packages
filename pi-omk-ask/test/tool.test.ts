@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 import defaultExport from "../index.ts";
 import type { AskToolDetails, ExtensionAskDialogResult } from "../src/types.ts";
@@ -85,8 +86,17 @@ class FakeRpcUi {
 	}
 }
 
+interface FakeRenderComponent {
+	render: (width: number) => string[];
+	invalidate?: () => void;
+}
+
 interface FakePi {
-	tools: Map<string, { execute: (...args: never[]) => Promise<unknown> }>;
+	tools: Map<string, {
+		execute: (...args: never[]) => Promise<unknown>;
+		renderCall?: (args: unknown, theme: unknown) => FakeRenderComponent;
+		renderResult?: (result: unknown, options: unknown, theme: unknown) => FakeRenderComponent;
+	}>;
 	handlers: Map<string, Array<(event: unknown, ctx: unknown) => Promise<unknown>>>;
 	activeTools: string[];
 	registerTool(tool: { name: string; execute: (...args: never[]) => Promise<unknown> }): void;
@@ -279,6 +289,95 @@ describe("ask tool rich dialog path", () => {
 		ui.dialogs[0]!.handleInput("\x1b"); // cancel
 		await expect(pending).rejects.toThrow("Ask tool was cancelled by the user");
 		expect(aborted).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Transcript rendering
+// ---------------------------------------------------------------------------
+
+describe("ask transcript rendering", () => {
+	it("renderCall renders only a summary line, not the question block", () => {
+		const tool = createFakePi().tools.get("ask")!;
+		const component = tool.renderCall!(SINGLE_PARAMS, passthroughTheme);
+		expect(component.render(80).map(line => line.trim())).toEqual(["Ask · 1 question"]);
+	});
+
+	it("renderCall counts multi-question dialogs", () => {
+		const tool = createFakePi().tools.get("ask")!;
+		const component = tool.renderCall!(
+			{
+				questions: [
+					...SINGLE_PARAMS.questions,
+					{ id: "deploy", question: "Where?", options: [{ label: "prod" }] },
+				],
+			},
+			passthroughTheme,
+		);
+		expect(component.render(80).map(line => line.trim())).toEqual(["Ask · 2 questions"]);
+	});
+
+	it("renderCall tolerates partial or malformed streamed args", () => {
+		const tool = createFakePi().tools.get("ask")!;
+		expect(tool.renderCall!({}, passthroughTheme).render(80).map(line => line.trim())).toEqual(["Ask"]);
+		expect(tool.renderCall!({ questions: "double-encoded" }, passthroughTheme).render(80).map(line => line.trim())).toEqual(["Ask"]);
+	});
+
+	it("result block re-renders when width changes after a resize", () => {
+		const tool = createFakePi().tools.get("ask")!;
+		const component = tool.renderResult!(
+			{
+				content: [{ type: "text", text: "User selected: JWT" }],
+				details: {
+					question: "Which auth method?",
+					options: ["JWT", "Session"],
+					multi: false,
+					selectedOptions: ["JWT"],
+				},
+			} as never,
+			{} as never,
+			passthroughTheme,
+		);
+		const wide = component.render(100);
+		expect(wide.every(line => visibleWidth(line) <= 100)).toBe(true);
+		// Shrinking the terminal must re-render at the new width instead of
+		// returning stale wide lines that the terminal would hardware-wrap.
+		const narrow = component.render(40);
+		expect(narrow.every(line => visibleWidth(line) <= 40)).toBe(true);
+		expect(narrow.some(line => visibleWidth(line) > 40)).toBe(false);
+		expect(narrow[0] && visibleWidth(narrow[0])).toBe(40);
+		// Growing back re-expands (cache is keyed by width, not one-shot).
+		const wideAgain = component.render(100);
+		expect(wideAgain.every(line => visibleWidth(line) <= 100)).toBe(true);
+		expect(wideAgain[0] && visibleWidth(wideAgain[0])).toBe(100);
+	});
+
+	it("result block lines carry no full SGR reset that would punch holes in the tool background", () => {
+		const tool = createFakePi().tools.get("ask")!;
+		const component = tool.renderResult!(
+			{
+				content: [{ type: "text", text: "User selected: JWT" }],
+				details: {
+					question: "Which auth method should the CLI use for long-lived tokens?",
+					options: ["JWT", "Session"],
+					multi: false,
+					selectedOptions: ["JWT"],
+				},
+			} as never,
+			{} as never,
+			passthroughTheme,
+		);
+		// Markdown pads its lines to the render width; if sections render at
+		// the full frame width, row() truncates them and truncateToWidth appends
+		// \x1b[0m, which resets the surrounding toolSuccessBg background and
+		// leaves bg holes on the right edge of those rows.
+		for (const width of [80, 60, 40]) {
+			const lines = component.render(width);
+			expect(lines.length).toBeGreaterThan(0);
+			for (const line of lines) {
+				expect(line.includes("\u001b[0m")).toBe(false);
+			}
+		}
 	});
 });
 

@@ -44,9 +44,10 @@ Each omp-internal surface maps onto the closest public pi extension boundary:
 - **settings `ask.timeout` / `ask.notify`** → `timeoutSeconds` tool parameter + terminal bell, opt-out with
   `PI_OMK_ASK_NOTIFY=0` (pi extensions cannot read pi settings or send desktop notifications).
 - **`ToolAbortError` + `context.abort()`** → `ctx.abort()` + thrown error (cancel aborts the agent turn, omp semantics).
-- **Transcript renderer** — omp merges call+result in one framed block; pi's `renderCall`/`renderResult` slots are
-  separate, each rebuilt with the same frame, markers, notes, custom-input lines, and the
-  `auto-selected after timeout — not a user choice` marker.
+- **Transcript renderer** — omp merges call+result in one framed block that updates in place when the user answers;
+  pi's tool rows append the result render below the call render, so the call slot renders only a `Ask · N questions`
+  summary line while pending, and the result slot renders the full framed question/options/answer block once (same
+  frame, markers, notes, custom-input lines, and the `auto-selected after timeout — not a user choice` marker).
 
 **Dropped (no pi extension surface):** TTS vocalizer, plan-mode timeout suppression, collab guest racing, ACP
 elicitation forms, `/tree` re-answer, `loadMode: "discoverable"`, the draft-editor input guard, and

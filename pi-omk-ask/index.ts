@@ -33,6 +33,13 @@
  *   ToolAbortError + context.abort() → ctx.abort() + thrown Error
  *   ExtensionUIContext.askDialog     → ctx.ui.custom() mounting AskDialogComponent
  *   askToolRenderer (mergeCall+Result) → split pi renderCall/renderResult slots
+ *                                      (call slot renders a summary line
+ *                                      only; the merged question/options/
+ *                                      answer block renders once from the
+ *                                      result slot — pi appends result
+ *                                      renders below call renders, so a
+ *                                      full call block would duplicate the
+ *                                      transcript)
  *
  * omp result semantics are kept verbatim: `User selected: X`, custom input
  * and note blocks, `User answers:` for multi-question, `chatRedirect`, and
@@ -193,75 +200,13 @@ function formatSingleQuestionResponse(result: {
 // Transcript rendering (omp askToolRenderer, split into pi render slots)
 // ---------------------------------------------------------------------------
 
-interface AskRenderOption {
-	label: string;
-	description?: string;
-}
-
-interface AskRenderArgs {
-	question?: string;
-	options?: AskRenderOption[];
-	multi?: boolean;
-	questions?: Array<{
-		id: string;
-		question: string;
-		options: AskRenderOption[];
-		multi?: boolean;
-	}>;
-}
-
-/** Coerce an untrusted option list (streamed or model-mangled call args) into
- *  well-formed render options. Bare strings become labels; entries without a
- *  string label are dropped. (omp ask.ts) */
-function normalizeRenderOptions(raw: unknown): AskRenderOption[] | undefined {
-	if (!Array.isArray(raw)) return undefined;
-	const out: AskRenderOption[] = [];
-	for (const entry of raw) {
-		if (typeof entry === "string") {
-			out.push({ label: entry });
-			continue;
-		}
-		if (!entry || typeof entry !== "object") continue;
-		const { label, description } = entry as Partial<AskRenderOption>;
-		if (typeof label !== "string") continue;
-		out.push(typeof description === "string" ? { label, description } : { label });
-	}
-	return out;
-}
-
-/** Coerce untrusted `questions` call args into a renderable array. Models
- *  occasionally double-encode the array as a JSON string — a bare string passes
- *  a truthy `.length` check but has no `.map`, which used to crash the TUI
- *  render loop. Partially streamed args can also be missing fields. (omp) */
-function normalizeRenderQuestions(raw: unknown): NonNullable<AskRenderArgs["questions"]> | undefined {
-	if (typeof raw === "string") {
-		try {
-			raw = JSON.parse(raw);
-		} catch {
-			return undefined;
-		}
-	}
-	if (!Array.isArray(raw)) return undefined;
-	const out: NonNullable<AskRenderArgs["questions"]> = [];
-	for (const entry of raw) {
-		if (!entry || typeof entry !== "object") continue;
-		const q = entry as Partial<NonNullable<AskRenderArgs["questions"]>[number]>;
-		out.push({
-			id: typeof q.id === "string" ? q.id : "?",
-			question: typeof q.question === "string" ? q.question : "",
-			options: normalizeRenderOptions(q.options) ?? [],
-			multi: q.multi === true,
-		});
-	}
-	return out;
-}
-
 /** omp framedBlock as a pi Component: titled frame with divider-labelled
  *  sections. Section content renders lazily per frame width (omp renders at
  *  `outputBlockContentWidth(width)`; a fixed width would clip on narrow
  *  terminals). */
 class FramedComponent {
 	private lines: string[] | undefined;
+	private cachedWidth: number | undefined;
 	private readonly theme: Theme;
 	private readonly title: string;
 	private readonly sections: Array<{ label?: string; linesFor: (width: number) => readonly string[] }>;
@@ -278,19 +223,32 @@ class FramedComponent {
 
 	invalidate(): void {
 		this.lines = undefined;
+		this.cachedWidth = undefined;
 	}
 
 	render(width: number): string[] {
-		if (this.lines) return [...this.lines];
+		// Cache keyed by width: pi's resize path re-renders the tree with the
+		// new width without calling invalidate() (pi-tui Text convention), so an
+		// unconditional cache would keep stale wide lines after a shrink and the
+		// terminal would hardware-wrap them, garbling the transcript.
+		if (this.lines && this.cachedWidth === width) return [...this.lines];
+		// Render sections at the content width row() actually fits into
+		// (width - 4 for the "│ " insets). Rendering at the full width makes
+		// every padded line (e.g. Markdown, which pads to its render width)
+		// truncate in fit(), and truncation appends a full \x1b[0m reset that
+		// kills the surrounding toolSuccessBg background — leaving bg holes on
+		// the right edge of those rows (omp renders at outputBlockContentWidth).
+		const contentWidth = Math.max(1, width - 4);
 		const out: string[] = [topBorder(this.theme, width, this.title)];
 		for (let i = 0; i < this.sections.length; i++) {
 			const section = this.sections[i]!;
 			if (section.label !== undefined) out.push(row(this.theme, section.label, width));
-			for (const line of section.linesFor(width)) out.push(row(this.theme, line, width));
+			for (const line of section.linesFor(contentWidth)) out.push(row(this.theme, line, width));
 			if (i < this.sections.length - 1) out.push(divider(this.theme, width));
 		}
 		out.push(bottomBorder(this.theme, width));
 		this.lines = out;
+		this.cachedWidth = width;
 		return [...out];
 	}
 }
@@ -321,19 +279,6 @@ function renderNoteLines(uiTheme: Theme, note: string, width: number): string[] 
 function optionMarker(uiTheme: Theme, multi: boolean | undefined, selected: boolean): string {
 	if (multi) return selected ? SYMBOLS.checkbox.checked : SYMBOLS.checkbox.unchecked;
 	return selected ? SYMBOLS.radio.selected : SYMBOLS.radio.unselected;
-}
-
-function renderQuestionOptionLines(uiTheme: Theme, options: AskRenderOption[], multi: boolean | undefined): string[] {
-	const out: string[] = [];
-	for (const opt of options) {
-		const optLabel = renderInlineMarkdown(opt.label, t => uiTheme.fg("muted", t));
-		out.push(` ${uiTheme.fg("dim", optionMarker(uiTheme, multi, false))} ${optLabel}`);
-		if (opt.description?.trim()) {
-			const description = renderInlineMarkdown(opt.description.trim(), t => uiTheme.fg("dim", t));
-			out.push(`   ${uiTheme.fg("dim", "↳")} ${description}`);
-		}
-	}
-	return out;
 }
 
 function renderAnswerOptionLines(
@@ -676,51 +621,17 @@ export default function ompAskExtension(pi: ExtensionAPI): void {
 			return { content: [{ type: "text" as const, text: responseText }], details };
 		},
 
-		renderCall(args: AskRenderArgs, theme) {
-			const mdTheme = getMarkdownTheme();
-			const md = (text: string, width: number): readonly string[] =>
-				new Markdown(text, 1, 0, mdTheme, { color: t => theme.fg("accent", t) }).render(Math.max(1, width));
-
-			const questions = normalizeRenderQuestions(args.questions);
-			if (questions && questions.length > 0) {
-				const title = `Ask ${theme.fg("muted", `${questions.length} questions`)}`;
-				return new FramedComponent(
-					theme,
-					title,
-					questions.map(q => {
-						const meta: string[] = [];
-						if (q.multi) meta.push("multi");
-						if (q.options?.length) meta.push(`options:${q.options.length}`);
-						const metaStr = meta.length > 0 ? theme.fg("dim", ` · ${meta.join(" · ")}`) : "";
-						return {
-							label: `${theme.fg("dim", `[${q.id}]`)}${metaStr}`,
-							linesFor: width =>
-								q.options?.length
-									? [...md(q.question, width), ...renderQuestionOptionLines(theme, q.options, q.multi)]
-									: md(q.question, width),
-						};
-					}),
-				);
-			}
-
-			if (typeof args.question !== "string" || !args.question) {
-				return new Text(theme.fg("error", "Ask: No question provided"), 0, 0);
-			}
-
-			const question: string = args.question;
-			const meta: string[] = [];
-			if (args.multi) meta.push("multi");
-			const questionOptions = normalizeRenderOptions(args.options);
-			if (questionOptions?.length) meta.push(`options:${questionOptions.length}`);
-			const title = `Ask${meta.length > 0 ? theme.fg("dim", ` · ${meta.join(" · ")}`) : ""}`;
-			return new FramedComponent(theme, title, [
-				{
-					linesFor: width =>
-						questionOptions?.length
-							? [...md(question, width), ...renderQuestionOptionLines(theme, questionOptions, args.multi)]
-							: md(question, width),
-				},
-			]);
+		renderCall(args: { questions?: unknown }, theme) {
+			// omp updates the framed question block in place once the user
+			// answers; pi's ToolExecutionComponent appends the result render
+			// below the call render, so a full question block here would leave
+			// the transcript with every question shown twice. Render only a
+			// tense-neutral summary line (it also appears in HTML export above
+			// the result block); the merged question/options/answer block
+			// renders once from renderResult after the dialog settles.
+			const count = Array.isArray(args.questions) ? args.questions.length : 0;
+			const summary = count > 0 ? `Ask · ${count} ${count === 1 ? "question" : "questions"}` : "Ask";
+			return new Text(theme.fg("dim", summary), 0, 0);
 		},
 
 		renderResult(result, _options, theme) {

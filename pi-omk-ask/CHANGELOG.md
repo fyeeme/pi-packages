@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Transcript no longer shows the questions twice around an ask: `renderCall` now renders only a `Ask · N questions`
+  summary line while the dialog is pending, and the full framed question/options/answer block renders once from
+  `renderResult` after the user answers. omp updates the framed block in place; pi's `ToolExecutionComponent` appends
+  result renders below call renders, so the call-side block was removed instead of duplicated. The call-side
+  streaming-args normalization (`normalizeRenderOptions`/`normalizeRenderQuestions`) became dead code and was removed.
+
 ## [0.1.0] - 2026-08-23
 
 ### Fixed
