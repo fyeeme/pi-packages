@@ -1,0 +1,50 @@
+{
+  "name": "@fyeeme/pi-subagents",
+  "version": "0.1.0",
+  "description": "General-purpose subagent fan-out for pi: a `subagent` tool (single/parallel/chain) spawning real pi subprocesses, three-source agent discovery (user/project/bundled), plus the shared dispatch core (spawnAgent, per-call abort, maxTurns budget, concurrency ceiling) and the live agent UI (above-editor widget, FleetView, /agents). Successor of @fyeeme/pi-subagent-core.",
+  "type": "module",
+  "main": "index.ts",
+  "license": "MIT",
+  "author": "fyeeme",
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "pi",
+    "pi-package",
+    "subagent",
+    "fan-out",
+    "dispatch",
+    "multi-agent"
+  ],
+  "files": [
+    "*.ts",
+    "src/**/*.ts",
+    "agents/**/*.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest --run",
+    "typecheck": "tsc"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.84.1",
+    "@earendil-works/pi-coding-agent": ">=0.84.1",
+    "@earendil-works/pi-tui": ">=0.84.1",
+    "typebox": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.84.1",
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-tui": "0.84.1",
+    "@types/node": "22.19.19",
+    "typebox": "1.1.38",
+    "typescript": "5.9.3"
+  }
+}
