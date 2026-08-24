@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.0.0] - 2026-08-25
 
+**Major release — first npm publication under the `@fyeeme/pi-subagents` name** (successor of `@fyeeme/pi-subagent-core` 0.5.0, now retired). The head of the 2.0 extensions family wave (pi-review / pi-dynamic-workflows compose this package as their fan-out engine). Highlights: the composition architecture (consumers call `piSubagents(pi)` from their version-pinned dependency copy; the `subagent` tool registers exactly once per process via a globalThis guard, so consumer + standalone installs coexist), workflow prompt presets (`/implement`, `/scout-and-plan`, `/implement-and-review`), the `/reload` registration fix, and the whitelist-by-default recursion guard.
+
 ### Added
 
 - `prompts/` workflow presets from the reference example (`examples/extensions/subagent/prompts/`), registered as pi prompt commands via the new `pi.prompts` manifest entry: `/implement` (scout → planner → worker), `/scout-and-plan` (scout → planner), `/implement-and-review` (worker → reviewer → worker). The root layout now mirrors the example one-to-one (index.ts / agents.ts / agents/ / prompts/); `src/` carries the inherited core layer beneath it.

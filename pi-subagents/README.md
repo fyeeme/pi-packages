@@ -1,5 +1,12 @@
 # @fyeeme/pi-subagents
 
+**2.0.0 — major release**, head of the 2.0 extensions family wave (pi-review and pi-dynamic-workflows compose this package as their fan-out engine):
+
+- **Composition architecture** — consumers call `piSubagents(pi)` inside their own factories; tool + UI light up from the version-pinned dependency copy, and the `subagent` tool registers exactly once per process (globalThis guard) so a standalone install coexists with any consumer.
+- **Workflow prompt presets** — `/implement`, `/scout-and-plan`, `/implement-and-review` chain recipes over the bundled agents, registered via the `pi.prompts` manifest.
+- **Reload-safe registration** — `session_shutdown(reload)` releases the tool-registration guard, so the `subagent` tool survives `/reload` (previously it silently vanished until restart).
+- **Whitelist-by-default recursion guard** — spawned children load without the fan-out tool unless the agent definition explicitly opts in; env-capped depth.
+
 General-purpose subagent fan-out for [pi](https://github.com/earendil-works/pi-mono): a `subagent` tool (single / parallel / chain) spawning real `pi --mode json -p --no-session` subprocesses, three-source agent discovery, the shared dispatch core, and the live agent UI. Successor of `@fyeeme/pi-subagent-core` (absorbed; the old package is retired once pi-review and pi-dynamic-workflows switch their imports here).
 
 ## What ships
