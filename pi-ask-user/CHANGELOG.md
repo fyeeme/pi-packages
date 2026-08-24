@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-25
+
+**Major release — first npm publication.** Ships as part of the 2.0 extensions family wave (pi-review / pi-dynamic-workflows / pi-subagents). Highlights below.
+
 ### Added
 
 - Review page: multi-question dialogs summarize all answers (custom inputs, notes, unanswered warnings) after the last question; `enter` confirms, `left` revises before submitting. Single-question dialogs keep submitting immediately.

@@ -1,5 +1,12 @@
 # pi-ask-user
 
+**2.0.0 — first npm release**, part of the 2.0 extensions family wave. Release highlights:
+
+- **Review page** — multi-question dialogs summarize every answer (custom inputs, notes, unanswered warnings) before submitting; `enter` confirms, `left` revises.
+- **Inline free-text editor** — `Other` answers and notes type directly inside the dialog (option list stays visible, `esc` returns, empty submit declines).
+- **Numbered options** — rows render `1. label` and answers echo the number back (`auth: 1. JWT`), plus a per-question status strip and `tab`/`shift+tab` navigation.
+- Selection semantics hardened: single-select no longer stacks markers, multi-select `enter` with nothing checked is a no-op, custom `Other` answers clear stale checkboxes.
+
 Structured `ask_user` tool for [pi](https://github.com/earendil-works/pi-coding-agent). It lets the LLM surface clarifying questions with selectable options while it works, instead of guessing when choices have materially different tradeoffs.
 
 Ported from the interactive ask flow of [oh-my-pi](https://github.com/can1357/oh-my-pi), adapted to pi's public extension API.
