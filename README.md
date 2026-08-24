@@ -2,12 +2,26 @@
 
 This directory contains official extensions for [pi](https://github.com/earendil-works/pi-coding-agent). Each extension is a standalone package that hooks into pi's `ExtensionAPI` to add functionality.
 
+## 2.0.0 family release (2026-08-25)
+
+A coordinated **major-version wave** across the sub-agent ecosystem:
+
+- **[@fyeeme/pi-subagents 2.0.0](./pi-subagents)** — first npm release of the fan-out engine (subagent tool, dispatch core, live agent UI, workflow prompt presets); consumers compose its extension factory from a version-pinned npm dependency.
+- **[@fyeeme/pi-review 2.0.0](./pi-review)** — sandwich refactor: methodology skills + orchestration prompts as data + 12 bundled finder/cleaner/verifier agents, composing pi-subagents for fan-out.
+- **[@fyeeme/pi-dynamic-workflows 2.0.0](./pi-dynamic-workflows)** — composed sub-agent stack, journaled resumable runs, per-call budget override.
+- **[@fyeeme/pi-ask-user 2.0.0](./pi-ask-user)** — first npm release: structured `ask_user` dialogs with review page, inline editor, numbered options.
+- **[@fyeeme/pi-omp-ask 2.0.0](./pi-omp-ask)** — first npm release: oh-my-pi's tabbed `ask` dialog ported to pi's extension API.
+
+All five install with `pi install npm:@fyeeme/<name>`; pi-review and pi-dynamic-workflows pull pi-subagents from npm automatically (no manual wiring).
+
+## Extensions
+
 ## Extensions
 
 | Package | Description |
 |---------|-------------|
 | [pi-ask-user](./pi-ask-user) | Structured `ask_user` tool — multi-question clarifying prompts with options, multi-select, recommended defaults, and free-form Other input |
-| [pi-omk-ask](./pi-omk-ask) | oh-my-pi's `ask` tool migrated to a pi extension — source port of the tabbed ask dialog (review tab, notes, markdown/code previews, inactivity countdown), legacy per-question selector path, and omp result semantics |
+| [pi-omp-ask](./pi-omp-ask) | oh-my-pi's `ask` tool migrated to a pi extension — source port of the tabbed ask dialog (review tab, notes, markdown/code previews, inactivity countdown), legacy per-question selector path, and omp result semantics |
 | [pi-dynamic-workflows](./pi-dynamic-workflows) | Deterministic TypeScript workflow orchestration — declarative typed steps with resumable, budget-bounded, abortable execution |
 | [pi-hooks](./pi-hooks) | Claude Code-compatible hooks runner — reads `.pi/hooks.json` and maps lifecycle events to hook scripts |
 | [pi-mermaid-viewer](./pi-mermaid-viewer) | Renders Mermaid diagrams from conversations as an HTML page in the default browser |
