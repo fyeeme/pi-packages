@@ -20,6 +20,12 @@
 
 ---
 
+**开箱即用**：本包的扩展工厂会组合
+[`@fyeeme/pi-subagents`](https://www.npmjs.com/package/@fyeeme/pi-subagents)
+（实时代理 UI——编辑器上方 widget、FleetView、`/agents`——以及 `subagent`
+工具），且版本钉定在自身依赖副本上，工作流运行的可观测性开箱即得。
+单独安装 pi-subagents 是可选的，二者可共存（组合幂等）。
+
 ## 安装
 
 这是一个 pi 扩展包（workspace / 本地），尚未发布到 npm。在 pi workspace 中：
@@ -28,7 +34,7 @@
 npm install --ignore-scripts   # 水合（本包是 workspace 依赖）
 ```
 
-这会解析 npm registry 上的 [`@fyeeme/pi-subagent-core`](https://www.npmjs.com/package/@fyeeme/pi-subagent-core)（`^0.5.0`，无需保持同级仓库目录结构）。
+这会解析 npm registry 上的 [`@fyeeme/pi-subagents`](https://www.npmjs.com/package/@fyeeme/pi-subagents)（无需保持同级仓库目录结构）。
 
 随后从包根模块导入公共 API（TypeScript barrel，包直接以 `.ts` 源码分发）：
 
@@ -36,7 +42,7 @@ npm install --ignore-scripts   # 水合（本包是 workspace 依赖）
 import { defineWorkflow, runWorkflow } from "@fyeeme/pi-dynamic-workflows/src/index.ts";
 ```
 
-> 包的 `pi.extensions` 入口注册 `run_workflow` 工具，并接入 pi-subagent-core 的共享子代理 UI（编辑器上方实时 agent widget、下方 FleetView、`/agents` 转录查看器——每个工作流 agent 以其 step id 出现在其中）。引擎本身也可经上述导入直接使用。
+> 包的 `pi.extensions` 入口注册 `run_workflow` 工具，并接入 pi-subagents 的共享子代理 UI（编辑器上方实时 agent widget、下方 FleetView、`/agents` 转录查看器——每个工作流 agent 以其 step id 出现在其中；需先安装 @fyeeme/pi-subagents，见上方提示）。引擎本身也可经上述导入直接使用。
 
 ---
 

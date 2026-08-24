@@ -6,7 +6,7 @@
  * monitor `displayName` for the shared sub-agent UI). The former ANSI color
  * helpers + fmtTokens were progress-widget/`/wf-inspect` rendering aids and
  * were removed together with those surfaces (live progress is now rendered by
- * the shared @fyeeme/pi-subagent-core extension).
+ * the shared @fyeeme/pi-subagents extension).
  */
 
 /** Extract the step id from a callId of the form `${stepId}#${n}` (e.g.

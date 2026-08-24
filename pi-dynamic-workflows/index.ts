@@ -6,7 +6,7 @@
  * only adapts the agent's JSON args into the code-form WorkflowDefinition and
  * runs it with the default dispatch (real `pi --mode json` subprocesses).
  *
- * Live progress UI is delegated to the shared `@fyeeme/pi-subagent-core`
+ * Live progress UI is delegated to the shared `@fyeeme/pi-subagents`
  * extension (registered via the `pi.extensions` manifest alongside this
  * entry): every spawned workflow agent notifies the process-global monitor
  * through spawnAgent, rendering in the shared above-editor agent widget, the
@@ -16,9 +16,11 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import piSubagents from "@fyeeme/pi-subagents";
 import { defineWorkflow, runWorkflow } from "./src/index.ts";
 import type { Budget, StepContext, StepDefinition, WorkflowDefinition } from "./src/types.ts";
 import { WorkflowError } from "./src/errors.ts";
+import { discoverWorkflowLibrary, loadLibraryWorkflow } from "./src/library.ts";
 
 // ---------------------------------------------------------------------------
 // Parameter schema (the JSON-serializable workflow subset)
@@ -103,7 +105,30 @@ const WorkflowSchema = Type.Object({
 });
 
 const RunWorkflowParams = Type.Object({
-	workflow: WorkflowSchema,
+	source: Type.Optional(
+		Type.Union([Type.Literal("inline"), Type.Literal("library")], {
+			description:
+				'Where the workflow comes from. "inline" (default): the `workflow` parameter (JSON subset). "library": a named workflow from the discovered library (bundled workflows/ + project .pi/workflows/lib/, project overrides bundled) — full step set incl. loop_until, loaded through the determinism guard.',
+			default: "inline",
+		}),
+	),
+	name: Type.Optional(
+		Type.String({ description: 'Library workflow name (required for source: "library").' }),
+	),
+	workflow: Type.Optional(WorkflowSchema),
+	budget: Type.Optional(
+		Type.Object(
+			{
+				maxAgents: Type.Optional(Type.Number()),
+				maxTokens: Type.Optional(Type.Number()),
+				maxDurationMs: Type.Optional(Type.Number()),
+			},
+			{
+				description:
+					"Per-call budget override (library mode only — inline workflows declare budget inside `workflow.budget`). Fields merge over the workflow definition's own budget; use it to tighten a library workflow for a large input without editing the definition. Omitted fields keep the definition's values.",
+			},
+		),
+	),
 	input: Type.Optional(Type.String({ description: "Initial ctx.input (also {{input}} in prompts)" })),
 	cwd: Type.Optional(Type.String({ description: "Working dir + journal base. Default: session cwd" })),
 	now: Type.Optional(Type.Number({ description: "Deterministic inception ms (resume seed). Default: Date.now()" })),
@@ -287,6 +312,13 @@ function dropInvalidModel(id: string, model: string | undefined, validIds: Set<s
 }
 
 export default function (pi: ExtensionAPI): void {
+	// Compose the subagent stack (live agent UI — widget / FleetView /agents —
+	// and the `subagent` tool) from the pinned dependency copy. The tool
+	// registers exactly once per process (guard in pi-subagents' index.ts):
+	// coexists with a standalone pi-subagents install and with other consumers
+	// (pi-review) composing it.
+	piSubagents(pi);
+
 	pi.registerTool({
 		name: "run_workflow",
 		label: "Run workflow",
@@ -301,38 +333,94 @@ export default function (pi: ExtensionAPI): void {
 		parameters: RunWorkflowParams,
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			// Scoped-models: when the session restricts models (--models /
-			// enabledModels), validate step models against that scope; otherwise
-			// fall back to the full registry. Invalid ids (e.g. "sonnet") are
-			// dropped so the subprocess uses the default session model.
-			const scoped = ctx.scopedModels;
-			const validIds = scoped && scoped.length > 0
-				? new Set(scoped.map((s) => s.model.id))
-				: new Set(ctx.modelRegistry.getAll().map((m) => m.id));
-			const dropped: string[] = [];
-			const sanitizedSteps = params.workflow.steps.map((s) => {
-				const model = "model" in s ? dropInvalidModel(s.id, s.model, validIds, dropped) : undefined;
-				if (s.type === "classify_route") {
-					// Route/fallback sub-step models must be sanitized too — the schema
-					// promises "Invalid ids are dropped", which routeStepToCode otherwise
-					// passes straight through to the subprocess.
-					const routes = Object.fromEntries(
-						Object.entries(s.routes).map(([cat, rs]) => [
-							cat,
-							rs.map((r) => ({ ...r, model: dropInvalidModel(`${s.id}.${r.id}`, r.model, validIds, dropped) })),
-						]),
-					) as typeof s.routes;
-					const fallback = s.fallback?.map((r) => ({ ...r, model: dropInvalidModel(`${s.id}.${r.id}`, r.model, validIds, dropped) }));
-					return { ...s, model, routes, fallback };
+			// Library mode: resolve the named workflow from the discovered
+			// library (ast-guard + jiti via the existing loader), then run it
+			// through the same runner as inline mode. Unknown name → list the
+			// available workflows instead of spawning anything.
+			let workflowDef: WorkflowDefinition | undefined;
+			if (params.source === "library") {
+				if (!params.name)
+					return {
+						content: [{ type: "text" as const, text: 'run_workflow: source "library" requires a workflow `name`.' }],
+						details: { error: "missing name" },
+						isError: true,
+					};
+				try {
+					const entry = await loadLibraryWorkflow(params.name, params.cwd ?? ctx.cwd);
+					if (!entry) {
+						const lib = await discoverWorkflowLibrary(params.cwd ?? ctx.cwd);
+						const available = [...lib.values()]
+							.map((e) => `- ${e.name}${e.description ? ` — ${e.description}` : ""} (${e.filePath})`)
+							.join("\n");
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: `run_workflow: no library workflow named "${params.name}". Available:\n${available || "(none)"}`,
+								},
+							],
+							details: { error: `unknown workflow: ${params.name}` },
+							isError: true,
+						};
+					}
+					workflowDef = entry.workflow;
+				} catch (e) {
+					const msg = e instanceof Error ? e.message : String(e);
+					return { content: [{ type: "text" as const, text: `run_workflow failed: ${msg}` }], details: { error: msg }, isError: true };
 				}
-				return { ...s, model };
-			});
-			if (dropped.length > 0) {
-				ctx.ui.notify(`Invalid model(s) dropped, using default: ${dropped.join(", ")}`, "warning");
+			} else {
+				if (!params.workflow)
+					return {
+						content: [{ type: "text" as const, text: 'run_workflow: provide either a `workflow` (inline) or `name` with source "library".' }],
+						details: { error: "missing workflow" },
+						isError: true,
+					};
 			}
-			const sanitizedWorkflow = { ...params.workflow, steps: sanitizedSteps };
-			try {
-				const workflow = buildWorkflow(sanitizedWorkflow);
+
+				try {
+					let workflow: WorkflowDefinition;
+					if (params.source === "library") {
+						// Library workflows are authored TS (models already validated at
+						// authoring time; the determinism guard ran at load). A per-call
+						// `budget` merges over the definition's own budget.
+						workflow =
+							workflowDef && params.budget
+								? { ...workflowDef, budget: { ...workflowDef.budget, ...params.budget } }
+								: workflowDef!;
+					} else {
+					// Scoped-models: when the session restricts models (--models /
+					// enabledModels), validate step models against that scope; otherwise
+					// fall back to the full registry. Invalid ids (e.g. "sonnet") are
+					// dropped so the subprocess uses the default session model.
+					const scoped = ctx.scopedModels;
+					const validIds =
+						scoped && scoped.length > 0
+							? new Set(scoped.map((s) => s.model.id))
+							: new Set(ctx.modelRegistry.getAll().map((m) => m.id));
+					const dropped: string[] = [];
+					const sanitizedSteps = params.workflow!.steps.map((s) => {
+						const model = "model" in s ? dropInvalidModel(s.id, s.model, validIds, dropped) : undefined;
+						if (s.type === "classify_route") {
+							// Route/fallback sub-step models must be sanitized too — the schema
+							// promises "Invalid ids are dropped", which routeStepToCode otherwise
+							// passes straight through to the subprocess.
+							const routes = Object.fromEntries(
+								Object.entries(s.routes).map(([cat, rs]) => [
+									cat,
+									rs.map((r) => ({ ...r, model: dropInvalidModel(`${s.id}.${r.id}`, r.model, validIds, dropped) })),
+								]),
+							) as typeof s.routes;
+							const fallback = s.fallback?.map((r) => ({ ...r, model: dropInvalidModel(`${s.id}.${r.id}`, r.model, validIds, dropped) }));
+							return { ...s, model, routes, fallback };
+						}
+						return { ...s, model };
+					});
+					if (dropped.length > 0) {
+						ctx.ui.notify(`Invalid model(s) dropped, using default: ${dropped.join(", ")}`, "warning");
+					}
+					const sanitizedWorkflow = { ...params.workflow!, steps: sanitizedSteps };
+					workflow = buildWorkflow(sanitizedWorkflow);
+				}
 				const result = await runWorkflow({
 					workflow,
 					input: params.input,

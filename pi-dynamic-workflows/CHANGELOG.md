@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Extension wiring rebuilt on composition: the `pi.extensions` manifest no longer loads `./node_modules/@fyeeme/pi-subagents/extension.ts` (the path hack); instead this package's factory calls pi-subagents' exported extension factory (`piSubagents(pi)`), lighting the agent UI out of the box from the version-pinned dependency copy. A standalone pi-subagents install coexists (idempotent composition guard).
+
+### Added
+
+- `run_workflow` per-call `budget` override (library mode): fields merge over the workflow definition's own budget, making the wf-review prompt's "halve maxAgents for large diffs" guidance an actual parameter instead of a dead instruction.
+
+### Fixed
+
+- Seed workflows `review-local-diff` / `review-extension` now use `import type` (erased at load): the "single-file" determinism claim holds mechanically, and a project author copying a seed's import style into `.pi/workflows/lib/` no longer produces an unresolvable path that bricks the whole library discovery. workflow-author skill checklist updated to match (type-only imports or plain objects; never value-import the engine relatively).
+- `src/library.ts` comments corrected to describe the real fail-fast policy (a file failing the guard/import aborts discovery naming the file; shape-invalid files are skipped silently) — the previous inline comment claimed sibling isolation that the code (and test) intentionally do not provide.
+
+## [1.2.0] - 2026-08-24
+
+Sandwich refactor (openspec change `subagent-sandwich-refactor`): workflows gain a persistence layer; the dispatch dependency moves to `@fyeeme/pi-subagents`.
+
+### Breaking Changes
+
+- Dependency `@fyeeme/pi-subagent-core` replaced by `@fyeeme/pi-subagents` (same dispatch API surface — `spawnAgent`, `mapWithConcurrencyLimit`, `createSpawnRegistry`, `abortAgent`, `getPiInvocation` — import source change only). The `pi.extensions` entry now loads `./node_modules/@fyeeme/pi-subagents/extension.ts`.
+
+### Added
+
+- `run_workflow` library mode: `source: "library"` + `name` resolves a named `.ts` workflow from the discovered library — bundled `workflows/` plus project `.pi/workflows/lib/` (project overrides bundled, walk-up discovery, drop-in registration). Library files go through the existing jiti loader with the ast determinism guard and carry the full step set (incl. `loop_until`, TS-only). Unknown names list the available workflows.
+- Seed library workflows distilled from pipelines actually run in this repository: `review-local-diff` (fan_out 5 finders → adversarial verify) and `review-extension` (per-package reviewers).
+- `/wf-review` orchestration prompt (`prompts/`, registered via `pi.prompts`) and the `workflow-author` skill (`pi.skills`): step-type selection, rubric writing, the single-file determinism constraint, declared budget/parallelism, resume semantics.
+
+### Changed
+
+- Inline JSON mode unchanged; the engine (runner/budget/cache/planner) is untouched — 175 pre-existing tests pass without modification.
+
 ## [1.1.0] - 2026-08-24
 
 ### Changed

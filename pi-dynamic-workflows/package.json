@@ -1,6 +1,6 @@
 {
   "name": "@fyeeme/pi-dynamic-workflows",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Deterministic TypeScript workflow orchestration for pi. Fuses the pi-dynamic-workflows design (declarative graph, 10 step primitives, heuristic planner, outcome collectors) with Claude Code's workflow engine coordination mechanisms (deterministic sandbox, cache-key resume, per-agent abort map, dynamic budget, runaway caps).",
   "type": "module",
   "license": "MIT",
@@ -22,14 +22,22 @@
     "*.ts",
     "src/**/*.ts",
     "sessions/**/*.ts",
+    "workflows/**/*.ts",
+    "skills/**/*.md",
+    "prompts/**/*.md",
     "README.md",
     "README.zh-CN.md",
     "LICENSE"
   ],
   "pi": {
     "extensions": [
-      "./index.ts",
-      "./node_modules/@fyeeme/pi-subagent-core/sub-agent.ts"
+      "./index.ts"
+    ],
+    "skills": [
+      "skills/workflow-author"
+    ],
+    "prompts": [
+      "prompts"
     ]
   },
   "scripts": {
@@ -37,7 +45,7 @@
     "typecheck": "tsc"
   },
   "dependencies": {
-    "@fyeeme/pi-subagent-core": "^0.5.0"
+    "@fyeeme/pi-subagents": "file:../pi-subagents"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.84.1",

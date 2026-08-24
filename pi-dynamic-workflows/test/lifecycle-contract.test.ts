@@ -138,7 +138,7 @@ describe("live output capture", () => {
 	});
 });
 
-describe("shared-monitor displayName (pi-subagent-core UI)", () => {
+describe("shared-monitor displayName (pi-subagents UI)", () => {
 	it("dispatches carry displayName = step id for the shared agent widget", async () => {
 		const names = new Map<string, string | undefined>();
 		const dispatch = makeFakeDispatch({

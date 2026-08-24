@@ -3,7 +3,7 @@
  *
  * The core spawn primitive (`spawnAgent`, `mapWithConcurrencyLimit`,
  * `createSpawnRegistry`, `abortAgent`, `getPiInvocation` + the registry/
- * options/result types) lives in the shared `@fyeeme/pi-subagent-core`
+ * options/result types) lives in the shared `@fyeeme/pi-subagents`
  * package — extracted from the duplicate copies that used to live here and
  * in pi-review. This module keeps the workflows-specific layer on top:
  * `skipAgent`/`retryAgent` (with `AbortReason` semantics) and the lifecycle
@@ -19,7 +19,7 @@
  */
 import type { AgentLifecycleListeners } from "../lifecycle.ts";
 import { notifyRetry, notifySkip } from "../lifecycle.ts";
-import type { AgentSpawnRegistry } from "@fyeeme/pi-subagent-core";
+import type { AgentSpawnRegistry } from "@fyeeme/pi-subagents";
 
 // Re-export the core dispatch surface so existing importers of this module
 // (`../agent/dispatch.ts`) keep working unchanged.
@@ -29,7 +29,7 @@ export {
 	getPiInvocation,
 	mapWithConcurrencyLimit,
 	spawnAgent,
-} from "@fyeeme/pi-subagent-core";
+} from "@fyeeme/pi-subagents";
 export type {
 	AgentAbortMap,
 	AgentCallId,
@@ -37,7 +37,7 @@ export type {
 	AgentSpawnRegistry,
 	AgentSpawnResult,
 	AgentUsage,
-} from "@fyeeme/pi-subagent-core";
+} from "@fyeeme/pi-subagents";
 
 export type AbortReason = "user-skip" | "user-retry";
 

@@ -3,7 +3,7 @@
  *
  * Thin barrel over src/agent/dispatch.ts: the spawn registry + per-agent
  * abort primitives. The core spawn implementation lives in
- * `@fyeeme/pi-subagent-core`; skip/retry (workflows-specific) stay in
+ * `@fyeeme/pi-subagents`; skip/retry (workflows-specific) stay in
  * dispatch.ts.
  */
 export {

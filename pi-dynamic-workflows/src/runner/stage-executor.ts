@@ -986,7 +986,7 @@ function dispatchOpts(
 		signal,
 		allowChildRecursion,
 		// UI display name for the shared sub-agent widget/FleetView (purely
-		// observational metadata consumed by the pi-subagent-core monitor): the
+		// observational metadata consumed by the pi-subagents monitor): the
 		// step id ("fan", "adv"), so workflow rows are distinguishable from other
 		// agents. Cache hits never spawn, so they never appear — zero dispatch.
 		displayName: stepIdOf(callId),
