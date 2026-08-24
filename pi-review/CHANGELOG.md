@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.0.0] - 2026-08-25
 
+**Major release** (from 1.1.1), headlined by the sandwich refactor: methodology lives in skills, orchestration strategy is prompt-template data, review angles are subagent definitions, and the plugin entry composes `@fyeeme/pi-subagents` 2.0.0 from npm as the fan-out engine. Command renames are breaking (`/code-review` → `/review`, `/code-simplify` → `/simplify`). Highlights below.
+
 ### Breaking Changes
 
 - Extension wiring rebuilt on composition: the `pi.extensions` manifest no longer loads `./node_modules/@fyeeme/pi-subagents/extension.ts` (the path hack); instead this package's factory calls pi-subagents' exported extension factory (`piSubagents(pi)`). Single-install works out of the box with the tool/UI version-pinned to this package's dependency copy; a standalone pi-subagents install coexists (idempotent composition guard).

@@ -1,5 +1,19 @@
 # @fyeeme/pi-review (v2)
 
+**2.0.0 — major release** (from 1.1.1), part of the 2.0 extensions family wave:
+
+- **Sandwich architecture** — skills carry the methodology, `prompts/` carries the orchestration strategy as data (parallel-when guards in frontmatter, phases in the body), `agents/` carries the 12 review roles (finder A–E, cleaner-reuse/simplification/efficiency, altitude, conventions, verifier, gap-hunter), and a thin plugin entry composes the stack.
+
+- **Batteries-included fan-out** — the entry composes [`@fyeeme/pi-subagents`](https://www.npmjs.com/package/@fyeeme/pi-subagents) 2.0.0 from its npm dependency: the `subagent` tool, real `pi` subprocess spawning, and the live agent UI (widget / FleetView / `/agents`) work out of the box.
+
+- **`review_report` structured findings sink** — Chinese Markdown rendered back to the conversation plus machine-readable JSON under `<cwd>/.pi/review/` for CI, `--fix` re-reports, and `--comment`.
+
+- **Effort levels with CC-parity semantics** — `/review [low|medium|high|xhigh|max]`: quad tuples `{correctnessAngles, perAngle, maxFindings, sweep}`, grouped-by-location independent verification, and the xhigh/max gap-hunt.
+
+- **`/simplify` dual-mode** — the dispatcher measures context usage and diff size against the declared strategy, then renders either the PARALLEL template (4 cleaner agents via `subagent`) or the SINGLE-PASS one.
+
+- Breaking: commands renamed `/code-review` → `/review`, `/code-simplify` → `/simplify`.
+
 Review & cleanup assets for [pi](https://github.com/earendil-works/pi-mono), in the sandwich shape (skills + prompts + agents on top of a thin plugin entry):
 
 ```
@@ -45,17 +59,16 @@ Edit the file, the strategy changes. The dispatcher only executes what the templ
 
 ## Requirements
 
-None beyond this package. `@fyeeme/pi-subagents` is a regular npm dependency whose extension factory this entry composes (tool + UI, version-pinned to this package's `node_modules` copy). The four cleaner agents and the finder/verifier/gap-hunter definitions ship with this package, registered via `addAgentDir` at extension load.
+None beyond this package. `@fyeeme/pi-subagents` 2.0.0 is a regular npm dependency (exact-pinned) whose extension factory this entry composes (tool + UI). The four cleaner agents and the finder/verifier/gap-hunter definitions ship with this package, registered via `addAgentDir` at extension load.
 
 ## Development
 
 ```
-npm install --ignore-scripts   # links ../pi-subagents via file: dependency
+npm install --ignore-scripts   # @fyeeme/pi-subagents resolves from the npm registry
 npm test                       # vitest
 npm run typecheck
 ```
 
-Dev smoke-testing needs only this package's extension dir linked — the
-composed subagent stack loads from the `file:` dependency in `node_modules`.
-Before publishing: replace the `file:../pi-subagents` dependency with the
-published version range.
+To test local pi-subagents changes alongside this package, temporarily point the
+dependency back at the sibling checkout (`file:../pi-subagents`) and reinstall;
+restore the pinned registry version before publishing.
