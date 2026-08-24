@@ -19,9 +19,7 @@
  */
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import * as fs from "node:fs";
 import * as os from "node:os";
-import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -53,13 +51,6 @@ const PER_TASK_OUTPUT_CAP = 50 * 1024;
  * 50 = CC's FORKED_AGENT_DEFAULT_MAX_TURNS.
  */
 const DEFAULT_FANOUT_MAX_TURNS = 50;
-
-/** os.tmpdir() entries swept for stale transcript dirs. */
-const TRANSCRIPT_DIR_PREFIX = "pi-sa-out-";
-/** Transcript dirs older than this are removed on the next fan-out call.
- *  Recent transcripts must survive (the model reads them after the tool
- *  returns); anything older than a day is dead weight on disk. */
-const TRANSCRIPT_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 // Module-level registry so abortAgent can reach in-flight calls. callIds are
 // unique per tool call (toolCallId#index), so a single registry is safe.
@@ -187,9 +178,6 @@ interface SingleResult {
 	errorMessage?: string;
 	aborted?: boolean;
 	step?: number;
-	/** Full conversation transcript file (always written). The inline preview
-	 *  shows the final text only; the model may read this file for details. */
-	transcriptPath?: string;
 }
 
 interface SubagentDetails {
@@ -239,45 +227,6 @@ function getDisplayItems(messages: Message[]): DisplayItem[] {
 		}
 	}
 	return items;
-}
-
-/** Write one agent's full conversation transcript to a temp file. Failure is
- *  non-fatal (the inline output still carries the final report). */
-async function writeTranscript(callId: string, messages: Message[]): Promise<string | undefined> {
-	try {
-		const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), `${TRANSCRIPT_DIR_PREFIX}`));
-		const safeName = callId.replace(/[^\w.-]+/g, "_");
-		const filePath = path.join(dir, `transcript-${safeName}.json`);
-		await fs.promises.writeFile(filePath, JSON.stringify(messages, null, 1), {
-			encoding: "utf-8",
-			mode: 0o600,
-		});
-		return filePath;
-	} catch {
-		return undefined;
-	}
-}
-
-/** Remove transcript dirs older than TRANSCRIPT_RETENTION_MS. Recent ones
- *  survive (the model may still read them); failures are ignored. */
-function sweepStaleTranscripts(): void {
-	try {
-		const tmp = os.tmpdir();
-		for (const entry of fs.readdirSync(tmp, { withFileTypes: true })) {
-			if (!entry.name.startsWith(TRANSCRIPT_DIR_PREFIX) || !entry.isDirectory()) continue;
-			const dir = path.join(tmp, entry.name);
-			try {
-				const st = fs.statSync(dir);
-				if (Date.now() - st.mtimeMs > TRANSCRIPT_RETENTION_MS) {
-					fs.rmSync(dir, { recursive: true, force: true });
-				}
-			} catch {
-				/* ignore one bad dir */
-			}
-		}
-	} catch {
-		/* tmpdir unreadable — skip the sweep */
-	}
 }
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
@@ -353,7 +302,6 @@ async function runSingleAgent(
 		aborted: r.aborted,
 		step,
 	};
-	result.transcriptPath = await writeTranscript(result.agent, r.messages);
 	if (onUpdate) {
 		onUpdate({
 			content: [{ type: "text", text: lastAssistantText(r.messages) || "(running...)" }],
@@ -476,8 +424,6 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 			}
 		}
 
-		sweepStaleTranscripts();
-
 		if (params.chain && params.chain.length > 0) {
 			const results: SingleResult[] = [];
 			let previousOutput = "";
@@ -528,10 +474,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 				content: [
 					{
 						type: "text",
-						text: appendTranscripts(
-							lastAssistantText(results[results.length - 1].messages) || "(no output)",
-							results,
-						),
+						text: lastAssistantText(results[results.length - 1].messages) || "(no output)",
 					},
 				],
 				details: makeDetails("chain")(results),
@@ -615,7 +558,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 				content: [
 					{
 						type: "text",
-						text: `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}${transcriptLines(results)}`,
+						text: `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}`,
 					},
 				],
 				details: makeDetails("parallel")(results),
@@ -647,7 +590,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 				content: [
 					{
 						type: "text",
-						text: appendTranscripts(lastAssistantText(result.messages) || "(no output)", [result]),
+						text: lastAssistantText(result.messages) || "(no output)",
 					},
 				],
 				details: makeDetails("single")([result]),
@@ -976,14 +919,3 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 		return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
 	},
 });
-
-/** Transcript paths for the model to optionally deep-read. */
-function transcriptLines(results: SingleResult[]): string {
-	const lines = results.filter((r) => r.transcriptPath).map((r) => `- ${r.agent}: ${r.transcriptPath}`);
-	return lines.length > 0 ? `\n\nFull transcripts:\n${lines.join("\n")}` : "";
-}
-
-function appendTranscripts(body: string, results: SingleResult[]): string {
-	const t = transcriptLines(results);
-	return t ? `${body}\n${t}` : body;
-}

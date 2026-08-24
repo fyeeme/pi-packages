@@ -179,6 +179,20 @@ function markToolRegistered(): boolean {
 }
 
 /**
+ * Release the tool-registration guard. EVERY `session_shutdown` fires
+ * BEFORE pi rebuilds the extension set (shutdown → clearExtensionCache →
+ * factories re-run), so the guard must be unclaimed by then — otherwise
+ * every rebuilt factory sees it claimed, skips registerTool, and the
+ * `subagent` tool silently disappears until restart. Releasing
+ * unconditionally is safe: paths that re-run factories all fire this event
+ * first, and paths that keep the Extension objects alive never run a
+ * factory again (a released-but-unused guard is inert).
+ */
+function clearToolRegistered(): void {
+	delete (globalThis as Record<symbol, unknown>)[TOOL_REGISTERED_KEY];
+}
+
+/**
  * The extension factory, also the library default export: consumers compose
  * it inside their own pi extension factories —
  *   import piSubagents from "@fyeeme/pi-subagents";
@@ -305,6 +319,14 @@ export default function subagentsUiExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", () => {
+		// Every lifecycle path that rebuilds the runtime (/reload, /new,
+		// /resume, /fork, session switch) fires session_shutdown BEFORE the
+		// factories re-run — release the process-global tool-registration guard
+		// here, unconditionally, or each rebuilt factory sees it claimed, skips
+		// registerTool, and the subagent tool vanishes until restart. Paths that
+		// keep the Extension objects never re-run a factory, so releasing is
+		// harmless there too.
+		clearToolRegistered();
 		// Prompt teardown on quit, /new, /resume, /fork, and reload: unregister
 		// both widgets, stop the spinner/refresh timers, release the fleet
 		// input hook, and close any open viewer. The next session_start

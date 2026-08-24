@@ -91,6 +91,7 @@ beforeEach(() => {
 	prevCwd = process.cwd();
 	process.chdir(projDir);
 	delete (globalThis as Record<symbol, unknown>)[UI_KEY];
+	delete (globalThis as Record<symbol, unknown>)[Symbol.for("@fyeeme/pi-subagents/tool-registered")];
 	monitor.clear();
 });
 
@@ -357,5 +358,42 @@ describe("composition guard (consumer-composed factories)", () => {
 		const factory = extensionFactory as unknown as (pi: unknown) => void;
 		factory(pi);
 		expect(pi.registerTool).toHaveBeenCalledTimes(1);
+	});
+
+	it("session_shutdown (reload) releases the guard so reloaded factories re-register the tool", () => {
+		delete (globalThis as Record<symbol, unknown>)[TOOL_FLAG];
+		const first = fakePi();
+		extensionFactory(first as never);
+		expect(first.registerTool).toHaveBeenCalledTimes(1);
+
+		// /reload: session_shutdown fires before the factories re-run
+		// (AgentSession.reload: shutdown → clearExtensionCache → factories).
+		first.emit(
+			"session_shutdown",
+			{ type: "session_shutdown", reason: "reload" },
+			fakeCtx(fakeUi().ui, projDir),
+		);
+
+		const reloaded = fakePi(); // a factory re-run in the same process
+		extensionFactory(reloaded as never);
+		expect(reloaded.registerTool).toHaveBeenCalledTimes(1);
+	});
+
+	it("session_shutdown (new/resume/fork/quit — non-reload rebuilds) also releases the guard", () => {
+		delete (globalThis as Record<symbol, unknown>)[TOOL_FLAG];
+		const first = fakePi();
+		extensionFactory(first as never);
+		expect(first.registerTool).toHaveBeenCalledTimes(1);
+
+		// pi 0.84.x rebuilds the runtime for /new, /resume, /fork and session
+		// switches too (not just /reload): factories re-run after shutdown.
+		// Every reason must release the guard or the subagent tool silently
+		// disappears until process restart (observed on a /new after startup).
+		for (const reason of ["new", "resume", "fork", "quit"] as const) {
+			first.emit("session_shutdown", { type: "session_shutdown", reason }, fakeCtx(fakeUi().ui, projDir));
+			const rebuilt = fakePi(); // a factory re-run in the same process
+			extensionFactory(rebuilt as never);
+			expect(rebuilt.registerTool).toHaveBeenCalledTimes(1);
+		}
 	});
 });

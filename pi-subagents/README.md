@@ -8,6 +8,7 @@ General-purpose subagent fan-out for [pi](https://github.com/earendil-works/pi-m
 |---|---|---|
 | Tool | `src/tools/subagent.ts` | `subagent` — single `{agent, task}`, parallel `{tasks[]}` (max 16 per call, shared concurrency ceiling), chain `{chain[]}` with `{previous}` substitution |
 | Agents | `agents.ts` + `agents/` | Discovery: project `.pi/agents` > user `~/.pi/agent/agents` > bundled `agents/` (scout / planner / reviewer / worker). Drop-in registration, re-discovered per call |
+| Prompts | `prompts/` | Workflow presets registered as pi prompt commands via the `pi.prompts` manifest: `/implement`, `/scout-and-plan`, `/implement-and-review` — chain recipes over the bundled agents |
 | Dispatch core | `src/dispatch.ts` | `spawnAgent`, `mapWithConcurrencyLimit`, `createSpawnRegistry`, `abortAgent`, `getPiInvocation`, per-callId abort, maxTurns budget, whitelist-by-default recursion guard |
 | Settings | `src/concurrency.ts` | `pi-subagent.json` (global `<agentDir>` + project `.pi/`): `widget`, `fleetView`, `maxConcurrency` (3/5/8/10, default 5). Ceiling precedence: `PI_MAX_CONCURRENT_SUBAGENTS` env > file > default |
 | UI | `index.ts` + `src/ui/` | Above-editor agent widget, below-editor FleetView, `/agents` viewer — driven by the process-global monitor every spawn notifies |
@@ -30,6 +31,14 @@ Ask the model naturally, or be explicit:
 Use scout to find all authentication code                          # single
 Run 2 scouts in parallel: one for models, one for providers        # parallel
 Chain: scout finds the read tool, then planner suggests changes    # chain
+```
+
+Workflow prompt commands (from `prompts/`, registered via the `pi.prompts` manifest):
+
+```
+/implement add Redis caching to the session store                  # scout → planner → worker
+/scout-and-plan refactor auth to support OAuth                     # scout → planner
+/implement-and-review add input validation to API endpoints        # worker → reviewer → worker
 ```
 
 Agents are markdown frontmatter files:
@@ -90,7 +99,7 @@ Same names and signatures as the old `@fyeeme/pi-subagent-core` — consumers sw
 
 ## Output display
 
-Collapsed: status icon (✓/✗/⏳), agent name, last items, usage stats (`3 turns ↑↓ R W $cost ctx model`). Expanded (Ctrl+O): full task, all tool calls, final output as Markdown, per-task usage. Parallel mode streams live per-task status; per-task model-visible output is capped at 50 KB (full output in tool details + transcript files under `os.tmpdir()/pi-sa-out-*`, swept after 24h).
+Collapsed: status icon (✓/✗/⏳), agent name, last items, usage stats (`3 turns ↑↓ R W $cost ctx model`). Expanded (Ctrl+O): full task, all tool calls, final output as Markdown, per-task usage. Parallel mode streams live per-task status; per-task model-visible output is capped at 50 KB (full output preserved in tool details).
 
 ## Testing
 
