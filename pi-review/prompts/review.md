@@ -12,3 +12,7 @@ finder-wrapper-proxy, cleaner-reuse, cleaner-simplification,
 cleaner-efficiency, cleaner-altitude, finder-conventions, verifier,
 gap-hunter), with `maxTurns: 20` per finder batch and `maxTurns: 15` for the
 gap-hunt as the skill instructs.
+
+The `subagent` tool is a pi extension tool in your session toolset — judge
+its availability from that list, never via `mcp` tool search (which only
+indexes MCP-server tools and cannot see extension tools).

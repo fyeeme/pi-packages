@@ -188,6 +188,14 @@ finder agents in a single batch (mode: parallel) so they run concurrently;
 otherwise do not fake the fan-out — work the angles yourself in sequence in
 this same context, or report that the subagent capability is unavailable.
 
+**Checking `subagent` availability** — wherever this skill says "if the
+`subagent` tool is available", decide from THIS session's tool list, never by
+probing: `subagent` is a pi extension tool registered alongside
+read/bash/edit, not an MCP server tool, so the `mcp` gateway's tool search
+answers "No tools matching subagent" even when the tool is registered and
+callable. If it is in your toolset, use it without further verification; if it
+is genuinely absent, take the sequential fallback above.
+
 **Finder turn budget（Pi adaptation — the same runaway-exploration guard the
 Phase 3 gap-hunt already carries）** — a finder that exhausts its turn cap
 mid-read returns NOTHING and silently loses its whole angle (observed on a

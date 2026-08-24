@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-25
+
 ### Breaking Changes
 
 - Extension wiring rebuilt on composition: the `pi.extensions` manifest no longer loads `./node_modules/@fyeeme/pi-subagents/extension.ts` (the path hack); instead this package's factory calls pi-subagents' exported extension factory (`piSubagents(pi)`). Single-install works out of the box with the tool/UI version-pinned to this package's dependency copy; a standalone pi-subagents install coexists (idempotent composition guard).
+
+### Fixed
+
+- Availability probing guidance: `subagent` is an extension tool, invisible to the `mcp` gateway's tool search — a session that probed via `mcp({search})` saw "No tools matching subagent" and wrongly degraded to sequential self-review even with the tool registered. `prompts/review.md` and the code-review skill's Phase 1 now state to judge availability from the session's tool list and never probe via `mcp` search. (The underlying `/reload` tool loss is fixed in `@fyeeme/pi-subagents`.)
 
 ## [1.2.0] - 2026-08-24
 
