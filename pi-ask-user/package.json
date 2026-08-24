@@ -1,0 +1,58 @@
+{
+	"name": "@fyeeme/pi-ask-user",
+	"version": "1.2.0",
+	"description": "Structured ask_user tool for pi — lets the LLM surface clarifying questions with options, multi-select, recommended defaults, and free-form Other input.",
+	"type": "module",
+	"license": "MIT",
+	"author": "fyeeme",
+	"publishConfig": {
+		"access": "public"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/fyeeme/pi-packages.git"
+	},
+	"bugs": {
+		"url": "https://github.com/fyeeme/pi-packages/issues"
+	},
+	"homepage": "https://github.com/fyeeme/pi-packages#readme",
+	"engines": {
+		"node": ">=18"
+	},
+	"keywords": [
+		"pi-package",
+		"pi",
+		"extension",
+		"ask-user",
+		"clarification",
+		"interactive"
+	],
+	"files": [
+		"index.ts",
+		"README.md",
+		"LICENSE",
+		"CHANGELOG.md"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"scripts": {
+		"test": "vitest --run",
+		"typecheck": "tsc"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.84.1",
+		"@earendil-works/pi-tui": ">=0.84.1",
+		"typebox": ">=1.0.0"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "0.84.1",
+		"@earendil-works/pi-tui": "0.84.1",
+		"@types/node": "22.19.19",
+		"typebox": "1.1.38",
+		"typescript": "5.9.3",
+		"vitest": "3.2.7"
+	}
+}
