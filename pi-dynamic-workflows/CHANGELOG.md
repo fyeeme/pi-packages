@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-25
+
 ### Breaking Changes
 
 - Extension wiring rebuilt on composition: the `pi.extensions` manifest no longer loads `./node_modules/@fyeeme/pi-subagents/extension.ts` (the path hack); instead this package's factory calls pi-subagents' exported extension factory (`piSubagents(pi)`), lighting the agent UI out of the box from the version-pinned dependency copy. A standalone pi-subagents install coexists (idempotent composition guard).
