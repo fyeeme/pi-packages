@@ -1,5 +1,12 @@
 # @fyeeme/pi-dynamic-workflows
 
+**2.0.0 — major release** (from 1.1.0 on npm), part of the 2.0 extensions family wave:
+
+- **Composed sub-agent stack** — the extension factory composes [`@fyeeme/pi-subagents`](https://www.npmjs.com/package/@fyeeme/pi-subagents) 2.0.0 from its npm dependency: the live agent UI (widget / FleetView / `/agents`) and the `subagent` tool work out of the box; no manifest path wiring, no separate install.
+- **Run persistence** — journaled runs under `.pi/workflows/` (journal + manifest): a re-run resumes cached agent calls keyed by `sha256(workflow + prompt + signature)` with zero re-dispatch, and the manifest tracks live state for inspection.
+- **Per-call budget override** — `run_workflow` accepts a `budget` object that merges over the workflow definition's own `maxAgents`/`maxTokens`, making "halve the fan-out for large diffs" an actual parameter.
+- **Authoring aids shipped** — `workflow-author` skill, `/wf-*` prompts, and seed workflows (`review-local-diff`, `review-extension`) using `import type` for load determinism.
+
 **Deterministic TypeScript workflow orchestration for [pi](https://github.com/earendil-works/pi-mono).**
 
 Define a workflow as a declarative list of typed steps, run it, and get resumable, budget-bounded, abortable execution. Fuses the pi-dynamic-workflows design (10 step primitives + heuristic planner + outcome collectors) with Claude Code's workflow-engine coordination mechanisms (deterministic sandbox, cache-key resume, per-agent abort, dynamic budget, runaway caps).
@@ -29,14 +36,11 @@ of the box. A standalone pi-subagents install is optional and coexists
 
 ## Install
 
-This is a pi extension package (workspace / local), not yet published to npm. From a pi workspace:
-
 ```bash
-npm install --ignore-scripts   # hydrate (the package is a workspace dep)
+pi install npm:@fyeeme/pi-dynamic-workflows
 ```
 
-This resolves [`@fyeeme/pi-subagents`](https://www.npmjs.com/package/@fyeeme/pi-subagents)
-(from the npm registry — no sibling-repo layout requirement).
+This resolves [`@fyeeme/pi-subagents`](https://www.npmjs.com/package/@fyeeme/pi-subagents) 2.0.0 from the npm registry (the composed sub-agent stack lights up with no separate install).
 
 Then import the public API from the package root module (a TypeScript barrel; the package ships `.ts` source):
 

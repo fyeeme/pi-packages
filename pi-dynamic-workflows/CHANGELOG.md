@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.0.0] - 2026-08-25
 
+**Major release** (from 1.1.0 on npm), part of the 2.0 extensions family wave: the extension factory now composes `@fyeeme/pi-subagents` 2.0.0 from npm (live agent UI + `subagent` tool out of the box, no manifest path wiring), plus the run-persistence layer (journal/manifest resumable runs) and the per-call budget override. Highlights below.
+
 ### Breaking Changes
 
 - Extension wiring rebuilt on composition: the `pi.extensions` manifest no longer loads `./node_modules/@fyeeme/pi-subagents/extension.ts` (the path hack); instead this package's factory calls pi-subagents' exported extension factory (`piSubagents(pi)`), lighting the agent UI out of the box from the version-pinned dependency copy. A standalone pi-subagents install coexists (idempotent composition guard).

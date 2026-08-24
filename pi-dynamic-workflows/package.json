@@ -45,7 +45,7 @@
     "typecheck": "tsc"
   },
   "dependencies": {
-    "@fyeeme/pi-subagents": "file:../pi-subagents"
+    "@fyeeme/pi-subagents": "2.0.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.84.1",
