@@ -1,5 +1,5 @@
 /**
- * pi-omk-ask — the oh-my-pi `ask` tool migrated to a pi extension
+ * pi-omp-ask — the oh-my-pi `ask` tool migrated to a pi extension
  *
  * Source: oh-my-pi (github.com/can1357/oh-my-pi, a fork of badlogic/pi-mono)
  *   - packages/coding-agent/src/tools/ask.ts        → execute + renderer (below)

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-25
+
+**Major release — first npm publication, renamed `@fyeeme/pi-omk-ask` → `@fyeeme/pi-omp-ask` to match the directory.** Ships as part of the 2.0 extensions family wave. Highlights below.
+
 ### Fixed
 
 - Transcript no longer shows the questions twice around an ask: `renderCall` now renders only a `Ask · N questions`

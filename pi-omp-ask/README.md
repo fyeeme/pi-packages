@@ -1,4 +1,11 @@
-# pi-omk-ask
+# pi-omp-ask
+
+**2.0.0 — first npm release as `@fyeeme/pi-omp-ask`** (renamed from the local `pi-omk-ask` working name), part of the 2.0 extensions family wave. Release highlights:
+
+- **Faithful omp port** — the tabbed ask dialog (Submit review tab, radio/checkbox markers, per-answer notes, markdown/code previews with fence splitting and render caching), the inactivity countdown, and the legacy per-question selector path carried over file-by-file.
+- **Single-render transcript** — the pending call renders only an `Ask · N questions` summary; the full framed question/options/answer block renders once after the user answers (no duplicate framing).
+- **Robustness fixes over the omp source** — countdown expiry mid-typing keeps the user's answer, live frame-width measurement replaces the hardcoded 80 columns, and dialog failures propagate instead of degrading to a phantom "user cancelled".
+- **Headless-safe** — print/JSON hosts cannot prompt, so the tool is stripped from the active set; a stray call throws a "question was never shown" error instead of hanging.
 
 oh-my-pi's `ask` tool, migrated to a [pi](https://github.com/earendil-works/pi-coding-agent) extension.
 
@@ -97,16 +104,16 @@ error. An unreachable host (print/JSON) raises a different error stating the que
 
 ```bash
 # per-project
-mkdir -p .pi/extensions && cp -r packages/extensions/pi-omk-ask .pi/extensions/
+mkdir -p .pi/extensions && cp -r packages/extensions/pi-omp-ask .pi/extensions/
 
 # or globally
-cp -r packages/extensions/pi-omk-ask ~/.pi/agent/extensions/
+cp -r packages/extensions/pi-omp-ask ~/.pi/agent/extensions/
 ```
 
 Or load ad hoc:
 
 ```bash
-pi -e ./packages/extensions/pi-omk-ask/index.ts
+pi -e ./packages/extensions/pi-omp-ask/index.ts
 ```
 
 ## Development
