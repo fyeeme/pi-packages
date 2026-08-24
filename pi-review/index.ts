@@ -1,50 +1,45 @@
 /**
- * pi-review — extension entry.
+ * pi-review v2 — extension entry.
  *
- * Registers:
- *   - the `subagent` tool — general-purpose parallel/sequential sub-agent fan-out
- *     via real pi subprocesses. Shared capability used by both skills below;
- *   - the `simplify_fanout` tool — /code-simplify PARALLEL mode's dispatch
- *     gate: the model calls it after its visible Phase 0 (read the diff, write
- *     the change-intent summary); the tool re-resolves the diff and spawns the
- *     4 cleanup agents (same recursion guard as `subagent`);
- *   - the `review_report` tool — structured findings sink for the code-review
- *     skill (Pi's counterpart to CC's ReportFindings): renders the Markdown
- *     report + writes JSON to <cwd>/.pi/review/ for CI;
- *   - the `/code-review` command — effort-level review via the code-review skill;
- *   - the `/code-simplify` command — cleanup via the simplify skill; the handler
- *     resolves the widened diff scope first (upstream merge-base → HEAD →
- *     staged/unstaged), then decides parallel vs single-pass from
- *     ctx.getContextUsage(), diff size, and fan-out availability. Both modes
- *     open with a visible, model-run Phase 0 (CC parity) — only PARALLEL
- *     dispatches agents, via the tool above.
+ * Sandwich architecture (see openspec change subagent-sandwich-refactor):
  *
- * Both skills ship bundled in this package under `skills/` — this extension
- * provides the entry commands + the fan-out capability they need.
+ *   Skills  skills/code-review, skills/simplify — review methodology,
+ *           registered natively via the pi manifest (`pi.skills`); they
+ *           reference capabilities by stable tool/agent names only.
+ *   Prompts prompts/ — the orchestration strategy as data: parallel-when
+ *           guards in frontmatter, phases/agents in the body. Rendered by
+ *           the generic dispatcher (src/dispatch.ts) which gathers the
+ *           deterministic runtime variables (diff, context usage, sticky
+ *           effort) and picks the template variant.
+ *   Agents  agents/ — the review angles materialized as subagent definitions
+ *           (finder-*, cleaner-*, verifier, gap-hunter) invoked via the
+ *           `subagent` tool.
+ *   Plugin  this entry composes @fyeeme/pi-subagents' extension factory
+ *           (subagent tool + agent UI + /agents, from the SAME dependency
+ *           copy this package's imports resolve to — version-pinned, no
+ *           manifest path wiring and no separate install step), registers
+ *           this package's agents directory as a discovery source, and adds
+ *           the `review_report` structured findings sink plus the
+ *           /review and /simplify dispatcher commands.
  *
- * Layout (layered so the tool layer can be split into its own extension later):
- *   src/tools/subagent.ts      — generic capability (subagent tool; dispatch from pi-subagent-core)
- *   src/tools/review_report.ts — structured findings sink (review_report tool; CC ReportFindings counterpart)
- *   src/commands/*.ts          — per-skill entry commands (code-simplify.ts also owns the simplify_fanout tool)
+ * The `subagent` tool registers exactly once per process: if pi-subagents
+ * is ALSO installed standalone (or another consumer composes it), the guard
+ * in pi-subagents' index.ts keeps ownership single (pi fatal-exits on
+ * the same tool name in two extensions' maps).
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isFanoutToolAllowed } from "@fyeeme/pi-subagent-core";
-import { registerCodeReview } from "./src/commands/code-review.ts";
-import { registerSimplify, simplifyFanoutTool } from "./src/commands/code-simplify.ts";
-import { subagentTool } from "./src/tools/subagent.ts";
+import piSubagents, { addAgentDir } from "@fyeeme/pi-subagents";
+import { fileURLToPath } from "node:url";
+import * as path from "node:path";
+import { registerDispatcher } from "./src/dispatch.ts";
 import { reviewReportTool } from "./src/tools/review_report.ts";
 
 export default function (pi: ExtensionAPI): void {
-	// The fan-out tools register only when recursion is allowed for THIS
-	// process (top-level, or a child the spawner explicitly opted in AND that is
-	// below the max-depth cap). A default child — spawned without the fan-out
-	// tool in its whitelist — loads without them, so it physically cannot recurse.
-	// This is the whitelist-by-default recursion guard (harden-code-simplify).
-	if (isFanoutToolAllowed()) {
-		pi.registerTool(subagentTool);
-		pi.registerTool(simplifyFanoutTool);
-	}
+	// subagent tool + live agent UI, from this package's pinned dependency
+	// copy. <pkg>/index.ts → sibling agents/ dir registers the review roles.
+	piSubagents(pi);
+	addAgentDir(path.join(path.dirname(fileURLToPath(import.meta.url)), "agents"));
+
 	pi.registerTool(reviewReportTool);
-	registerCodeReview(pi);
-	registerSimplify(pi);
+	registerDispatcher(pi);
 }

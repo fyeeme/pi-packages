@@ -1,7 +1,7 @@
 {
   "name": "@fyeeme/pi-review",
-  "version": "1.1.1",
-  "description": "Review & cleanup extension for pi. Registers /code-review and /code-simplify commands plus a general-purpose `subagent` tool that spawns parallel pi subprocesses — providing the real fan-out capability the code-review and simplify skills (bundled under `skills/`) need for their multi-agent flows. The /code-simplify handler uses ctx.getContextUsage() to decide parallel vs single-pass mode deterministically.",
+  "version": "1.2.0",
+  "description": "Review & cleanup assets for pi: /review and /simplify commands dispatching declarative prompt templates (parallel strategy as frontmatter data) plus review methodology skills and finder/verifier agent definitions. Spawning lives in @fyeeme/pi-subagents; this package registers the review_report findings sink and the generic dispatcher.",
   "type": "module",
   "license": "MIT",
   "author": "fyeeme",
@@ -9,26 +9,29 @@
     "node": ">=18"
   },
   "keywords": [
-    "pi-package",
     "pi",
+    "pi-package",
     "code-review",
     "simplify",
     "cleanup",
-    "subagent",
-    "fan-out",
     "review"
   ],
   "files": [
     "*.ts",
     "src/**/*.ts",
     "skills/**/*.md",
+    "prompts/**/*.md",
+    "agents/**/*.md",
     "README.md",
     "LICENSE"
   ],
   "pi": {
     "extensions": [
-      "./index.ts",
-      "./node_modules/@fyeeme/pi-subagent-core/sub-agent.ts"
+      "./index.ts"
+    ],
+    "skills": [
+      "skills/code-review",
+      "skills/simplify"
     ]
   },
   "scripts": {
@@ -36,15 +39,13 @@
     "typecheck": "tsc"
   },
   "dependencies": {
-    "@fyeeme/pi-subagent-core": "^0.5.0"
+    "@fyeeme/pi-subagents": "file:../pi-subagents"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.84.1",
     "@earendil-works/pi-coding-agent": ">=0.84.1",
     "@earendil-works/pi-tui": ">=0.84.1",
-    "jiti": ">=2.0.0",
-    "typebox": ">=1.0.0",
-    "typescript": ">=5.0.0"
+    "typebox": ">=1.0.0"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.84.1",

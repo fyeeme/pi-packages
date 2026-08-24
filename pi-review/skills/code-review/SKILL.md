@@ -1,10 +1,10 @@
 ---
 name: code-review
-description: "Review the current diff for correctness bugs and reuse/simplification/efficiency cleanups at the given effort level. Fresh reverse of CC `/code-review` (CLI v2.1.223). Effort semantics: medium = precision, high+ = recall. Pass --fix to apply, --comment to post inline PR comments, --share to publish a review page."
+description: "Review the current diff for correctness bugs and reuse/simplification/efficiency cleanups at the given effort level. Fresh reverse of CC `/review` (CLI v2.1.223). Effort semantics: medium = precision, high+ = recall. Pass --fix to apply, --comment to post inline PR comments, --share to publish a review page."
 ---
 
 <!--
-  Origin: Claude Code built-in skill `/code-review` (CLI v2.1.223), freshly
+  Origin: Claude Code built-in skill `/review` (CLI v2.1.223), freshly
   reverse-engineered 2026-08-06 from bin/claude.exe strings. This file is
   sourced DIRECTLY from the 2.1.223 binary — NOT carried forward from the
   earlier v2.1.220 reconstruction. Every section below was located in the
@@ -32,9 +32,9 @@ description: "Review the current diff for correctness bugs and reuse/simplificat
     - Fixed-later obligation (CC Q8m): later fixes in the session must
       re-report findings with updated outcome.
 
-  Invocation: /code-review [low|medium|high|xhigh|max] [--fix] [--comment] [--share] [<target>]
+  Invocation: /review [low|medium|high|xhigh|max] [--fix] [--comment] [--share] [<target>]
     target = Class#method | file path | PR number | branch name
-    With no level given, the /code-review HANDLER reuses the last level you
+    With no level given, the /review HANDLER reuses the last level you
     typed (CC 2.1.223 codeReviewLastEffort); the skill always receives a
     concrete level.
     (CC also supports `ultra` — deep multi-agent review in the cloud.
@@ -64,7 +64,7 @@ description: "Review the current diff for correctness bugs and reuse/simplificat
     7. --comment— CC uses mcp__github_inline_comment; Pi falls back to gh api
                   or printing.
 
-  Prerequisite: the `subagent` tool (pi-review extension; mode: parallel) for
+  Prerequisite: the `subagent` tool (@fyeeme/pi-subagents; parallel mode) for
                 medium and above, and for the xhigh/max gap-hunter. lavish-axi
                 for --share. low runs standalone (no subagents).
 -->
@@ -473,10 +473,10 @@ unavailable.
 The `--share` flag was passed. After producing the findings list, also publish
 them as an artifact so they can be shared and iterated on outside the terminal.
 
-1. Write a self-contained HTML review page to `.lavish/code-review-<n>.html`
+1. Write a self-contained HTML review page to `.lavish/review-<n>.html`
    (create `.lavish/` in the repo root if missing). The page must render with no
    server and carry every finding plus its context.
-2. Open it with `lavish-axi .lavish/code-review-<n>.html` so the reader can
+2. Open it with `lavish-axi .lavish/review-<n>.html` so the reader can
    review, annotate, and send feedback back through the poll.
 
 Page structure (follow lavish design guidance — clear visual hierarchy, no

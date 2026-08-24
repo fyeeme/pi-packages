@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Extension wiring rebuilt on composition: the `pi.extensions` manifest no longer loads `./node_modules/@fyeeme/pi-subagents/extension.ts` (the path hack); instead this package's factory calls pi-subagents' exported extension factory (`piSubagents(pi)`). Single-install works out of the box with the tool/UI version-pinned to this package's dependency copy; a standalone pi-subagents install coexists (idempotent composition guard).
+
+## [1.2.0] - 2026-08-24
+
+Sandwich refactor (openspec change `subagent-sandwich-refactor`): the orchestration strategy moves from hardcoded command handlers into data, and subagent spawning moves to `@fyeeme/pi-subagents`.
+
+### Breaking Changes
+
+- Commands renamed: `/code-review` → `/review`, `/code-simplify` → `/simplify` (effort levels, flags, sticky-effort state, and argument semantics unchanged; `~/.pi/.pi-review-state.json` carries over).
+- The bundled `subagent` tool and the `simplify_fanout` tool are REMOVED from this package. Fan-out is delegated to the `subagent` tool of `@fyeeme/pi-subagents` (single/parallel/chain, agent-name referencing). Anything that scripted `simplify_fanout` must switch to `subagent` parallel mode with the cleaner agents.
+- The four cleanup angles are no longer a TS constant: they ship as bundled agent definitions (`agents/cleaner-{reuse,simplification,efficiency,altitude}.md`), alongside `finder-*` (correctness A–E + conventions), `verifier`, and `gap-hunter`.
+- Dependency replaces `@fyeeme/pi-subagent-core` with `@fyeeme/pi-subagents` (the old package is retired).
+
+### Added
+
+- Prompt-template orchestration layer (`prompts/`): `review.md`, `simplify.parallel.md`, `simplify.single.md` — parallel-strategy guards declared as frontmatter data (`parallel-when.context-below`, `parallel-when.diff-chars-below`), evaluated by the generic dispatcher (`src/dispatch.ts`). Editing a template changes the strategy with no code change.
+- Bundled agent set under `agents/` (12 definitions) invoked via the `subagent` tool by name.
+- Skills register natively via the `pi` manifest field (`pi.skills`) instead of the bundled-path-plus-trigger mechanism.
+- `subagent` tool calls gain `maxTurns` (per-call turn budget; finder batch 20 / gap-hunt 15 as the skills instruct) and `parallelism` (capped by the shared ceiling).
+
+### Changed
+
+- `src/dispatch.ts` is the only command layer: gathers deterministic runtime variables (diff via the unchanged candidate ladder, context usage, sticky effort), evaluates the template-declared guards, renders the `{{var}}` template, and hands the message to the session. `decideSimplifyMode` semantics preserved with thresholds sourced from template data.
+- Diff resolution/parsing pure functions relocated verbatim to `src/diff.ts` (`getRepoDiff`, `resolveDiffScope`, `buildContextPackage`, `detectVerifyCommand`, `verifyLine`); tests carried over (`test/diff.test.ts`).
+- Drift anchors re-pointed: `test/angle-sync.test.ts` now anchors skill angle bodies ↔ cleaner agent definitions ↔ template agent references (both directions); `test/dispatch.test.ts` anchors guard evaluation, effort parsing, and template phase structure.
+
+### Removed
+
+- `src/commands/` (code-review.ts, code-simplify.ts), `src/tools/subagent.ts`, `src/tools/simplify_fanout`, `src/concurrency.ts`, `SIMPLIFY_ANGLES`, `decideSimplifyMode`, `buildParallelTrigger`/`buildSinglePassTrigger`/`buildSimplifyTasks`/`formatFanoutResults` — all superseded by the template + agent assets or by pi-subagents.
+
 ## [1.1.1] - 2026-08-24
 
 ### Added
@@ -15,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/code-simplify` diff scope is now **path/submodule-aware** (`findGitRoot`/`resolveDiffScope`): when the target is a path, its nearest git root is located — a target inside a git submodule (e.g. `@packages/extensions/pi-review/`) takes the diff in the submodule's own repository (the parent repo's `git diff` only sees a dirty pointer, not the real changes inside), limited by relative path; a target that is itself a git root takes the full diff. Non-path targets (branch/PR) keep whole-diff. `git` calls moved to argv-array `execFile` (no shell-injection risk, no TUI main-thread blocking). Fixes observed behavior: the 4 cleanup agents previously saw only journal/manifest runtime artifacts and the submodule pointer; they now get the real code changes inside the submodule.
 - `/code-simplify` PARALLEL mode now runs the 4 cleanup agents (Reuse/Simplification/Efficiency/Altitude) via **direct command-handler calls into `@fyeeme/pi-subagent-core`**: the handler uses `getRepoDiff` (git diff; prompts and exits when not a git repo / no changes) + `buildSimplifyTasks` + `spawnAgent`/`mapWithConcurrencyLimit` (each agent `maxTurns: 15`, read-only tool allowlist read/grep/find/ls/bash, model inherited from the session, `displayName` set to the angle name) — agents appear live in the agent widget / FleetView and honor the `maxConcurrency` config; when done, the 4 findings sets are handed to the model for Phase 2 (apply/verify/report, `fanned_out: true`). No longer relies on the model calling the subagent tool itself. SINGLE-PASS mode keeps its original behavior (one message; the model works the four angles inline). The simplify skill's PARALLEL section updated in step (Phase 1 is done by the command; the model only merges/dedups + Phase 2).
 - `subagent` tool concurrency ceiling is now config-driven: `PI_MAX_CONCURRENT_SUBAGENTS` env → pi-subagent-core `maxConcurrency` setting (options 3/5/8/10, default 5; `pi-subagent.json` global + project layers) → 5. Default lowered from 20 to 5 (read at call time, editing the file takes effect immediately); env override stays highest priority; an explicit `parallelism` argument is unchanged.
-- Wired in `@fyeeme/pi-subagent-core`'s subagent UI layer: the `pi` manifest adds `./node_modules/@fyeeme/pi-subagent-core/sub-agent.ts` as an extension entry, loaded from the same dependency copy as the `subagent` tool — the agent widget above the editor, FleetView below, conversation viewer, and `/agents` command ship with the package and share monitor state with the tool. Dependency bumped to `^0.5.0`. Local development requires syncing the core package into this package's `node_modules` copy first (see its README "Wiring").
+- Wired in `@fyeeme/pi-subagent-core`'s subagent UI layer: the `pi` manifest adds `./node_modules/@fyeeme/pi-subagent-core/sub-agent.ts` as an extension entry, loaded from the same dependency copy as the `subagent` tool — the agent widget above the editor, FleetView below, conversation viewer, and `/agents` command ship with the package and share monitor state with the tool. Dependency bumped to `^0.5.0`. Local development requires syncing the core package into this package's `node_modules` copy first (the wiring mechanism is now documented in pi-subagents' README "Wiring" section).
 - The 4 cleanup agent tasks now embed a zero-token context package (`buildContextPackage`, parsed handler-side from the diff, costs no parent context): repo root path, matched diff scope label, and a changed-file index with insert/delete counts (truncated with a remainder note above 200 files); single-pass trigger messages carry it too, saving each agent's 1–3 rounds of `git diff --stat` reconnaissance.
 
 ### Changed
