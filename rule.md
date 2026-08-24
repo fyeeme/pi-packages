@@ -1,6 +1,6 @@
 # 发布 checklist
 
-1. 确认 `@fyeeme/pi-subagent-core` 依赖为 npm registry 版本（`^0.3.0`，无 `file:` 残留）；core 有新改动时先发布 core 再发消费方
+1. 确认 `@fyeeme/pi-subagents` 依赖为 npm registry 版本（无 `file:` 残留）；pi-subagents 有新改动时先发布它，再发 pi-review / pi-dynamic-workflows
 2. 更新版本号( 禁止发布大版本，始终按照小版本累加, 比如 0.5.0 -> 0.5.1 , 1.1.0 -> 1.1.1)
 3. 更新 changelog（新条目使用英文；已发布版本条目不可修改）
 4. 跑 typecheck + 全量测试
