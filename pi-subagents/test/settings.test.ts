@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadCoreSettings, MAX_CONCURRENCY_OPTIONS } from "../src/concurrency.ts";
+import { loadCoreSettings } from "../src/concurrency.ts";
 
 let globalDir: string;
 let projDir: string;
@@ -42,27 +42,37 @@ describe("settings (pi-subagent.json)", () => {
 		expect(loadCoreSettings(projDir)).toEqual({});
 	});
 
-	it("MAX_CONCURRENCY_OPTIONS is [3, 5, 8, 10]", () => {
-		expect([...MAX_CONCURRENCY_OPTIONS]).toEqual([3, 5, 8, 10]);
-	});
-
-	it("parses the three keys from the global layer", () => {
-		writeGlobal({ widget: "all", fleetView: false, maxConcurrency: 8 });
-		expect(loadCoreSettings(projDir)).toEqual({ widget: "all", fleetView: false, maxConcurrency: 8 });
+	it("parses the settings keys from the global layer", () => {
+		writeGlobal({ fleet: false, maxConcurrency: 8 });
+		expect(loadCoreSettings(projDir)).toEqual({ fleet: false, maxConcurrency: 8 });
 	});
 
 	it("the project layer overrides the global layer per key", () => {
-		writeGlobal({ widget: "off", fleetView: true, maxConcurrency: 10 });
-		writeProject({ widget: "all", maxConcurrency: 3 });
-		// fleetView only set globally → survives the merge.
-		expect(loadCoreSettings(projDir)).toEqual({ widget: "all", fleetView: true, maxConcurrency: 3 });
+		writeGlobal({ fleet: true, maxConcurrency: 10 });
+		writeProject({ maxConcurrency: 3 });
+		// fleet only set globally → survives the merge.
+		expect(loadCoreSettings(projDir)).toEqual({ fleet: true, maxConcurrency: 3 });
 	});
 
-	it("drops invalid values and unknown keys, keeps valid siblings", () => {
-		writeProject({ widget: "sometimes", fleetView: "yes", maxConcurrency: 20, bogus: 1 });
+	it("accepts any positive integer for maxConcurrency and drops invalid values with unknown keys", () => {
+		writeProject({ fleet: "yes", maxConcurrency: 0, bogus: 1 });
 		expect(loadCoreSettings(projDir)).toEqual({});
-		writeProject({ widget: "off", maxConcurrency: 7 });
-		expect(loadCoreSettings(projDir)).toEqual({ widget: "off" });
+		writeProject({ maxConcurrency: 7 });
+		expect(loadCoreSettings(projDir)).toEqual({ maxConcurrency: 7 });
+		writeProject({ maxConcurrency: 3.5 });
+		expect(loadCoreSettings(projDir)).toEqual({});
+		writeProject({ maxConcurrency: -2 });
+		expect(loadCoreSettings(projDir)).toEqual({});
+	});
+
+	it("legacy widget/fleetView keys are ignored with a stderr warning (no residue, fleet default on)", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		writeGlobal({ widget: "background", fleetView: false });
+		expect(loadCoreSettings(projDir)).toEqual({});
+		const messages = warn.mock.calls.map((c) => String(c[0]));
+		expect(messages.some((m) => m.includes('"widget"'))).toBe(true);
+		expect(messages.some((m) => m.includes('"fleetView"'))).toBe(true);
+		warn.mockRestore();
 	});
 
 	it("a malformed file warns on stderr and reads as absent", () => {
@@ -70,14 +80,39 @@ describe("settings (pi-subagent.json)", () => {
 		// Raw write — writeGlobal JSON.stringifies, which would be valid JSON.
 		writeFileSync(join(globalDir, "pi-subagent.json"), "{ not json");
 		// Global layer unreadable → project still read; neither has valid keys.
-		writeProject({ fleetView: false });
-		expect(loadCoreSettings(projDir)).toEqual({ fleetView: false });
+		writeProject({ fleet: false });
+		expect(loadCoreSettings(projDir)).toEqual({ fleet: false });
 		expect(warn).toHaveBeenCalledTimes(1);
 		expect(String(warn.mock.calls[0]?.[0])).toContain("pi-subagent.json");
 	});
 
 	it("the pre-rename file name (pi-subagent-core.json) is not read — no back-compat", () => {
-		writeFileSync(join(globalDir, "pi-subagent-core.json"), JSON.stringify({ widget: "all", maxConcurrency: 10 }));
+		writeFileSync(join(globalDir, "pi-subagent-core.json"), JSON.stringify({ fleet: true, maxConcurrency: 10 }));
+		expect(loadCoreSettings(projDir)).toEqual({});
+	});
+});
+
+describe("settings (reliability + trust keys)", () => {
+	it("parses confirmProjectAgents as boolean", () => {
+		writeProject({ confirmProjectAgents: false });
+		expect(loadCoreSettings(projDir)).toEqual({ confirmProjectAgents: false });
+	});
+
+	it("parses positive-integer stallMs and drops invalid values", () => {
+		writeProject({ stallMs: 120000 });
+		expect(loadCoreSettings(projDir)).toEqual({ stallMs: 120000 });
+		writeProject({ stallMs: -1 });
+		expect(loadCoreSettings(projDir)).toEqual({});
+		writeProject({ stallMs: 0 });
+		expect(loadCoreSettings(projDir)).toEqual({});
+	});
+
+	it("parses non-negative wallClockMs (0 = disabled) and drops negatives", () => {
+		writeProject({ wallClockMs: 0 });
+		expect(loadCoreSettings(projDir)).toEqual({ wallClockMs: 0 });
+		writeProject({ wallClockMs: 600000 });
+		expect(loadCoreSettings(projDir)).toEqual({ wallClockMs: 600000 });
+		writeProject({ wallClockMs: -5 });
 		expect(loadCoreSettings(projDir)).toEqual({});
 	});
 });

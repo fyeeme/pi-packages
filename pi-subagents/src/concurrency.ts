@@ -5,16 +5,14 @@
  *   - Global:  <agentDir>/pi-subagent.json — user-wide defaults.
  *   - Project: <cwd>/.pi/pi-subagent.json — overrides global on load.
  *
- * Keys (all optional):
- *   widget         "all" | "background" (default) | "off" — the above-editor widget
- *   fleetView      boolean, default true — the below-editor FleetView
- *   maxConcurrency 3 | 5 (default) | 8 | 10 — fan-out concurrency ceiling
+ *   fleet           boolean, default true — the below-editor fleet surface
+ *   maxConcurrency  positive integer (default 5) — fan-out concurrency ceiling
  *
- * `widget`/`fleetView` are read once per process at extension start (changes
- * apply on the next pi session); `maxConcurrency` is read at call time (see
- * dispatch.ts getEffectiveMaxConcurrency) so an edited file takes effect on
- * the next fan-out without a restart. No read cache: this fires once per
- * fan-out, where a small JSON read is noise next to spawning subprocesses.
+ * `fleet` is read once per process at extension start (changes apply on the
+ * the next pi session); `maxConcurrency` is read at call time (see dispatch.ts
+ * getEffectiveMaxConcurrency) so an edited file takes effect on the next
+ * fan-out without a restart. No read cache: this fires once per fan-out,
+ * where a small JSON read is noise next to spawning subprocesses.
  *
  * Malformed files are ignored with a stderr warning (never fatal — callers
  * fall back to defaults), and unknown/garbage fields are dropped on read.
@@ -26,64 +24,71 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 /** Settings file name (both layers). */
 const SETTINGS_FILE = "pi-subagent.json";
 
-/**
- * Display mode for the persistent above-editor agent widget.
- * - `all`: show every agent.
- * - `background`: hide foreground agents (background === false — they already
- *   render inline as the tool result); everything else stays visible.
- * - `off`: hide the widget entirely.
- */
-export type WidgetMode = "all" | "background" | "off";
-
-/** Allowed values for `maxConcurrency` (the concurrent-agents ceiling). */
-export const MAX_CONCURRENCY_OPTIONS = [3, 5, 8, 10] as const;
-
-/** One allowed `maxConcurrency` value. */
-export type MaxConcurrencyOption = (typeof MAX_CONCURRENCY_OPTIONS)[number];
-
 /** Package settings read from the two config layers. */
 export interface SubagentCoreSettings {
-	widget?: WidgetMode;
 	/**
-	 * Whether the below-editor FleetView is shown. Defaults to `true`. Pure
-	 * UI: when `false`, the list never registers and its global input hook
-	 * never captures keys; the above-editor widget and /agents are unaffected.
+	 * Whether the below-editor fleet surface is shown. Defaults to `true`.
+	 * Pure UI: when `false`, the list never registers and its global input
+	 * hook never captures keys.
 	 */
-	fleetView?: boolean;
+	fleet?: boolean;
 	/**
-	 * Default concurrency ceiling for sub-agent fan-out (concurrent agents
-	 * count). Must be one of {@link MAX_CONCURRENCY_OPTIONS}; any other value
-	 * in the file is dropped and the hardcoded default (5) applies. A
-	 * consumer-supplied env override (e.g. pi-review's
-	 * PI_MAX_CONCURRENT_SUBAGENTS) still takes precedence over this file.
+	 * Concurrency ceiling for sub-agent fan-out (concurrent agents count).
+	 * Any positive integer is accepted; non-positive / non-integer values in
+	 * the file are dropped and the hardcoded default (5) applies.
 	 */
-	maxConcurrency?: MaxConcurrencyOption;
+	maxConcurrency?: number;
+	/**
+	 * Prompt before running project-local agents (interactive sessions only).
+	 * Defaults to `true`. Deliberately NOT a tool parameter: the model cannot
+	 * weaken its own supervision.
+	 */
+	confirmProjectAgents?: boolean;
+	/**
+	 * Stall watchdog threshold in ms — a call with no subprocess event for
+	 * this long is aborted. Defaults to 60000.
+	 */
+	stallMs?: number;
+	/**
+	 * Wall-clock ceiling in ms per call; 0 disables. Must be ≥ 2× the stall
+	 * threshold when enabled; defaults to 0 (disabled).
+	 */
+	wallClockMs?: number;
 }
 
-const VALID_WIDGET_MODES: ReadonlySet<string> = new Set<WidgetMode>(["all", "background", "off"]);
-const VALID_CONCURRENCY: ReadonlySet<number> = new Set<number>(MAX_CONCURRENCY_OPTIONS);
-
-function globalPath(): string {
-	return join(getAgentDir(), SETTINGS_FILE);
+function isPositiveInt(v: unknown): v is number {
+	return typeof v === "number" && Number.isInteger(v) && v > 0;
 }
 
-function projectPath(cwd: string): string {
-	return join(cwd, ".pi", SETTINGS_FILE);
+function isNonNegativeInt(v: unknown): v is number {
+	return typeof v === "number" && Number.isInteger(v) && v >= 0;
 }
 
-/** Drop fields that don't match the expected shape. Silent — garbage becomes absent. */
 function sanitize(raw: unknown): SubagentCoreSettings {
 	if (!raw || typeof raw !== "object") return {};
 	const r = raw as Record<string, unknown>;
 	const out: SubagentCoreSettings = {};
-	if (typeof r.widget === "string" && VALID_WIDGET_MODES.has(r.widget)) {
-		out.widget = r.widget as WidgetMode;
+	if (typeof r.fleet === "boolean") {
+		out.fleet = r.fleet;
+	} else if (typeof r.fleetView === "boolean") {
+		console.warn('[pi-subagents] Setting "fleetView" was renamed to "fleet" — ignoring it');
 	}
-	if (typeof r.fleetView === "boolean") {
-		out.fleetView = r.fleetView;
+	if (typeof r.widget === "string") {
+		console.warn(
+			'[pi-subagents] Setting "widget" was removed — the fleet surface is the single UI (key "fleet") — ignoring it',
+		);
 	}
-	if (typeof r.maxConcurrency === "number" && VALID_CONCURRENCY.has(r.maxConcurrency)) {
-		out.maxConcurrency = r.maxConcurrency as MaxConcurrencyOption;
+	if (isPositiveInt(r.maxConcurrency)) {
+		out.maxConcurrency = r.maxConcurrency;
+	}
+	if (typeof r.confirmProjectAgents === "boolean") {
+		out.confirmProjectAgents = r.confirmProjectAgents;
+	}
+	if (isPositiveInt(r.stallMs)) {
+		out.stallMs = r.stallMs;
+	}
+	if (isNonNegativeInt(r.wallClockMs)) {
+		out.wallClockMs = r.wallClockMs;
 	}
 	return out;
 }
@@ -103,5 +108,7 @@ function readSettingsFile(path: string): SubagentCoreSettings {
 
 /** Load merged settings: global provides defaults, project overrides. */
 export function loadCoreSettings(cwd: string = process.cwd()): SubagentCoreSettings {
-	return { ...readSettingsFile(globalPath()), ...readSettingsFile(projectPath(cwd)) };
+	const globalSettings = readSettingsFile(join(getAgentDir(), SETTINGS_FILE));
+	const projectSettings = readSettingsFile(join(cwd, ".pi", SETTINGS_FILE));
+	return { ...globalSettings, ...projectSettings };
 }

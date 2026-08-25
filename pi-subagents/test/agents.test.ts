@@ -6,7 +6,7 @@
  * ~/.pi/agent/agents. The project source is exercised against temp dirs with
  * a .pi/agents/ subtree.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -107,5 +107,27 @@ describe("project dir discovery", () => {
 		const { projectAgentsDir, agents } = discoverAgents(fromDeep, "both");
 		expect(projectAgentsDir).toBe(proj);
 		expect(agents.find((a) => a.name === "deep")).toBeDefined();
+	});
+});
+
+describe("malformed agent files", () => {
+	it("warns on stderr naming the file, skips it, keeps siblings", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		fs.writeFileSync(path.join(userDir, "broken.md"), "no frontmatter here");
+		fs.writeFileSync(
+			path.join(userDir, "half.md"),
+			"---\nname: only-name\n---\nbody",
+		);
+		fs.writeFileSync(
+			path.join(userDir, "good.md"),
+			AGENT_MD("good-agent", "A good agent", "works"),
+		);
+		const { agents } = discoverAgents(tmpRoot, "user");
+		const names = agents.map((a) => a.name);
+		expect(names).toContain("good-agent");
+		expect(names).not.toContain("only-name");
+		expect(warn.mock.calls.some((c) => String(c[0]).includes("broken.md"))).toBe(true);
+		expect(warn.mock.calls.some((c) => String(c[0]).includes("half.md"))).toBe(true);
+		warn.mockRestore();
 	});
 });

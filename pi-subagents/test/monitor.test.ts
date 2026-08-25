@@ -87,24 +87,24 @@ describe("AgentMonitor (unit)", () => {
 		expect(state?.messages).toBe(messages);
 	});
 
-	it("skips repo-context boilerplate when deriving the description", () => {
+	it("description is the first non-empty line, even when it is repo-context boilerplate", () => {
 		monitor.callStarted({
 			callId: "a2",
 			task: "Repo cwd: /some/repo (Spring Boot microservices, Java 17). Repo信息\nRefactor the auth module",
 			controller: new AbortController(),
 			messages: [],
 		});
-		expect(monitor.get("a2")?.description).toBe("Refactor the auth module");
+		expect(monitor.get("a2")?.description).toBe("Repo cwd: /some/repo (Spring Boot microservices, Java 17). Repo信息");
 	});
 
-	it("falls back to the first line when the whole task is boilerplate", () => {
+	it("description skips leading blank lines and trims", () => {
 		monitor.callStarted({
 			callId: "a3",
-			task: "Repo cwd: /some/repo. Repo信息",
+			task: "\n\n  \nRefactor the auth module\nrest",
 			controller: new AbortController(),
 			messages: [],
 		});
-		expect(monitor.get("a3")?.description).toBe("Repo cwd: /some/repo. Repo信息");
+		expect(monitor.get("a3")?.description).toBe("Refactor the auth module");
 	});
 
 	it("isBoilerplateLine recognizes repo-context lines (case-insensitive)", () => {

@@ -1,30 +1,49 @@
 /**
- * ui/fleet-list.ts — Claude Code-style "FleetView" list rendered below the editor.
+ * ui/fleet-list.ts — the single live fleet surface, rendered below the editor.
  *
- * Shows `main` + each running/queued subagent as a navigable list. Pressing ↓
- * (or ←) at an empty prompt activates the list; ↑/↓ move the selection
- * (filled ● marker), Enter opens the selected agent's live conversation
- * overlay, Esc returns to the prompt. Finished agents linger briefly.
+ * Merges the former above-editor widget and this roster (2.0 had both plus an
+ * /agents command; all three are one surface now). Shows `main` + each agent
+ * as navigable rows carrying the full stat set: turns ↻N≤M · tool uses ·
+ * tokens (context % ⇊compactions) · elapsed, with a current-activity line
+ * (⎿ editing 2 files…) under running agents. Finished agents linger briefly.
  *
- * Mechanics (ported from tintinweb/pi-subagents): the list is a `belowEditor`
- * widget (render-only), and ALL key handling goes through `onTerminalInput` —
- * which fires before the focused editor and can `consume` keys — gated on
- * `getEditorText() === ""` so normal typing is untouched. While any dialog
- * (select/confirm/input, pi's own menus) owns the keyboard, the list stays
- * out of its keys.
+ * Rendering is event-driven: monitor notifications schedule ONE coalesced
+ * render (~150ms trailing edge) — a state change never waits for a polling
+ * tick. A single low-frequency cadence timer (armed only while rows are
+ * visible) animates the spinner, ticks elapsed, and expires finished-row
+ * linger; it disarms itself the moment the surface empties.
+ *
+ * Keys: pressing ↓ (or ←) at an empty prompt activates the list; ↑/↓ move the
+ * selection (filled ● marker), Enter opens the selected agent's live
+ * conversation overlay, Esc returns to the prompt. All key handling goes
+ * through `onTerminalInput` — which fires before the focused editor and can
+ * `consume` keys — gated on `getEditorText() === ""` so normal typing is
+ * untouched. While any dialog owns the keyboard, the list stays out of its
+ * keys.
  */
 import { Editor, isKeyRelease, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentMonitor, AgentCallState } from "../monitor.ts";
 import { ConversationViewer, VIEWPORT_HEIGHT_PCT } from "./conversation-viewer.ts";
-import { formatFleetElapsed, formatFleetTokens, type Theme } from "./shared.ts";
+import {
+	contextUtilizationPercent,
+	describeActivity,
+	formatMs,
+	formatSessionTokens,
+	formatTurns,
+	SPINNER,
+	type Theme,
+} from "./shared.ts";
 
-/** Widget key for the below-editor fleet list (namespaced). */
+/** Widget key for the below-editor fleet surface (namespaced). */
 const FLEET_KEY = "pi-subagents:fleet";
-/** Max agent rows shown at once; extras collapse into a "↓ N more" indicator. */
+/** Max agent rows shown at once; extras collapse into "↑/↓ N more" markers. */
 const MAX_AGENT_ROWS = 5;
-/** Re-render cadence so elapsed/token stats tick while agents run. */
-const TICK_MS = 200;
-/** How long a finished agent lingers in the list before it drops out. */
+/** Coalesced render window: state changes render at most every ~150ms. */
+const RENDER_COALESCE_MS = 150;
+/** Spinner / elapsed / linger cadence while the surface is visible. */
+const TICK_MS = 250;
+/** How long a finished agent lingers in the list before it drops out
+ *  (single tier — the former widget's 5s/10s split is gone). */
 const FINISHED_LINGER_MS = 4_000;
 
 /** Minimal UI surface the FleetView needs from `ctx.ui` (structural subset). */
@@ -64,8 +83,8 @@ export class FleetList {
 	private tui: { requestRender(): void; terminal: { columns: number; rows: number }; focusedComponent?: unknown } | undefined;
 	private inputUnsub: (() => void) | undefined;
 	private widgetRegistered = false;
-	private timer: ReturnType<typeof setInterval> | undefined;
-	/** Whether the FleetView is enabled (settings `fleetView`, default true).
+
+	/** Whether the fleet surface is enabled (settings `fleet`, default true).
 	 *  When disabled the list never registers and never captures input. */
 	private enabled = true;
 
@@ -78,30 +97,31 @@ export class FleetList {
 	private viewingCallId: string | undefined;
 
 	private readonly monitor: AgentMonitor;
-	/** Agent snapshot taken once per update() tick and reused by
-	 *  clampSelection/handleKey/renderBar — previously each 200ms tick scanned
-	 *  the monitor up to three times (update + clamp + render) for the same
-	 *  state. Entry 0 of the conceptual roster is always `main`, so agent
-	 *  indexes into this array are `selectedIndex - 1`. */
+	private unsubscribe: (() => void) | undefined;
+	/** Agent snapshot taken once per render and reused across row builders. */
 	private currentRecords: AgentCallState[] = [];
+
+	/** Coalesced-render plumbing: one pending trailing-edge timer. */
+	private renderTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Shared cadence timer (spinner/elapsed/linger), armed only while rows
+	 *  are visible. Not a polling dependency: state-change renders ride the
+	 *  monitor-notification coalesce path above; this cadence only animates
+	 *  the spinner, ticks elapsed, and expires finished-row linger. */
+	private tickTimer: ReturnType<typeof setInterval> | undefined;
+	private spinnerFrame = 0;
 
 	constructor(monitor: AgentMonitor) {
 		this.monitor = monitor;
+		this.unsubscribe = monitor.subscribe(() => this.scheduleRender());
 	}
 
 	// ---- Lifecycle ----
 
-	/**
-	 * Enable/disable the list (settings `fleetView`). Disabling deactivates
-	 * navigation and unregisters the widget on the next update; the input hook
-	 * stays registered but immediately returns undefined, so no keys are
-	 * captured while disabled.
-	 */
 	setEnabled(enabled: boolean): void {
 		if (enabled === this.enabled) return;
 		this.enabled = enabled;
 		if (!enabled) this.active = false;
-		this.update();
+		this.renderNow();
 	}
 
 	/** Capture the UI context and (re)register the global input handler. */
@@ -122,21 +142,21 @@ export class FleetList {
 		}
 	}
 
-	/** Ensure the re-render timer is running (called when a call starts).
-	 *  Never armed without a UI context: after dispose() a late monitor event
-	 *  must not resurrect the interval — update() early-returns on `!this.ui`
-	 *  and would never reach the clearInterval branch, ghost-running a 200ms
-	 *  no-op timer until the next session. */
-	ensureTimer(): void {
-		if (this.ui && !this.timer) {
-			this.timer = setInterval(() => this.update(), TICK_MS);
-		}
+	/** Immediate synchronous render pass — used by the rebind path so a
+	 *  freshly attached surface paints without waiting for the coalesce
+	 *  window. */
+	refresh(): void {
+		this.renderNow();
 	}
 
 	dispose(): void {
-		if (this.timer) {
-			clearInterval(this.timer);
-			this.timer = undefined;
+		if (this.tickTimer) {
+			clearInterval(this.tickTimer);
+			this.tickTimer = undefined;
+		}
+		if (this.renderTimer) {
+			clearTimeout(this.renderTimer);
+			this.renderTimer = undefined;
 		}
 		try {
 			this.inputUnsub?.();
@@ -163,17 +183,34 @@ export class FleetList {
 		this.widgetRegistered = false;
 		this.tui = undefined;
 		this.active = false;
-		// Null last so a viewerClose() microtask above can't re-register the widget.
+		// Keep the monitor subscription: the controller outlives sessions and
+		// late callEnded notifications must not throw. Null last so a
+		// viewerClose() microtask above can't re-register the widget.
 		this.ui = undefined;
 	}
 
-	/** Re-register/refresh the below-editor widget; clears it when idle. */
-	update(): void {
+	// ---- Event-driven rendering ----
+
+	/** Monitor notification entry: coalesce into one trailing-edge render. */
+	private scheduleRender(): void {
+		if (!this.ui || this.renderTimer) return;
+		this.renderTimer = setTimeout(() => {
+			this.renderTimer = undefined;
+			this.renderNow();
+		}, RENDER_COALESCE_MS);
+	}
+
+	/** Immediate render pass: sync snapshot, paint, arm/disarm cadence. */
+	private renderNow(): void {
 		if (!this.ui) return;
 		const records = (this.currentRecords = this.enabled ? this.agentRecords() : []);
 		const hasAgents = records.length > 0;
 
 		if (!hasAgents) {
+			if (this.tickTimer) {
+				clearInterval(this.tickTimer);
+				this.tickTimer = undefined;
+			}
 			if (this.widgetRegistered) {
 				try {
 					this.ui.setWidget(FLEET_KEY, undefined);
@@ -183,18 +220,30 @@ export class FleetList {
 				this.widgetRegistered = false;
 				this.tui = undefined;
 			}
-			if (this.timer) {
-				clearInterval(this.timer);
-				this.timer = undefined;
-			}
 			this.active = false;
 			this.selectedIndex = 0;
 			return;
 		}
 
 		this.clampSelection();
-		this.ensureTimer(); // keep stats ticking whenever the list is shown
+		this.paint();
 
+		// Cadence armed while ANY row is visible (running stats must tick and
+		// finished rows must expire their linger even with no further events);
+		// armed after paint() so a freshly registered surface animates at once.
+		// Not a polling dependency: state-change renders ride the coalesced
+		// monitor-notification path; this timer only animates and expires.
+		if (!this.tickTimer && this.widgetRegistered) {
+			this.tickTimer = setInterval(() => {
+				this.spinnerFrame++;
+				this.renderNow();
+			}, TICK_MS);
+		}
+	}
+
+	/** Register or refresh the below-editor widget against the captured TUI. */
+	private paint(): void {
+		if (!this.ui) return;
 		if (!this.widgetRegistered) {
 			try {
 				this.ui.setWidget(
@@ -213,7 +262,7 @@ export class FleetList {
 				);
 				this.widgetRegistered = true;
 			} catch {
-				/* registration failed — retry on next update */
+				/* registration failed — retried on the next scheduled render */
 			}
 		} else {
 			try {
@@ -228,8 +277,8 @@ export class FleetList {
 
 	/**
 	 * Agents shown in the list, earliest-launched first. Included: running,
-	 * the agent currently being viewed, and recently-finished ones (they
-	 * linger briefly before dropping out).
+	 * the agent currently being viewed, and recently-finished ones (single
+	 * linger tier before they drop out).
 	 */
 	private agentRecords(): AgentCallState[] {
 		const now = Date.now();
@@ -244,7 +293,6 @@ export class FleetList {
 	}
 
 	private clampSelection(): void {
-		// Roster = main + currentRecords → max selectable index is its length.
 		const max = this.currentRecords.length;
 		if (this.selectedIndex > max) this.selectedIndex = Math.max(0, max);
 		if (this.selectedIndex < 0) this.selectedIndex = 0;
@@ -276,7 +324,7 @@ export class FleetList {
 			if (isActivator && this.currentRecords.length > 0 && this.getEditorTextSafe() === "") {
 				this.active = true;
 				this.selectedIndex = 0;
-				this.update();
+				this.paint();
 				return { consume: true };
 			}
 			return undefined;
@@ -286,7 +334,7 @@ export class FleetList {
 		if (matchesKey(data, "down")) {
 			const max = this.currentRecords.length;
 			this.selectedIndex = Math.min(max, this.selectedIndex + 1);
-			this.update();
+			this.paint();
 			return { consume: true };
 		}
 		if (matchesKey(data, "up")) {
@@ -295,7 +343,7 @@ export class FleetList {
 				return { consume: true };
 			}
 			this.selectedIndex -= 1;
-			this.update();
+			this.paint();
 			return { consume: true };
 		}
 		if (matchesKey(data, "escape")) {
@@ -342,7 +390,7 @@ export class FleetList {
 	private deactivate(): void {
 		this.active = false;
 		this.selectedIndex = 0;
-		this.update();
+		this.paint();
 	}
 
 	// ---- Viewer overlay ----
@@ -361,7 +409,7 @@ export class FleetList {
 		this.openAgent(state.callId);
 	}
 
-	/** Open the conversation overlay for one agent (also used by /agents). */
+	/** Open the conversation overlay for one agent. */
 	openAgent(callId: string): void {
 		const state = this.monitor.get(callId);
 		if (!this.ui) return;
@@ -413,7 +461,7 @@ export class FleetList {
 		}
 		this.viewerClose = undefined;
 		this.viewingCallId = undefined;
-		this.update();
+		this.paint();
 	}
 
 	// ---- Rendering ----
@@ -421,13 +469,13 @@ export class FleetList {
 	private renderBar(width: number, theme: Theme): string[] {
 		const agents = this.currentRecords;
 		if (agents.length === 0) return [];
-		// Clamp locally so a render between a roster shrink and the next update()
-		// never loses the selection marker.
+		// Clamp locally so a render between a roster shrink and the next
+		// renderNow() never loses the selection marker.
 		const sel = Math.min(this.selectedIndex, agents.length);
 
 		const hint = this.active
 			? "↑↓ select · enter view · esc back"
-			: "esc to interrupt · ← for agents · ↓ to manage";
+			: "esc to interrupt · ↓ agents · enter view";
 		const lines: string[] = [];
 		lines.push(truncateToWidth(`  ${theme.fg("dim", hint)}`, width));
 		lines.push("");
@@ -441,7 +489,7 @@ export class FleetList {
 
 		if (start > 0) lines.push(rightAlign("", theme.fg("dim", `↑ ${start} more`), width));
 		for (let a = start; a < start + visible; a++) {
-			lines.push(this.renderAgentRow(a + 1, sel, agents[a]!, width, theme));
+			lines.push(...this.renderAgentBlock(a + 1, sel, agents[a]!, width, theme));
 		}
 		if (hiddenBelow > 0) lines.push(rightAlign("", theme.fg("dim", `↓ ${hiddenBelow} more`), width));
 
@@ -452,10 +500,41 @@ export class FleetList {
 		return rosterIndex === sel ? theme.fg("accent", "●") : theme.fg("dim", "○");
 	}
 
-	private renderAgentRow(rosterIndex: number, sel: number, state: AgentCallState, width: number, theme: Theme): string {
-		const left = `  ${this.bullet(rosterIndex, sel, theme)} ${theme.fg("muted", state.displayName)}  ${state.description}`;
-		const elapsedMs = (state.completedAt ?? Date.now()) - state.startedAt; // freezes once finished
-		const right = theme.fg("dim", `${formatFleetElapsed(elapsedMs)} · ${formatFleetTokens(state.lifetimeTokens)}`);
-		return rightAlign(left, right, width);
+	/** Status glyph: spinner for running, ✓ / ✓(turn limit) / ✗ otherwise. */
+	private statusGlyph(state: AgentCallState, theme: Theme): string {
+		if (state.status === "running") return theme.fg("accent", SPINNER[this.spinnerFrame % SPINNER.length]!);
+		if (state.status === "completed")
+			return state.maxTurnsReached ? theme.fg("warning", "✓") : theme.fg("success", "✓");
+		return theme.fg("error", "✗");
+	}
+
+	/** Two-line block per agent: header row (stats right-aligned) + activity. */
+	private renderAgentBlock(rosterIndex: number, sel: number, state: AgentCallState, width: number, theme: Theme): string[] {
+		const glyph = this.statusGlyph(state, theme);
+		const headerLeft = `  ${this.bullet(rosterIndex, sel, theme)} ${glyph} ${theme.fg("muted", state.displayName)}${state.id ? theme.fg("dim", ` ${state.id}`) : ""}  ${state.description}`;
+
+		const percent = contextUtilizationPercent(state.contextTokens, state.model);
+		const tokenText =
+			state.lifetimeTokens > 0
+				? formatSessionTokens(state.lifetimeTokens, percent, theme, state.compactions)
+				: "";
+		const elapsedMs = (state.completedAt ?? Date.now()) - state.startedAt;
+		const parts: string[] = [formatTurns(state.turns, state.maxTurns)];
+		if (state.toolUses > 0) parts.push(`${state.toolUses} tools`);
+		if (tokenText) parts.push(tokenText);
+		parts.push(formatMs(elapsedMs));
+		const headerRight = parts.join(theme.fg("dim", " · "));
+		if (state.status !== "running" && state.status !== "completed") {
+			// error/aborted rows carry the reason inline when there is one.
+			const reason = state.errorMessage ? `: ${state.errorMessage.slice(0, 48)}` : "";
+			return [rightAlign(`${headerLeft}${theme.fg("error", reason)}`, headerRight, width)];
+		}
+
+		const block = [rightAlign(headerLeft, headerRight, width)];
+		if (state.status === "running") {
+			const activity = describeActivity(state.activeTools, state.responseTail);
+			block.push(truncateToWidth(`${theme.fg("dim", "      ⎿  ")}${theme.fg("dim", activity)}`, width));
+		}
+		return block;
 	}
 }

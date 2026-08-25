@@ -28,6 +28,10 @@ export type AgentCallStatus = "running" | "completed" | "aborted" | "error";
 /** Live per-call state — the source of truth for the UI layer. */
 export interface AgentCallState {
 	readonly callId: string;
+	/** Stable human-readable spawn id (AdjectiveNoun) — the display identity
+	 *  across UI rows, results, artifacts, and warnings. Optional so tests and
+	 *  legacy callers without one still render. */
+	readonly id?: string;
 	/** Display name for widget/fleet rows. Derived: options.displayName ?? "Agent". */
 	readonly displayName: string;
 	/** Row description: first non-empty line of the task prompt. */
@@ -36,13 +40,6 @@ export interface AgentCallState {
 	readonly startedAt: number;
 	/** Effective maxTurns for this call (undefined = unlimited). */
 	readonly maxTurns?: number;
-	/**
-	 * Whether the spawner declared this call background. `undefined` =
-	 * undeclared — stays visible in the widget's default "background" mode;
-	 * only an explicit foreground declaration (`background === false`, agents
-	 * already rendering inline as the tool result) drops out of that mode.
-	 */
-	readonly background?: boolean;
 	/** Per-call controller — monitor.abort(callId) reaches the live process. */
 	readonly controller: AbortController;
 	/** Live message array (same reference spawnAgent appends to). */
@@ -75,12 +72,11 @@ export interface AgentCallState {
 /** Metadata for callStarted — everything known at spawn time. */
 export interface AgentCallStartMeta {
 	callId: string;
+	/** Stable display id; omit for "Agent"-style legacy callers. */
+	id?: string;
 	/** Raw task prompt (first line becomes the row description). */
 	task: string;
-	/** UI display name; omit for "Agent". */
 	displayName?: string;
-	/** Declared background flag; omit for undeclared (visible everywhere). */
-	background?: boolean;
 	/** Model override, when the caller passed --model. */
 	model?: string;
 	maxTurns?: number;
@@ -120,23 +116,17 @@ export function isBoilerplateLine(line: string): boolean {
 	const lower = line.trim().toLowerCase();
 	return BOILERPLATE_LINE_PREFIXES.some((prefix) => lower.startsWith(prefix));
 }
-
-/** Derive the row description: first non-boilerplate line of the task, trimmed.
- *  Falls back to the first non-empty line when everything is boilerplate.
- *  Scans incrementally (indexOf + slice per line) instead of split+map+filter:
+/** Row description: first non-empty line of the task, trimmed. Scans
+ *  incrementally (indexOf + slice per line) instead of split+map+filter:
  *  task prompts embed full diffs (up to hundreds of KB), and only the first
  *  content line is needed — no reason to materialize the whole line array. */
 function describeTask(task: string): string {
 	let start = 0;
-	let firstNonEmpty = "";
 	for (;;) {
 		const nl = task.indexOf("\n", start);
 		const line = (nl === -1 ? task.slice(start) : task.slice(start, nl)).trim();
-		if (line) {
-			if (!isBoilerplateLine(line)) return line;
-			if (!firstNonEmpty) firstNonEmpty = line;
-		}
-		if (nl === -1) return firstNonEmpty;
+		if (line) return line;
+		if (nl === -1) return "";
 		start = nl + 1;
 	}
 }
@@ -155,11 +145,11 @@ export class AgentMonitor {
 		if (!meta || typeof meta.callId !== "string" || !meta.callId) return;
 		this.calls.set(meta.callId, {
 			callId: meta.callId,
+			id: typeof meta.id === "string" && meta.id ? meta.id : undefined,
 			displayName: typeof meta.displayName === "string" && meta.displayName.trim() ? meta.displayName.trim() : "Agent",
 			description: describeTask(typeof meta.task === "string" ? meta.task : ""),
 			startedAt: Date.now(),
 			maxTurns: typeof meta.maxTurns === "number" && meta.maxTurns >= 0 ? meta.maxTurns : undefined,
-			background: meta.background,
 			controller: meta.controller,
 			messages: Array.isArray(meta.messages) ? meta.messages : [],
 			model: typeof meta.model === "string" && meta.model ? meta.model : undefined,

@@ -10,24 +10,23 @@
  *
  * Extension role (also this file, registered via the `pi.extensions` manifest):
  * registers the `subagent` tool (src/tools/subagent.ts) — general-purpose
- * single/parallel/chain delegation to named agents (user/project/bundled
+ * single/parallel delegation to named agents (user/project/bundled
  * discovery). Registered ONLY when recursion is allowed for THIS process
  * (top-level, or an opted-in child below the max-depth cap) — the
  * whitelist-by-default recursion guard. A default-spawned child loads
- * without the tool, so it physically cannot recurse. Plus the agent UI:
- * the above-editor agent widget (src/ui/agent-widget.ts) — live per-agent
- * stats with spinner, activity lines, and token annotations; the
- * below-editor FleetView (src/ui/fleet-list.ts) — navigable main+agents
- * list with a conversation-viewer overlay; and the `/agents` command —
- * list the session's agents, Enter opens the conversation viewer.
+ * without the tool, so it physically cannot recurse. Plus the agent UI: the
+ * single below-editor fleet surface (src/ui/fleet-list.ts) — navigable
+ * main+agents roster with per-agent stats, activity lines, and the
+ * conversation-viewer overlay (Enter); event-driven rendering on monitor
+ * notifications.
  *
  * Configuration is file-based only (src/concurrency.ts), read from
  * `<agentDir>/pi-subagent.json` (global defaults) with
  * `<cwd>/.pi/pi-subagent.json` (project) overriding — there is no interactive
- * settings UI. Keys: `widget` (all/background/off, read once at startup),
- * `fleetView` (boolean, default true, read once at startup), and
- * `maxConcurrency` (3/5/8/10, default 5 — consumed by the dispatch core at
- * call time).
+ * settings UI. Keys: `fleet` (boolean, default true, read once at startup),
+ * `maxConcurrency` (any positive integer, default 5 — consumed by the
+ * dispatch core at call time), `confirmProjectAgents` (boolean, default
+ * true), `stallMs` (default 60000), and `wallClockMs` (default disabled).
  *
  * Session lifecycle: on session_shutdown (quit, /new, /resume, /fork, reload)
  * both surfaces are torn down immediately — widgets unregistered, spinner and
@@ -49,15 +48,14 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { monitor } from "./src/monitor.ts";
 import { isFanoutToolAllowed } from "./src/dispatch.ts";
 import { subagentTool } from "./src/tools/subagent.ts";
-import { loadCoreSettings, type SubagentCoreSettings, type WidgetMode } from "./src/concurrency.ts";
-import { AgentWidget } from "./src/ui/agent-widget.ts";
+import { loadCoreSettings, type SubagentCoreSettings } from "./src/concurrency.ts";
 import { FleetList, type FleetUICtx } from "./src/ui/fleet-list.ts";
-import type { WidgetUICtx } from "./src/ui/agent-widget.ts";
 import { setModelCatalog } from "./src/ui/shared.ts";
 
 export {
 	// dispatch core
 	abortAgent,
+	allocateStableId,
 	createSpawnRegistry,
 	getEffectiveMaxConcurrency,
 	getMaxConcurrency,
@@ -67,6 +65,7 @@ export {
 	parsePositiveInt,
 	spawnAgent,
 	currentSpawnDepth,
+	uniquifyStableId,
 	DEFAULT_MAX_CONCURRENCY,
 } from "./src/dispatch.ts";
 export type {
@@ -88,8 +87,8 @@ export type {
 } from "./src/monitor.ts";
 
 // settings + ceiling policy
-export { loadCoreSettings, MAX_CONCURRENCY_OPTIONS } from "./src/concurrency.ts";
-export type { MaxConcurrencyOption, SubagentCoreSettings, WidgetMode } from "./src/concurrency.ts";
+export { loadCoreSettings } from "./src/concurrency.ts";
+export type { SubagentCoreSettings } from "./src/concurrency.ts";
 
 // text extraction
 export { contentText, contentTextBlocks, lastAssistantText } from "./src/text.ts";
@@ -98,22 +97,17 @@ export { contentText, contentTextBlocks, lastAssistantText } from "./src/text.ts
 export { addAgentDir, discoverAgents } from "./agents.ts";
 export type { AgentConfig, AgentDiscoveryResult, AgentScope, AgentSource } from "./agents.ts";
 
-/** How long a finished agent is offered by /agents (mirrors the fleet linger). */
-const FLEET_LINGER_MS = 4_000;
 
 /**
- * Process-global shared UI controller (widget + fleet).
+ * Process-global shared UI controller (fleet surface).
  *
  * Because pi loads every extension entry with `moduleCache: false`, two copies
- * of this package loaded in one process (e.g. a consumer's node_modules copy
- * plus a `-e` dev copy) would otherwise each construct their own AgentWidget /
- * FleetList and fight over the same setWidget keys at 12.5 Hz. Parking the
- * controller on globalThis under a registered symbol makes every copy share
- * one instance: setUICtx is idempotent for the same ctx.ui, and /agents from
- * any copy drives the same widgets.
+ * of this package loaded in one process would otherwise each construct their
+ * own FleetList and fight over the same setWidget key. Parking the controller
+ * on globalThis under a registered symbol makes every copy share one
+ * instance: setUICtx is idempotent for the same ctx.ui.
  */
 interface SharedUiController {
-	readonly widget: AgentWidget;
 	readonly fleet: FleetList;
 }
 
@@ -130,23 +124,13 @@ function getSharedUi(): SharedUiController {
 	} catch {
 		/* unreadable settings → defaults below */
 	}
-	const widgetMode: WidgetMode = settings.widget ?? "background";
-
 	const controller: SharedUiController = {
-		widget: new AgentWidget(monitor, () => widgetMode),
 		fleet: new FleetList(monitor),
 	};
-	if (settings.fleetView === false) controller.fleet.setEnabled(false);
+	if (settings.fleet === false) controller.fleet.setEnabled(false);
 	store[UI_KEY] = controller;
-
-	// Wake the render timers on any monitor change (any package copy's
-	// spawnAgent starts/ends calls). Registered exactly once per process,
-	// together with the shared controller — not per session_start, which would
-	// leak a listener on every /new.
-	monitor.subscribe(() => {
-		controller.widget.ensureTimer();
-		controller.fleet.ensureTimer();
-	});
+	// The FleetList subscribes to monitor changes itself (event-driven
+	// rendering); no extra listener wiring needed here.
 
 	return controller;
 }
@@ -214,69 +198,17 @@ export default function subagentsUiExtension(pi: ExtensionAPI): void {
 		}
 	}
 
-	const { widget, fleet } = getSharedUi();
-
-	// ---- /agents: list agents, open the selected one ----
-	try {
-		pi.registerCommand("agents", {
-			description: "Sub-agent fleet: view agents and open their transcripts",
-			handler: async (_args, ctx) => {
-				try {
-					const now = Date.now();
-					const states = monitor
-						.list()
-						.filter((a) => a.status === "running" || (a.completedAt != null && now - a.completedAt < FLEET_LINGER_MS));
-
-					if (states.length === 0) {
-						ctx.ui.notify("No sub-agents have run in this session.", "info");
-						return;
-					}
-
-					// Disambiguate identical rows (parallel fan-out with the default
-					// displayName produces byte-identical labels): ctx.ui.select returns
-					// the row text, so duplicate rows would make the indexOf below
-					// resolve every selection to the first agent.
-					const seen = new Map<string, number>();
-					const rows = states.map((a) => {
-						const icon =
-							a.status === "running" ? "●" : a.status === "completed" ? "✓" : "✗";
-						const label = a.description.length > 40 ? `${a.description.slice(0, 40)}…` : a.description;
-						const row = `${icon} ${a.displayName} — ${label}`;
-						const n = (seen.get(row) ?? 0) + 1;
-						seen.set(row, n);
-						return n > 1 ? `${row} (#${n})` : row;
-					});
-					const choice = await ctx.ui.select("Agents", rows);
-					if (choice === undefined) return;
-
-					const index = rows.indexOf(choice);
-					if (index >= 0) {
-						if (ctx.hasUI && ctx.mode === "tui") {
-							fleet.openAgent(states[index].callId);
-						} else {
-							ctx.ui.notify("Agent view requires the interactive TUI.", "info");
-						}
-					}
-				} catch (err) {
-					ctx.ui.notify(`/agents failed: ${err instanceof Error ? err.message : String(err)}`, "error");
-				}
-			},
-		});
-	} catch {
-		/* command registration failed (name clash etc.) — widget/fleet still work */
-	}
+	const { fleet } = getSharedUi();
 
 	// ---- UI lifecycle ----
-	/** Re-attach both surfaces to a UI context and refresh them. Idempotent for
-	 *  the same ctx.ui (setUICtx identity early-return); used by session_start
-	 *  and the tool_execution_start fallback re-connection so the two cannot
-	 *  drift. */
-	const rebindUi = (ui: WidgetUICtx & FleetUICtx): void => {
+	/** Re-attach the fleet surface to a UI context and refresh it. Idempotent
+	 *  for the same ctx.ui (setUICtx identity early-return); used by
+	 *  session_start and the tool_execution_start fallback re-connection so
+	 *  the two cannot drift. */
+	const rebindUi = (ui: FleetUICtx): void => {
 		try {
-			widget.setUICtx(ui);
 			fleet.setUICtx(ui);
-			widget.update();
-			fleet.update();
+			fleet.refresh();
 		} catch {
 			/* ignore */
 		}
@@ -292,7 +224,7 @@ export default function subagentsUiExtension(pi: ExtensionAPI): void {
 		}
 		if (!ctx.hasUI || ctx.mode !== "tui") return;
 		// /new starts a fresh session: drop stale monitor state so agents
-		// from the previous session don't resurrect in the new widgets.
+		// from the previous session don't resurrect in the fleet surface.
 		// (Running spawns, if any, are being aborted by the session switch;
 		// their late callEnded notifications are no-ops on cleared ids.)
 		if (event.reason === "new") monitor.clear();
@@ -308,10 +240,10 @@ export default function subagentsUiExtension(pi: ExtensionAPI): void {
 	//      resetExtensionUI() (before-session-invalidate, /reload) disposes
 	//      widget components and clears the maps without notifying extensions;
 	//   2. ctx.ui identity changed on rebind after our session_start ran —
-	//      setUICtx resets the registration and update() re-registers against
+	//      setUICtx resets the registration and refresh() re-registers against
 	//      the fresh context.
 	// Timing benefit: this fires for the very tool call that spawns sub-agents
-	// (e.g. pi-review's `subagent`), so the surfaces are guaranteed registered
+	// (e.g. pi-review's `subagent`), so the surface is guaranteed registered
 	// before the first callStarted notification arrives.
 	pi.on("tool_execution_start", (_event, ctx) => {
 		if (!ctx.hasUI || ctx.mode !== "tui") return;
@@ -328,11 +260,9 @@ export default function subagentsUiExtension(pi: ExtensionAPI): void {
 		// harmless there too.
 		clearToolRegistered();
 		// Prompt teardown on quit, /new, /resume, /fork, and reload: unregister
-		// both widgets, stop the spinner/refresh timers, release the fleet
-		// input hook, and close any open viewer. The next session_start
-		// re-registers everything.
+		// the fleet surface, stop timers, release the input hook, and close any
+		// open viewer. The next session_start re-registers everything.
 		try {
-			widget.dispose();
 			fleet.dispose();
 		} catch {
 			/* ignore */

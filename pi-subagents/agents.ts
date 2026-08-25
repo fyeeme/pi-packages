@@ -120,15 +120,28 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 		try {
 			content = fs.readFileSync(filePath, "utf-8");
 		} catch {
+			console.warn(`[pi-subagents] Skipping unreadable agent file: ${filePath}`);
 			continue;
 		}
 
-		const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
+		let frontmatter: Record<string, string>;
+		let body: string;
+		try {
+			const parsed = parseFrontmatter<Record<string, string>>(content);
+			frontmatter = parsed.frontmatter ?? {};
+			body = parsed.body;
+		} catch (err) {
+			const reason = err instanceof Error ? err.message : String(err);
+			console.warn(`[pi-subagents] Skipping agent file with unparseable frontmatter (${reason}): ${filePath}`);
+			continue;
+		}
 
 		if (!frontmatter.name || !frontmatter.description) {
+			console.warn(
+				`[pi-subagents] Skipping agent file missing required frontmatter fields (name, description): ${filePath}`,
+			);
 			continue;
 		}
-
 		const tools = frontmatter.tools
 			?.split(",")
 			.map((t: string) => t.trim())

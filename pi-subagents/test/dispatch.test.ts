@@ -11,14 +11,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	abortAgent,
+	allocateStableId,
 	createSpawnRegistry,
 	DEFAULT_MAX_CONCURRENCY,
 	getEffectiveMaxConcurrency,
+	getMaxConcurrency,
 	getPiInvocation,
 	mapWithConcurrencyLimit,
 	spawnAgent,
+	uniquifyStableId,
 } from "../src/dispatch.ts";
-
+import { monitor } from "../src/monitor.ts";
 /** Minimal fake ChildProcess: stdout/stderr as EventEmitters + kill spy. */
 function fakeProc(): ChildProcess {
 	const stdout = new EventEmitter();
@@ -134,17 +137,22 @@ describe("mapWithConcurrencyLimit", () => {
 		}
 	});
 
-	it("an out-of-option maxConcurrency value is dropped (fallback 5)", () => {
-		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: 20 }));
+	it("non-positive / non-integer maxConcurrency values are dropped (fallback 5)", () => {
+		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: 0 }));
 		expect(getEffectiveMaxConcurrency()).toBe(5);
+		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: 3.5 }));
+		expect(getEffectiveMaxConcurrency()).toBe(5);
+		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: -2 }));
+		expect(getEffectiveMaxConcurrency()).toBe(5);
+		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: 3 }));
+		expect(getEffectiveMaxConcurrency()).toBe(3);
 	});
 
-	it("PI_MAX_CONCURRENT_SUBAGENTS is a consumer-level override the core itself does not read", async () => {
+	it("PI_MAX_CONCURRENT_SUBAGENTS is no longer honored — the file alone drives the ceiling", () => {
 		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: 3 }));
 		process.env.PI_MAX_CONCURRENT_SUBAGENTS = "50";
 		try {
-			// The core's effective default stays file-driven (3); pi-review
-			// resolves its own env var before calling in with an explicit ceiling.
+			expect(getMaxConcurrency()).toBe(3);
 			expect(getEffectiveMaxConcurrency()).toBe(3);
 		} finally {
 			delete process.env.PI_MAX_CONCURRENT_SUBAGENTS;
@@ -358,5 +366,52 @@ describe("spawnAgent", () => {
 		expect(r.maxTurnsReached).toBe(true);
 		expect(r.aborted).toBe(true);
 		expect(r.usage.turns).toBe(1);
+	});
+});
+
+describe("stable spawn ids", () => {
+	beforeEach(() => {
+		spawnMock.mockReset();
+		monitor.clear();
+	});
+	afterEach(() => monitor.clear());
+
+	it("uniquifyStableId appends -2/-3 suffixes on collision", () => {
+		const taken = new Set(["SwiftFox", "SwiftFox-2"]);
+		expect(uniquifyStableId("SwiftFox", taken)).toBe("SwiftFox-3");
+		expect(uniquifyStableId("CalmOtter", taken)).toBe("CalmOtter");
+	});
+
+	it("allocateStableId yields AdjectiveNoun ids unique within the process", () => {
+		const seen = new Set<string>();
+		for (let i = 0; i < 200; i++) {
+			const id = allocateStableId();
+			expect(id).toMatch(/^[A-Z][a-z]+[A-Z][a-z]+(-\d+)?$/);
+			expect(seen.has(id)).toBe(false);
+			seen.add(id);
+		}
+	});
+
+	it("spawnAgent returns a stable id alongside the untouched callId; monitor carries it", async () => {
+		const proc = fakeProc();
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const p = spawnAgent(registry, { callId: "subagent-scout-1738-abc", task: "hi" });
+		proc.emit("close", 0);
+		const r = await p;
+		expect(r.callId).toBe("subagent-scout-1738-abc"); // addressing key unchanged
+		expect(r.id).toMatch(/^[A-Z][a-z]+[A-Z][a-z]+$/); // AdjectiveNoun
+		expect(monitor.get(r.callId)?.id).toBe(r.id); // same id across surfaces
+	});
+
+	it("an explicit options.id passes through verbatim", async () => {
+		const proc = fakeProc();
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const p = spawnAgent(registry, { callId: "c-id", task: "hi", id: "PluckyBadger" });
+		proc.emit("close", 0);
+		const r = await p;
+		expect(r.id).toBe("PluckyBadger");
+		expect(monitor.get("c-id")?.id).toBe("PluckyBadger");
 	});
 });

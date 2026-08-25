@@ -3,8 +3,8 @@
  * driven through a fake ExtensionAPI + fake ui context (no real TUI).
  *
  * Covers the registration contract and the session-lifecycle teardown the
- * extension promises: session_shutdown unregisters both widgets promptly,
- * and /new clears stale monitor state so nothing resurrects.
+ * extension promises: session_shutdown unregisters the fleet surface
+ * promptly, and /new clears stale monitor state so nothing resurrects.
  *
  * The shared controller is cached on globalThis (Symbol.for); each test drops
  * it (plus the monitor state) so per-test settings files take effect.
@@ -17,7 +17,6 @@ import { join } from "node:path";
 import extensionFactory from "../index.ts";
 import { monitor } from "../src/monitor.ts";
 
-const WIDGET_KEY = "pi-subagents:agents";
 const FLEET_KEY = "pi-subagents:fleet";
 const UI_KEY = Symbol.for("@fyeeme/pi-subagents/ui");
 
@@ -116,7 +115,7 @@ function registeredKeys(setWidget: ReturnType<typeof vi.fn>): string[] {
 }
 
 describe("extension lifecycle", () => {
-	it("session_start registers the above widget and the below-editor fleet", () => {
+	it("session_start registers the below-editor fleet surface (the single UI)", () => {
 		const pi = fakePi();
 		const { setWidget, ui } = fakeUi();
 		extensionFactory(pi as never);
@@ -125,21 +124,12 @@ describe("extension lifecycle", () => {
 		pi.emit("session_start", { type: "session_start", reason: "startup" }, fakeCtx(ui, projDir));
 
 		const keys = registeredKeys(setWidget);
-		expect(keys).toContain(WIDGET_KEY);
-		expect(keys).toContain(FLEET_KEY);
+		expect(keys).toEqual([FLEET_KEY]);
 		const fleetCall = setWidget.mock.calls.find((c) => c[0] === FLEET_KEY && typeof c[1] === "function");
 		expect(fleetCall?.[2]).toEqual({ placement: "belowEditor" });
-		const widgetCall = setWidget.mock.calls.find((c) => c[0] === WIDGET_KEY && typeof c[1] === "function");
-		expect(widgetCall?.[2]).toEqual({ placement: "aboveEditor" });
 	});
 
-	it("registers the /agents command", () => {
-		const pi = fakePi();
-		extensionFactory(pi as never);
-		expect(pi.registerCommand).toHaveBeenCalledWith("agents", expect.objectContaining({ handler: expect.any(Function) }));
-	});
-
-	it("session_shutdown (quit) unregisters both surfaces promptly", () => {
+	it("session_shutdown (quit) unregisters the fleet surface promptly", () => {
 		const pi = fakePi();
 		const { setWidget, ui } = fakeUi();
 		extensionFactory(pi as never);
@@ -151,7 +141,7 @@ describe("extension lifecycle", () => {
 		pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, fakeCtx(ui, projDir));
 
 		const cleared = setWidget.mock.calls.filter((c) => c[1] === undefined).map((c) => c[0] as string);
-		expect(cleared).toEqual(expect.arrayContaining([WIDGET_KEY, FLEET_KEY]));
+		expect(cleared).toContain(FLEET_KEY);
 		expect(setWidget.mock.calls.filter((c) => typeof c[1] === "function")).toHaveLength(0);
 	});
 
@@ -171,22 +161,8 @@ describe("extension lifecycle", () => {
 		expect(setWidget).not.toHaveBeenCalled(); // nothing to show → no registration
 	});
 
-	it("widget: off — the above widget never registers, the fleet still does", () => {
-		writeProject({ widget: "off" });
-		const pi = fakePi();
-		const { setWidget, ui } = fakeUi();
-		extensionFactory(pi as never);
-
-		seedAgent();
-		pi.emit("session_start", { type: "session_start", reason: "startup" }, fakeCtx(ui, projDir));
-
-		const keys = registeredKeys(setWidget);
-		expect(keys).not.toContain(WIDGET_KEY);
-		expect(keys).toContain(FLEET_KEY);
-	});
-
-	it("fleetView: false — the fleet never registers and never captures input", () => {
-		writeProject({ fleetView: false });
+	it("fleet: false — the fleet never registers and never captures input", () => {
+		writeProject({ fleet: false });
 		const pi = fakePi();
 		const { setWidget, ui, inputHandlers } = fakeUi();
 		extensionFactory(pi as never);
@@ -194,9 +170,7 @@ describe("extension lifecycle", () => {
 		seedAgent();
 		pi.emit("session_start", { type: "session_start", reason: "startup" }, fakeCtx(ui, projDir));
 
-		const keys = registeredKeys(setWidget);
-		expect(keys).toContain(WIDGET_KEY);
-		expect(keys).not.toContain(FLEET_KEY);
+		expect(registeredKeys(setWidget)).toEqual([]);
 
 		// The inert input hook lets the down arrow (↓) flow through to the editor.
 		expect(inputHandlers.length).toBeGreaterThan(0);
@@ -205,29 +179,22 @@ describe("extension lifecycle", () => {
 		}
 	});
 
-	it("fleetView: false still exposes the viewer through /agents", async () => {
-		writeProject({ fleetView: false });
+	it("legacy widget/fleetView settings are ignored — the fleet stays on by default", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		writeProject({ widget: "background", fleetView: false });
 		const pi = fakePi();
-		const { setWidget, ui } = fakeUi();
+		const { setWidget, ui, inputHandlers } = fakeUi();
 		extensionFactory(pi as never);
 
 		seedAgent();
 		pi.emit("session_start", { type: "session_start", reason: "startup" }, fakeCtx(ui, projDir));
 
-		const command = pi.registerCommand.mock.calls.find((c) => c[0] === "agents")?.[1] as {
-			handler: (args: string, ctx: any) => Promise<void>;
-		};
-		expect(command).toBeDefined();
-		// openAgent goes through the ui captured at session_start (fakeUi's),
-		// not the command ctx — route the ctx's custom to the same spy.
-		const select = vi.fn(async () => "● Agent — Do work");
-		const notify = vi.fn();
-		await command.handler("", {
-			hasUI: true,
-			mode: "tui",
-			ui: { select, notify, custom: ui.custom, setWidget },
-		});
-		expect(ui.custom).toHaveBeenCalledTimes(1); // viewer overlay opened despite fleet being off
+		// fleetView/widget warned + ignored → the merged default (on) applies.
+		expect(registeredKeys(setWidget)).toEqual([FLEET_KEY]);
+		// And the surface is live: ↓ at an empty editor activates it.
+		const handler = inputHandlers[inputHandlers.length - 1]!;
+		expect(handler("\x1b[B")).toEqual({ consume: true });
+		warn.mockRestore();
 	});
 
 	it("tool_execution_start re-registers after the registration was lost (component invalidate)", () => {
@@ -242,20 +209,16 @@ describe("extension lifecycle", () => {
 		// (e.g. theme switch): our flags reset while agents keep running. The
 		// registered values are FACTORIES — pi invokes them to build components.
 		const invalidateAll = () => {
-			for (const key of [WIDGET_KEY, FLEET_KEY]) {
-				const call = setWidget.mock.calls.find((c) => c[0] === key && typeof c[1] === "function");
-				const factory = call?.[1] as (tui: unknown, theme: unknown) => { invalidate(): void };
-				factory(undefined, undefined).invalidate();
-			}
+			const call = setWidget.mock.calls.find((c) => c[0] === FLEET_KEY && typeof c[1] === "function");
+			const factory = call?.[1] as (tui: unknown, theme: unknown) => { invalidate(): void };
+			factory(undefined, undefined).invalidate();
 		};
 		invalidateAll();
 		setWidget.mockClear();
 
 		pi.emit("tool_execution_start", { type: "tool_execution_start", toolCallId: "t1" }, fakeCtx(ui, projDir));
 
-		const keys = registeredKeys(setWidget);
-		expect(keys).toContain(WIDGET_KEY);
-		expect(keys).toContain(FLEET_KEY);
+		expect(registeredKeys(setWidget)).toEqual([FLEET_KEY]);
 	});
 
 	it("tool_execution_start re-captures a rebound ctx.ui (fresh object)", () => {
@@ -266,15 +229,13 @@ describe("extension lifecycle", () => {
 
 		seedAgent();
 		pi.emit("session_start", { type: "session_start", reason: "startup" }, fakeCtx(ui1, projDir));
-		expect(registeredKeys(setWidget1)).toContain(WIDGET_KEY);
+		expect(registeredKeys(setWidget1)).toEqual([FLEET_KEY]);
 
 		// The rebind surfaces here first — no session_start for us afterwards.
 		pi.emit("tool_execution_start", { type: "tool_execution_start", toolCallId: "t1" }, fakeCtx(ui2, projDir));
 
 		// Re-registered against the NEW context (its setWidget), not the stale one.
-		const keys2 = registeredKeys(setWidget2);
-		expect(keys2).toContain(WIDGET_KEY);
-		expect(keys2).toContain(FLEET_KEY);
+		expect(registeredKeys(setWidget2)).toEqual([FLEET_KEY]);
 	});
 
 	it("tool_execution_start is a no-op in the steady state (same ctx.ui → no re-registration)", () => {
@@ -294,7 +255,7 @@ describe("extension lifecycle", () => {
 		expect(setWidget.mock.calls.filter((c) => typeof c[1] === "function")).toHaveLength(registeredAfterStart);
 	});
 
-	it("tool_execution_start alone wakes the surfaces when session_start never bound a UI", () => {
+	it("tool_execution_start alone wakes the surface when session_start never bound a UI", () => {
 		const pi = fakePi();
 		const { setWidget, ui } = fakeUi();
 		extensionFactory(pi as never);
@@ -304,16 +265,14 @@ describe("extension lifecycle", () => {
 		const filteredCtx = fakeCtx(ui, projDir) as { hasUI: boolean };
 		filteredCtx.hasUI = false;
 		pi.emit("session_start", { type: "session_start", reason: "startup" }, filteredCtx);
-		expect(registeredKeys(setWidget)).toHaveLength(0);
+		expect(registeredKeys(setWidget)).toEqual([]);
 
 		// …but the first tool execution re-captures and registers.
 		pi.emit("tool_execution_start", { type: "tool_execution_start", toolCallId: "t1" }, fakeCtx(ui, projDir));
-		const keys = registeredKeys(setWidget);
-		expect(keys).toContain(WIDGET_KEY);
-		expect(keys).toContain(FLEET_KEY);
+		expect(registeredKeys(setWidget)).toEqual([FLEET_KEY]);
 	});
 
-	it("after shutdown, a resume re-registers the surfaces (monitor state kept)", () => {
+	it("after shutdown, a resume re-registers the surface (monitor state kept)", () => {
 		const pi = fakePi();
 		const { setWidget, ui } = fakeUi();
 		extensionFactory(pi as never);
@@ -324,11 +283,9 @@ describe("extension lifecycle", () => {
 		setWidget.mockClear();
 
 		pi.emit("session_start", { type: "session_start", reason: "resume" }, fakeCtx(ui, projDir));
-		// The running agent is still in the monitor → surfaces re-register.
+		// The running agent is still in the monitor → the surface re-registers.
 		expect(monitor.list().length).toBe(1);
-		const keys = registeredKeys(setWidget);
-		expect(keys).toContain(WIDGET_KEY);
-		expect(keys).toContain(FLEET_KEY);
+		expect(registeredKeys(setWidget)).toEqual([FLEET_KEY]);
 	});
 });
 
@@ -347,9 +304,6 @@ describe("composition guard (consumer-composed factories)", () => {
 		// same tool name lands in two different extensions' maps.
 		expect(a.registerTool).toHaveBeenCalledTimes(1);
 		expect(b.registerTool).toHaveBeenCalledTimes(0);
-		// /agents and lifecycle handlers may repeat per entry — idempotent.
-		expect(a.registerCommand).toHaveBeenCalledTimes(1);
-		expect(b.registerCommand).toHaveBeenCalledTimes(1);
 	});
 
 	it("a fresh process (flag unset) registers normally", () => {

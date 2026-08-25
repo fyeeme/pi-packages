@@ -19,8 +19,8 @@
  * start/end, compactions, streamed text. Purely observational: the dispatch
  * path never reads monitor state back, and every notification is wrapped in
  * try/catch so the UI layer cannot break a spawn. The optional pi extension
- * (index.ts + ui/) renders that state as the above-editor agent widget,
- * the below-editor FleetView, and the /agents command.
+ * (index.ts + ui/) renders that state as the below-editor fleet surface
+ * with its conversation-viewer overlay.
  *
  * When pi promotes spawnAgent to a public @earendil-works/pi-coding-agent
  * export, this dispatch layer should be deleted in favor of that import.
@@ -41,8 +41,8 @@ export type {
 	AgentCallState,
 	AgentCallStatus,
 } from "./monitor.ts";
-export { loadCoreSettings, MAX_CONCURRENCY_OPTIONS } from "./concurrency.ts";
-export type { MaxConcurrencyOption, SubagentCoreSettings, WidgetMode } from "./concurrency.ts";
+export { loadCoreSettings } from "./concurrency.ts";
+export type { SubagentCoreSettings } from "./concurrency.ts";
 export { contentText, contentTextBlocks, lastAssistantText } from "./text.ts";
 
 /** Fire a monitor notification. UI observability must never break dispatch. */
@@ -56,6 +56,68 @@ function notifyMonitor(fn: () => void): void {
 
 /** Stable id for one agent call; the registry key for per-call abort. */
 export type AgentCallId = string;
+
+// ---------------------------------------------------------------------------
+// Stable spawn identity (omp parity)
+// ---------------------------------------------------------------------------
+//
+// Every spawn gets a short human-readable id ("SwiftFox") shown consistently
+// in the monitor state, UI rows, result `details`, artifact filenames, and
+// warnings — surfaces where `subagent-scout-1738024-3f2a91` is noise. The
+// callId stays the addressing key (registry/abort/monitor lookup); the two
+// map 1:1. Nested calls follow a `Parent.Child` naming convention if a caller
+// passes such ids explicitly (no nesting UI consumes them today).
+
+const ADJECTIVES = [
+	"Agile", "Bold", "Brave", "Bright", "Calm", "Crisp", "Dapper", "Deft",
+	"Eager", "Fierce", "Fluent", "Gentle", "Happy", "Jolly", "Keen", "Lucky",
+	"Mellow", "Merry", "Nimble", "Noble", "Peppy", "Plucky", "Proud", "Prime",
+	"Quick", "Quiet", "Rapid", "Sassy", "Sharp", "Silky", "Sleek", "Slick",
+	"Smart", "Smooth", "Snappy", "Snug", "Solid", "Spry", "Steady", "Sturdy",
+	"Sunny", "Suave", "Swift", "Timely", "Valiant", "Vivid", "Warm", "Witty",
+] as const;
+
+const NOUNS = [
+	"Falcon", "Heron", "Otter", "Raven", "Lynx", "Fox", "Wolf", "Bear",
+	"Hawk", "Eagle", "Badger", "Beaver", "Cougar", "Coyote", "Ermine", "Ibex",
+	"Jaguar", "Kestrel", "Leopard", "Marten", "Moose", "Osprey", "Panther",
+	"Pika", "Puma", "Quokka", "Sable", "Tapir", "Toucan", "Walrus", "Wombat",
+	"Finch", "Sparrow", "Robin", "Wren", "Merlin", "Harrier", "Pelican",
+	"Puffin", "Curlew", "Plover", "Dunlin", "Avocet", "Stilt", "Godwit",
+] as const;
+
+/** Process-lifetime set of allocated stable ids. Never freed: reuse would put
+ *  two rows with the same id in the finished-row window and collide artifact
+ *  names across a session; growth is a few dozen entries per session. */
+const usedStableIds = new Set<string>();
+
+/**
+ * First free id derived from `candidate` (`candidate`, `candidate-2`,
+ * `candidate-3`, …) measured against `taken`. Pure — the exported seam for
+ * the uniquification rule the generator applies against the live set.
+ */
+export function uniquifyStableId(candidate: string, taken: ReadonlySet<string>): string {
+	if (!taken.has(candidate)) return candidate;
+	for (let n = 2; ; n++) {
+		const suffixed = `${candidate}-${n}`;
+		if (!taken.has(suffixed)) return suffixed;
+	}
+}
+
+/**
+ * Allocate one process-unique stable id (`AdjectiveNoun`). Concurrent calls
+ * never share an id; duplicate base draws get a `-2` suffix.
+ */
+export function allocateStableId(): string {
+	for (;;) {
+		const candidate =
+			ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)]! +
+			NOUNS[Math.floor(Math.random() * NOUNS.length)]!;
+		const id = uniquifyStableId(candidate, usedStableIds);
+		usedStableIds.add(id);
+		return id;
+	}
+}
 
 /** callId → per-call AbortController (Claude Code per-agent abort map). */
 export type AgentAbortMap = Map<AgentCallId, AbortController>;
@@ -145,13 +207,12 @@ function childSpawnEnv(options: AgentSpawnOptions): NodeJS.ProcessEnv {
 export const DEFAULT_MAX_CONCURRENCY = 5;
 
 /**
- * Effective default concurrency ceiling for fan-out (the "concurrent agents"
- * setting): `maxConcurrency` from the package settings files (project
- * layer overriding global; options 3/5/8/10), falling back to the hardcoded
+ * Effective concurrency ceiling for fan-out (the "concurrent agents" setting):
+ * `maxConcurrency` from the package settings files (project layer overriding
+ * global; any positive integer), falling back to the hardcoded
  * {@link DEFAULT_MAX_CONCURRENCY}. Read at call time so an edited file takes
- * effect on the next fan-out without a restart. A consumer-level env override
- * (e.g. pi-review's PI_MAX_CONCURRENT_SUBAGENTS) is resolved by the consumer
- * and takes precedence over this value.
+ * effect on the next fan-out without a restart. There is no environment-
+ * variable configuration channel — the settings file is the single source.
  */
 export function getEffectiveMaxConcurrency(): number {
 	// loadCoreSettings is total by contract (malformed files are warned and
@@ -159,20 +220,8 @@ export function getEffectiveMaxConcurrency(): number {
 	return loadCoreSettings().maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
 }
 
-/**
- * Effective concurrency ceiling for parallel fan-out — the package-level
- * ceiling policy shared by every fan-out path. Precedence:
- *   1. PI_MAX_CONCURRENT_SUBAGENTS env var (power-user escape hatch, parity
- *      with CC's CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS; unset/invalid ignored);
- *   2. the shared package setting `maxConcurrency` from
- *      <agentDir>/pi-subagent.json (project layer overriding) — options
- *      3/5/8/10, default 5 (see concurrency.ts).
- * Read at call time so a changed env/file takes effect without a reload.
- * (Converged from pi-review/src/concurrency.ts — one resolver for every
- * consumer instead of a per-package re-export.)
- */
 export function getMaxConcurrency(): number {
-	return parsePositiveInt(process.env.PI_MAX_CONCURRENT_SUBAGENTS) ?? getEffectiveMaxConcurrency();
+	return getEffectiveMaxConcurrency();
 }
 
 /**
@@ -278,9 +327,12 @@ export interface AgentUsage {
 export interface AgentSpawnOptions {
 	/** Stable id for this call; the registry key for per-call abort. */
 	readonly callId: AgentCallId;
+	/** Stable human-readable id shown in monitor/UI/results/artifacts.
+	 *  Defaults to a generated `AdjectiveNoun` id (process-unique). Purely
+	 *  presentational: abort/registry addressing stays on {@link callId}. */
+	readonly id?: string;
 	/** Prompt passed as the final positional arg to `pi -p`. */
 	readonly task: string;
-	/** Working directory for the spawned pi process. Defaults to process.cwd(). */
 	readonly cwd?: string;
 	/** `--model` override. */
 	readonly model?: string;
@@ -311,12 +363,6 @@ export interface AgentSpawnOptions {
 	 *  observational metadata consumed by the monitor + UI layer; defaults to
 	 *  "Agent". No effect on the spawned process or the returned result. */
 	readonly displayName?: string;
-	/** Whether this call is declared background (widget mode filter). Purely
-	 *  observational metadata: `true` = background, `false` = foreground (already
-	 *  rendered inline as the tool result - hidden from the widget's default
-	 *  "background" mode), omitted = undeclared (visible in every widget mode).
-	 *  No effect on the spawned process or the returned result. */
-	readonly background?: boolean;
 }
 
 export interface AgentSpawnResult {
@@ -325,6 +371,9 @@ export interface AgentSpawnResult {
 	messages: Message[];
 	stderr: string;
 	usage: AgentUsage;
+	/** Stable display id (`AdjectiveNoun` or caller-provided {@link AgentSpawnOptions.id}).
+	 *  Mirrored in monitor state, result details, artifact filenames, warnings. */
+	id: string;
 	model?: string;
 	stopReason?: string;
 	errorMessage?: string;
@@ -391,6 +440,9 @@ export async function spawnAgent(
 	options: AgentSpawnOptions,
 ): Promise<AgentSpawnResult> {
 	const { callId, task, cwd, model, thinking, tools, systemPrompt, signal } = options;
+	// Stable display id: caller-provided verbatim, else a generated
+	// process-unique `AdjectiveNoun`. Presentational only — addressing keys.
+	const stableId = options.id ?? allocateStableId();
 
 	// Per-call controller — the per-agent abort entry point.
 	const controller = new AbortController();
@@ -418,6 +470,7 @@ export async function spawnAgent(
 
 	const result: AgentSpawnResult = {
 		callId,
+		id: stableId,
 		exitCode: 0,
 		messages: [],
 		stderr: "",
@@ -431,9 +484,9 @@ export async function spawnAgent(
 	notifyMonitor(() =>
 		monitor.callStarted({
 			callId,
+			id: stableId,
 			task,
 			displayName: options.displayName,
-			background: options.background,
 			model,
 			maxTurns: options.maxTurns,
 			controller,

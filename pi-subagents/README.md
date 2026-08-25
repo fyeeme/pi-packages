@@ -3,22 +3,20 @@
 **2.0.0 — major release**, head of the 2.0 extensions family wave (pi-review and pi-dynamic-workflows compose this package as their fan-out engine):
 
 - **Composition architecture** — consumers call `piSubagents(pi)` inside their own factories; tool + UI light up from the version-pinned dependency copy, and the `subagent` tool registers exactly once per process (globalThis guard) so a standalone install coexists with any consumer.
-- **Workflow prompt presets** — `/implement`, `/scout-and-plan`, `/implement-and-review` chain recipes over the bundled agents, registered via the `pi.prompts` manifest.
 - **Reload-safe registration** — `session_shutdown(reload)` releases the tool-registration guard, so the `subagent` tool survives `/reload` (previously it silently vanished until restart).
 - **Whitelist-by-default recursion guard** — spawned children load without the fan-out tool unless the agent definition explicitly opts in; env-capped depth.
 
-General-purpose subagent fan-out for [pi](https://github.com/earendil-works/pi-mono): a `subagent` tool (single / parallel / chain) spawning real `pi --mode json -p --no-session` subprocesses, three-source agent discovery, the shared dispatch core, and the live agent UI. Successor of `@fyeeme/pi-subagent-core` (absorbed; the old package is retired once pi-review and pi-dynamic-workflows switch their imports here).
+General-purpose subagent fan-out for [pi](https://github.com/earendil-works/pi-mono): a `subagent` tool (single / parallel) spawning real `pi --mode json -p --no-session` subprocesses, three-source agent discovery, the shared dispatch core, and the live agent UI. Successor of `@fyeeme/pi-subagent-core` (absorbed; the old package is retired once pi-review and pi-dynamic-workflows switch their imports here).
 
 ## What ships
 
 | Layer | Where | What |
 |---|---|---|
-| Tool | `src/tools/subagent.ts` | `subagent` — single `{agent, task}`, parallel `{tasks[]}` (max 16 per call, shared concurrency ceiling), chain `{chain[]}` with `{previous}` substitution |
+| Tool | `src/tools/subagent.ts` | `subagent` — single `{agent, task}`, parallel `{tasks[]}` (max 16 per call, shared concurrency ceiling), optional shared `context` prepended to every spawn |
 | Agents | `agents.ts` + `agents/` | Discovery: project `.pi/agents` > user `~/.pi/agent/agents` > bundled `agents/` (scout / planner / reviewer / worker). Drop-in registration, re-discovered per call |
-| Prompts | `prompts/` | Workflow presets registered as pi prompt commands via the `pi.prompts` manifest: `/implement`, `/scout-and-plan`, `/implement-and-review` — chain recipes over the bundled agents |
 | Dispatch core | `src/dispatch.ts` | `spawnAgent`, `mapWithConcurrencyLimit`, `createSpawnRegistry`, `abortAgent`, `getPiInvocation`, per-callId abort, maxTurns budget, whitelist-by-default recursion guard |
-| Settings | `src/concurrency.ts` | `pi-subagent.json` (global `<agentDir>` + project `.pi/`): `widget`, `fleetView`, `maxConcurrency` (3/5/8/10, default 5). Ceiling precedence: `PI_MAX_CONCURRENT_SUBAGENTS` env > file > default |
-| UI | `index.ts` + `src/ui/` | Above-editor agent widget, below-editor FleetView, `/agents` viewer — driven by the process-global monitor every spawn notifies |
+| Settings | `src/concurrency.ts` | `pi-subagent.json` (global `<agentDir>` + project `.pi/`): `fleetView`, `maxConcurrency` (any positive integer, default 5), `confirmProjectAgents`, `stallMs` (default 60000), `wallClockMs` (default 0 = disabled). No environment-variable configuration channel |
+| UI | `index.ts` + `src/ui/` | Below-editor FleetView roster + conversation viewer — driven by the process-global monitor every spawn notifies (activate with ↓ at an empty editor) |
 
 ## Install
 
@@ -32,21 +30,14 @@ Dev: symlink `index.ts` (plus `src/`, `agents/`, `agents.ts`) into `~/.pi/agent/
 
 ## Usage
 
-Ask the model naturally, or be explicit:
-
 ```
 Use scout to find all authentication code                          # single
 Run 2 scouts in parallel: one for models, one for providers        # parallel
-Chain: scout finds the read tool, then planner suggests changes    # chain
 ```
 
-Workflow prompt commands (from `prompts/`, registered via the `pi.prompts` manifest):
-
-```
-/implement add Redis caching to the session store                  # scout → planner → worker
-/scout-and-plan refactor auth to support OAuth                     # scout → planner
-/implement-and-review add input validation to API endpoints        # worker → reviewer → worker
-```
+Multi-step sequencing is orchestration: model it as successive `subagent`
+calls, or use a workflow engine (e.g. `pi-dynamic-workflows`). The former
+built-in chain mode and the `/implement`-family prompt presets were removed.
 
 Agents are markdown frontmatter files:
 
@@ -92,17 +83,32 @@ Same names and signatures as the old `@fyeeme/pi-subagent-core` — consumers sw
 
 ## Settings
 
-`~/.pi/agent/pi-subagent.json` (defaults) overridden by `<cwd>/.pi/pi-subagent.json`:
+`~/.pi/agent/pi-subagent.json` (defaults) overridden by `<cwd>/.pi/pi-subagent.json`.
+The settings file is the single configuration channel — there is no
+environment-variable override.
 
 ```json
 {
-  "widget": "background",     // "all" | "background" | "off"
-  "fleetView": true,
-  "maxConcurrency": 5         // 3 | 5 | 8 | 10
+  "fleetView": true,              // below-editor fleet surface on/off
+  "maxConcurrency": 5,            // any positive integer; invalid → default
+  "confirmProjectAgents": true,   // prompt before running repo-controlled agents
+  "stallMs": 60000,               // abort a call silent for this long
+  "wallClockMs": 0                // hard per-call ceiling; 0 = disabled
 }
 ```
 
-`maxConcurrency` is read at call time (edits apply on the next fan-out); the `PI_MAX_CONCURRENT_SUBAGENTS` env var takes precedence over it.
+`maxConcurrency` is read at call time (edits apply on the next fan-out);
+`fleetView` is read once per process at extension start.
+
+### Migration from 2.0
+
+| 2.0 | 2.1 |
+|---|---|
+| `widget: "all"/"background"/"off"` | removed (the widget merged into the fleet surface) |
+| `fleetView` | unchanged |
+| `PI_MAX_CONCURRENT_SUBAGENTS` env var | use `maxConcurrency` in the settings file |
+| `agentScope` / `confirmProjectAgents` tool parameters | discovery is always three-source; confirmation is the settings key only — models can no longer weaken it per call |
+| `chain[]` + `{previous}` + `/implement` presets | successive `subagent` calls or a workflow engine |
 
 ## Output display
 

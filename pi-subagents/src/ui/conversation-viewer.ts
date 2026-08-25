@@ -3,8 +3,9 @@
  *
  * Scrollable view over the monitor's live message array (the same reference
  * spawnAgent appends to): user prompt, assistant text/thinking, tool calls
- * (with truncated results). Updates live while the agent runs via
- * monitor.subscribe + a 1s timer for the elapsed stats.
+ * (with truncated results). Rendering is event-driven: monitor.subscribe
+ * notifications request renders (a per-agent revision check skips no-op
+ * repaints), with no fixed-interval polling timer.
  *
  * Keys: ↑↓ / j k scroll · PgUp PgDn / Shift+↑↓ page · Home/End · q/Esc close
  * · x x (double-press) stops the agent via monitor.abort(). Subprocesses have
@@ -50,7 +51,6 @@ export class ConversationViewer {
 	private autoScroll = true;
 	private closed = false;
 	private unsubscribe: (() => void) | undefined;
-	private tickTimer: ReturnType<typeof setInterval> | undefined;
 	/** Line count from the last render — handleInput needs only the total for
 	 *  scroll clamping, and rebuilding the whole wrapped transcript per key
 	 *  press is O(transcript) work render() repeats anyway. */
@@ -95,18 +95,6 @@ export class ConversationViewer {
 			this.lastSeenRevision = rev;
 			this.tui.requestRender();
 		});
-		// Elapsed/stats tick while the agent runs; self-stops once settled — a
-		// settled agent's duration is frozen at completedAt (nothing to redraw)
-		// and the monitor.subscribe listener covers any late state change.
-		this.tickTimer = setInterval(() => {
-			if (this.closed) return;
-			if (this.state.status !== "running") {
-				clearInterval(this.tickTimer);
-				this.tickTimer = undefined;
-				return;
-			}
-			this.tui.requestRender();
-		}, 1000);
 	}
 
 	handleInput(data: string): void {
@@ -191,7 +179,7 @@ export class ConversationViewer {
 		}
 		lines.push(
 			row(
-				`${statusIcon} ${th.bold(this.state.displayName)}  ${th.fg("muted", this.state.description)} ${th.fg("dim", "·")} ${fgPreservingNestedStyles(th, "dim", headerParts.join(" · "))}`,
+				`${statusIcon} ${th.bold(this.state.displayName)}${this.state.id ? th.fg("dim", ` ${this.state.id}`) : ""}  ${th.fg("muted", this.state.description)} ${th.fg("dim", "·")} ${fgPreservingNestedStyles(th, "dim", headerParts.join(" · "))}`,
 			),
 		);
 		lines.push(hrMid);
@@ -232,10 +220,6 @@ export class ConversationViewer {
 		if (this.unsubscribe) {
 			this.unsubscribe();
 			this.unsubscribe = undefined;
-		}
-		if (this.tickTimer) {
-			clearInterval(this.tickTimer);
-			this.tickTimer = undefined;
 		}
 	}
 
