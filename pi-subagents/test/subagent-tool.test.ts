@@ -45,6 +45,30 @@ function fakeProc(): ChildProcess {
 	return proc;
 }
 
+
+/** Fake ChildProcess that streams one final assistant message (oversized
+ *  outputs drive the artifact-path truncation marker) before closing. */
+function procWithFinalText(text: string): ChildProcess {
+	const stdout = new EventEmitter();
+	const stderr = new EventEmitter();
+	const bus = new EventEmitter();
+	const proc = Object.assign(bus, {
+		stdout,
+		stderr,
+		exitCode: null as number | null,
+		signalCode: null as string | null,
+		kill: vi.fn(),
+	}) as unknown as ChildProcess;
+	const line = JSON.stringify({ type: "message_end", message: { role: "assistant", content: text } });
+	queueMicrotask(() => {
+		stdout.emit("data", Buffer.from(line + String.fromCharCode(10)));
+		stdout.emit("end");
+		stdout.emit("close");
+		bus.emit("close", 0);
+	});
+	return proc;
+}
+
 beforeEach(() => {
 	spawnMock.mockReset();
 	spawnMock.mockImplementation(() => fakeProc());
@@ -104,5 +128,37 @@ describe("shared context parameter", () => {
 			const prompt = parsed.join(" ");
 			expect(prompt.indexOf("SHARED-BACKGROUND")).toBeGreaterThanOrEqual(0);
 		}
+	});
+});
+describe("parallel output truncation and artifacts", () => {
+	it("a truncated output points at the full-output artifact; details carry outputPath", async () => {
+		spawnMock.mockImplementation(() => procWithFinalText("Y".repeat(60 * 1024)));
+		const result = await subagentTool.execute!(
+			"call-1",
+			{ tasks: [{ agent: "scout", task: "big-task" }] } as never,
+			new AbortController().signal,
+			undefined,
+			fakeCtx() as never,
+		);
+		const text = result.content[0];
+		expect(text.type === "text" && text.text).toContain("Output truncated:");
+		expect(text.type === "text" && text.text).toContain("Full output: ");
+		expect(text.type === "text" && /pi-subagents\//.test(text.text)).toBe(true);
+		const details = result.details as { results: Array<{ outputPath?: string }> };
+		expect(details.results[0]?.outputPath).toBeTruthy();
+	});
+
+	it("an under-cap output passes through without a truncation marker", async () => {
+		spawnMock.mockImplementation(() => procWithFinalText("short and sweet"));
+		const result = await subagentTool.execute!(
+			"call-1",
+			{ tasks: [{ agent: "scout", task: "small-task" }] } as never,
+			new AbortController().signal,
+			undefined,
+			fakeCtx() as never,
+		);
+		const text = result.content[0];
+		expect(text.type === "text" && text.text.includes("short and sweet")).toBe(true);
+		expect(text.type === "text" && text.text.includes("Output truncated")).toBe(false);
 	});
 });

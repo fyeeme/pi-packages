@@ -3,8 +3,23 @@ import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 
 // Mock `spawn` before index.ts imports it.
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+const { spawnMock, artifactFailures } = vi.hoisted(() => ({
+	spawnMock: vi.fn(),
+	artifactFailures: { enabled: false },
+}));
 vi.mock("node:child_process", () => ({ spawn: spawnMock }));
+// Delegating node:fs mock — only writeFileSync can be made to fail on demand
+// (ESM namespaces cannot be spied on after import).
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	return {
+		...actual,
+		writeFileSync: ((path: Parameters<typeof actual.writeFileSync>[0], ...rest: unknown[]) => {
+			if (artifactFailures.enabled) throw new Error("EACCES: read-only tmpdir");
+			return (actual.writeFileSync as (...a: unknown[]) => void)(path, ...rest);
+		}) as typeof actual.writeFileSync,
+	};
+});
 
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -366,6 +381,59 @@ describe("spawnAgent", () => {
 		expect(r.maxTurnsReached).toBe(true);
 		expect(r.aborted).toBe(true);
 		expect(r.usage.turns).toBe(1);
+	});
+});
+
+
+describe("full-output artifacts", () => {
+	beforeEach(() => {
+		spawnMock.mockReset();
+		monitor.clear();
+	});
+	afterEach(() => monitor.clear());
+
+	it("writes the final output to <tmpdir>/pi-subagents/<pid>-<n>/<id>.md", async () => {
+		const proc = fakeProc();
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const p = spawnAgent(registry, { callId: "c-art", task: "x" });
+		proc.stdout!.emit("data", Buffer.from(`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: "FINAL-OUTPUT-TEXT" } })}\n`));
+		proc.emit("close", 0);
+		const r = await p;
+		const dirPart = `pi-subagents/${process.pid}-`;
+		expect(r.outputPath!.includes(dirPart)).toBe(true);
+		expect(r.outputPath!.endsWith(".md")).toBe(true);
+		const { readFileSync } = await import("node:fs");
+		expect(readFileSync(r.outputPath!, "utf-8")).toBe("FINAL-OUTPUT-TEXT");
+	});
+
+	it("uses the stable id (sanitized) for the artifact filename", async () => {
+		const proc = fakeProc();
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const p = spawnAgent(registry, { callId: "c-art2", task: "x", id: "Swift Fox" });
+		proc.stdout!.emit("data", Buffer.from(`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: "out" } })}\n`));
+		proc.emit("close", 0);
+		const r = await p;
+		expect(r.outputPath).toContain("Swift_Fox.md");
+	});
+
+	it("degrades to a warning when the artifact cannot be written", async () => {
+		artifactFailures.enabled = true;
+		try {
+			const proc = fakeProc();
+			spawnMock.mockReturnValue(proc);
+			const registry = createSpawnRegistry();
+			const p = spawnAgent(registry, { callId: "c-art3", task: "x" });
+			proc.stdout!.emit("data", Buffer.from(`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: "out" } })}\n`));
+			proc.emit("close", 0);
+			const r = await p;
+			expect(r.exitCode).toBe(0); // the call still succeeds
+			expect(r.outputPath).toBeUndefined();
+			expect(r.artifactWarning).toContain("full-output artifact not written");
+		} finally {
+			artifactFailures.enabled = false;
+		}
 	});
 });
 

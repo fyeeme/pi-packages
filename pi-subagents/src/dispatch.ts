@@ -32,6 +32,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { monitor } from "./monitor.ts";
+import { lastAssistantText } from "./text.ts";
 import { loadCoreSettings } from "./concurrency.ts";
 
 export { AgentMonitor, monitor } from "./monitor.ts";
@@ -385,6 +386,12 @@ export interface AgentSpawnResult {
 	 *  mutually exclusive with `aborted` — the maxTurns path aborts the call, so
 	 *  both flags are true for a budget-stopped agent. */
 	maxTurnsReached: boolean;
+	/** Absolute path of the full-output artifact (`<tmpdir>/pi-subagents/<pid>-<n>/<id>.md`),
+	 *  set when the final output was persisted. */
+	outputPath?: string;
+	/** Set (instead of {@link outputPath}) when the artifact could not be written;
+	 *  the call itself still succeeds. */
+	artifactWarning?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -404,7 +411,6 @@ export function createSpawnRegistry(): AgentSpawnRegistry {
 		controllers: new Map(),
 	};
 }
-
 /**
  * Abort exactly one in-flight call by id.
  *
@@ -429,6 +435,39 @@ export function abortAgent(registry: AgentSpawnRegistry, callId: AgentCallId): b
  *  budget ride a temp file passed as the `@file` positional arg, which pi
  *  expands into the prompt content (see spawnAgent). */
 const TASK_ARG_MAX_BYTES = 100 * 1024;
+
+// ---------------------------------------------------------------------------
+// Full-output artifacts (omp parity)
+// ---------------------------------------------------------------------------
+
+/** Per-process counter giving each written artifact its own directory under
+ *  `<tmpdir>/pi-subagents/` — the `-<n>` disambiguates sessions that share a
+ *  pid (in-process extension reloads) so `<id>.md` names can never collide. */
+let artifactSeq = 0;
+
+/**
+ * Write one call's full final output to `<tmpdir>/pi-subagents/<pid>-<n>/<id>.md`.
+ *
+ * Synchronous on purpose: the tool result — including any truncation marker
+ * that references this path — is handed to the model immediately after, and
+ * an async write could race process exit and drop the file. Full outputs are
+ * at most hundreds of KB, so the sync cost is negligible. Failure degrades to
+ * a warning; it must never fail the call itself.
+ */
+function writeOutputArtifact(stableId: string, output: string): { outputPath?: string; artifactWarning?: string } {
+	try {
+		const dir = path.join(os.tmpdir(), "pi-subagents", `${process.pid}-${++artifactSeq}`);
+		fs.mkdirSync(dir, { recursive: true });
+		const safeId = stableId.replace(/[^\w.-]+/g, "_");
+		const filePath = path.join(dir, `${safeId}.md`);
+		fs.writeFileSync(filePath, output, { encoding: "utf-8", mode: 0o600 });
+		return { outputPath: filePath };
+	} catch (err) {
+		return {
+			artifactWarning: `full-output artifact not written: ${err instanceof Error ? err.message : String(err)}`,
+		};
+	}
+}
 
 /** Retained-tail size for child stderr (~64 KB chars). Diagnostics only need
  *  the lines around the failure, and an uncapped buffer lets a chatty or
@@ -692,6 +731,10 @@ export async function spawnAgent(
 		});
 
 		result.exitCode = exitCode;
+		// Full-output artifact, before the finally's callEnded settles the row:
+		// the tool result and UI can reference outputPath immediately. Never fatal.
+		const finalOutput = lastAssistantText(result.messages);
+		if (finalOutput) Object.assign(result, writeOutputArtifact(stableId, finalOutput));
 		return result;
 	} catch (err) {
 		// A failure before/during spawn (temp-file write, E2BIG, ENOENT on pi)

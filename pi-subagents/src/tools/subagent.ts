@@ -178,6 +178,10 @@ interface SingleResult {
 	stopReason?: string;
 	errorMessage?: string;
 	aborted?: boolean;
+	/** Full-output artifact path (set by dispatch when persistence succeeded). */
+	outputPath?: string;
+	/** Set instead of outputPath when the artifact could not be written. */
+	artifactWarning?: string;
 }
 
 interface SubagentDetails {
@@ -202,15 +206,27 @@ function getResultOutput(result: SingleResult): string {
 	return lastAssistantText(result.messages) || "(no output)";
 }
 
-function truncateParallelOutput(output: string): string {
+/** Per-task output text with the 50KB cap applied. A truncated output points
+ *  at the full-output artifact; a failed artifact write degrades to a warning
+ *  line instead of an error. */
+function truncateParallelOutput(result: SingleResult): string {
+	const output = getResultOutput(result);
 	const byteLength = Buffer.byteLength(output, "utf8");
-	if (byteLength <= PER_TASK_OUTPUT_CAP) return output;
-
-	let truncated = output.slice(0, PER_TASK_OUTPUT_CAP);
-	while (Buffer.byteLength(truncated, "utf8") > PER_TASK_OUTPUT_CAP) {
-		truncated = truncated.slice(0, -1);
+	if (byteLength > PER_TASK_OUTPUT_CAP) {
+		let truncated = output.slice(0, PER_TASK_OUTPUT_CAP);
+		while (Buffer.byteLength(truncated, "utf8") > PER_TASK_OUTPUT_CAP) {
+			truncated = truncated.slice(0, -1);
+		}
+		const omitted = byteLength - Buffer.byteLength(truncated, "utf8");
+		const suffix = result.outputPath
+			? `Full output: ${result.outputPath}`
+			: result.artifactWarning || "full output in tool details";
+		return `${truncated}\n\n[Output truncated: ${omitted} bytes omitted. ${suffix}]`;
 	}
-	return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted. Full output preserved in tool details.]`;
+	if (result.artifactWarning) {
+		return `${output}\n\n[${result.artifactWarning}]`;
+	}
+	return output;
 }
 
 type DisplayItem = { type: "text"; text: string } | { type: "toolCall"; name: string; args: Record<string, any> };
@@ -297,6 +313,8 @@ async function runSingleAgent(
 		stopReason: r.stopReason,
 		errorMessage: r.errorMessage,
 		aborted: r.aborted,
+		outputPath: r.outputPath,
+		artifactWarning: r.artifactWarning,
 	};
 	if (onUpdate) {
 		onUpdate({
@@ -482,7 +500,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 
 			const successCount = results.filter((r) => !isFailedResult(r)).length;
 			const summaries = results.map((r) => {
-				const output = truncateParallelOutput(getResultOutput(r));
+				const output = truncateParallelOutput(r);
 				const status = isFailedResult(r)
 					? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}`
 					: "completed";
