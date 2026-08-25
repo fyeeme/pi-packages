@@ -223,6 +223,39 @@ export function getEffectiveMaxConcurrency(): number {
 	return loadCoreSettings().maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
 }
 
+/** Defaults for the stall watchdog (spec: covers cold start + slow first
+ *  token; healthy agents emit events far more often than this). */
+export const DEFAULT_STALL_MS = 60_000;
+
+/**
+ * Resolve the watchdog thresholds from the settings file at call time.
+ * - `stallMs`: positive integer, else {@link DEFAULT_STALL_MS}.
+ * - `wallClockMs`: disabled unless a positive value is given; values below
+ *   twice the stall threshold are ignored (the wall clock would always beat
+ *   stall detection and mean nothing).
+ */
+export function resolveWatchdogThresholds(): { stallMs: number; wallClockMs: number | undefined } {
+	const settings = loadCoreSettings();
+	const stallMs =
+		typeof settings.stallMs === "number" && Number.isInteger(settings.stallMs) && settings.stallMs > 0
+			? settings.stallMs
+			: DEFAULT_STALL_MS;
+	let wallClockMs: number | undefined;
+	if (typeof settings.wallClockMs === "number" && Number.isInteger(settings.wallClockMs) && settings.wallClockMs > 0) {
+		wallClockMs = settings.wallClockMs >= stallMs * 2 ? settings.wallClockMs : undefined;
+	}
+	return { stallMs, wallClockMs };
+}
+
+/** Row-friendly text for watchdog/abort reasons (monitor rows only; the
+ *  structured reason lives on AgentSpawnResult.abortReason). */
+const ABORT_ROW_TEXT: Record<string, string | undefined> = {
+	stalled: "stalled — no subprocess activity for the stall threshold",
+	"wall-clock": "wall-clock limit exceeded",
+	maxTurns: undefined,
+	user: undefined,
+};
+
 export function getMaxConcurrency(): number {
 	return getEffectiveMaxConcurrency();
 }
@@ -380,10 +413,14 @@ export interface AgentSpawnResult {
 	model?: string;
 	stopReason?: string;
 	errorMessage?: string;
-	/** True if aborted (external cancel, per-call abort, or maxTurns budget hit —
-	 *  the maxTurns path sets `aborted` too via the per-call controller; use
-	 *  {@link maxTurnsReached} to distinguish the two). exitCode may be null/non-zero. */
+	/** True if aborted (external cancel, per-call abort, stall watchdog,
+	 *  wall-clock ceiling, or maxTurns budget hit — use {@link maxTurnsReached}
+	 *  and {@link abortReason} to distinguish). exitCode may be null/non-zero. */
 	aborted: boolean;
+	/** Why the call was aborted, when it was. `"user"` covers ESC/registry
+	 *  aborts and any consumer-provided controller reason; the watchdogs report
+	 *  `"stalled"` / `"wall-clock"`, the turn budget `"maxTurns"`. */
+	abortReason?: "user" | "stalled" | "wall-clock" | "maxTurns";
 	/** True if killed because the caller's maxTurns budget was reached. NOT
 	 *  mutually exclusive with `aborted` — the maxTurns path aborts the call, so
 	 *  both flags are true for a budget-stopped agent. */
@@ -509,6 +546,10 @@ export async function spawnAgent(
 	 *  up in the finally block. */
 	const tmpPromptFiles: { dir: string; filePath: string }[] = [];
 
+	// Watchdog disarmer, assigned once the per-call timers exist; the outer
+	// finally calls it so early failure paths never leave a timer behind.
+	let disarmWatchdogs: () => void = () => {};
+
 	const result: AgentSpawnResult = {
 		callId,
 		id: stableId,
@@ -575,6 +616,30 @@ export async function spawnAgent(
 				env: childSpawnEnv(options),
 			});
 			registry.processes.set(callId, proc);
+			// ---- Stall watchdog + wall-clock ceiling (omp parity) ----
+			// Per-call timer pair: any subprocess output event rearms the stall
+			// timer; the wall clock runs once from spawn. Firing aborts the call's
+			// controller with a string reason, riding the existing SIGTERM -> 5s ->
+			// SIGKILL chain - no extra kill paths. unref() keeps the timers from
+			// pinning the parent process open.
+			const { stallMs, wallClockMs } = resolveWatchdogThresholds();
+			let stallTimer: ReturnType<typeof setTimeout> | undefined;
+			let wallTimer: ReturnType<typeof setTimeout> | undefined;
+			disarmWatchdogs = (): void => {
+				if (stallTimer) clearTimeout(stallTimer);
+				if (wallTimer) clearTimeout(wallTimer);
+				stallTimer = wallTimer = undefined;
+			};
+			const rearmStallWatchdog = (): void => {
+				if (stallTimer) clearTimeout(stallTimer);
+				stallTimer = setTimeout(() => controller.abort("stalled"), stallMs);
+				stallTimer.unref?.();
+			};
+			rearmStallWatchdog();
+			if (wallClockMs) {
+				wallTimer = setTimeout(() => controller.abort("wall-clock"), wallClockMs);
+				wallTimer.unref?.();
+			}
 
 			let buffer = "";
 			const decoder = new StringDecoder("utf8");
@@ -598,7 +663,7 @@ export async function spawnAgent(
 						// explicit maxTurns: 0 is honored (and marked) rather than treated as "unset".
 						if (options.maxTurns != null && result.usage.turns >= options.maxTurns) {
 							result.maxTurnsReached = true;
-							controller.abort();
+							controller.abort("maxTurns");
 						}
 						const usage = msg.usage;
 						if (usage) {
@@ -666,6 +731,7 @@ export async function spawnAgent(
 			};
 
 			proc.stdout.on("data", (data) => {
+				rearmStallWatchdog(); // any subprocess activity proves liveness
 				// StringDecoder buffers incomplete multi-byte UTF-8 sequences across chunk
 				// boundaries so a CJK char split between two `data` events isn't replaced
 				// with U+FFFD (which would corrupt the line and silently drop the event).
@@ -676,6 +742,7 @@ export async function spawnAgent(
 			});
 
 			proc.stderr.on("data", (data) => {
+				rearmStallWatchdog(); // even stderr chatter counts as progress
 				result.stderr += data.toString();
 				// Keep only the retained tail: diagnostics need the lines around the
 				// failure, not the full stream. The ×2 headroom avoids slicing on
@@ -686,6 +753,7 @@ export async function spawnAgent(
 			});
 
 			proc.on("close", (code) => {
+				disarmWatchdogs();
 				const tail = decoder.end();
 				if (tail) buffer += tail;
 				if (buffer.trim()) processLine(buffer);
@@ -716,6 +784,11 @@ export async function spawnAgent(
 				// would see exitCode 0 + populated messages + aborted===true.
 				if (proc.exitCode !== null || proc.signalCode !== null) return;
 				result.aborted = true;
+				const reason = controller.signal.reason;
+				result.abortReason =
+					reason === "stalled" || reason === "wall-clock" || reason === "maxTurns"
+					? reason
+					: "user";
 				proc.kill("SIGTERM");
 				const timer = setTimeout(() => {
 					// Node: subprocess.killed means kill() was CALLED, not that the
@@ -749,12 +822,14 @@ export async function spawnAgent(
 	} finally {
 		// Observability: settle the call FIRST so the UI sees final state while
 		// registry slots / listeners / temp files are still being released.
+		disarmWatchdogs();
 		notifyMonitor(() =>
 			monitor.callEnded(callId, {
 				exitCode: result.exitCode,
 				aborted: result.aborted,
 				maxTurnsReached: result.maxTurnsReached,
-				errorMessage: result.errorMessage,
+				errorMessage:
+					result.errorMessage ?? ABORT_ROW_TEXT[result.abortReason ?? "user"],
 			}),
 		);
 		// Always release registry slots, the parent-signal listener, and temp files.

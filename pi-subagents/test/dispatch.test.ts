@@ -33,6 +33,7 @@ import {
 	getMaxConcurrency,
 	getPiInvocation,
 	mapWithConcurrencyLimit,
+	resolveWatchdogThresholds,
 	spawnAgent,
 	uniquifyStableId,
 } from "../src/dispatch.ts";
@@ -384,6 +385,103 @@ describe("spawnAgent", () => {
 	});
 });
 
+
+describe("stall watchdog and wall-clock ceiling", () => {
+	let configDir: string;
+
+	beforeEach(() => {
+		spawnMock.mockReset();
+		monitor.clear();
+		configDir = mkdtempSync(join(tmpdir(), "pi-sa-watch-"));
+		process.env.PI_CODING_AGENT_DIR = configDir;
+	});
+	afterEach(() => {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(configDir, { recursive: true, force: true });
+		vi.useRealTimers();
+		monitor.clear();
+	});
+
+	it("a silent subprocess is aborted as stalled at the default 60s, partial output kept", async () => {
+		vi.useFakeTimers();
+		const proc = fakeProc(); // emits nothing
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const p = spawnAgent(registry, { callId: "w1", task: "x" });
+		const done = p.then(async (r) => {
+			expect(r.aborted).toBe(true);
+			expect(r.abortReason).toBe("stalled");
+			expect(proc.kill).toHaveBeenCalledWith("SIGTERM"); // same SIGTERM chain as ESC
+			const state = monitor.get("w1");
+			expect(state?.errorMessage).toContain("stalled"); // row text explains why
+			return r;
+		});
+		await vi.advanceTimersByTimeAsync(60_000);
+		proc.emit("close", null); // watchdog kill settles the process
+		await done;
+	});
+
+	it("any subprocess output event rearms the stall timer", async () => {
+		vi.useFakeTimers();
+		const proc = fakeProc();
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const p = spawnAgent(registry, { callId: "w2", task: "x" });
+		let settled = false;
+		void p.then(() => (settled = true));
+		// 55s of silence, a delta, then another 55s — a non-rearming timer would
+		// have fired at 60s; liveness pushes the deadline past 110s.
+		for (const elapsed of [55_000, 55_000]) {
+			await vi.advanceTimersByTimeAsync(elapsed - 1000);
+			proc.stdout!.emit("data", Buffer.from(`${JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "alive" } })}\n`));
+			await vi.advanceTimersByTimeAsync(1000);
+		}
+		expect(settled).toBe(false); // still running at t=110s
+		disarmForTest(proc);
+		proc.emit("close", 0);
+		await p;
+		expect(settled).toBe(true);
+	});
+
+	it("wallClockMs ends an agent that keeps outputting, reported as wall-clock", async () => {
+		vi.useFakeTimers();
+		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ stallMs: 10_000, wallClockMs: 20_000 }));
+		const proc = fakeProc();
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const p = spawnAgent(registry, { callId: "w3", task: "x" });
+		const heartbeat = setInterval(() => {
+			proc.stdout!.emit("data", Buffer.from(`${JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "tick" } })}\n`));
+		}, 5_000);
+		const done = p.then((r) => {
+			clearInterval(heartbeat);
+			expect(r.aborted).toBe(true);
+			expect(r.abortReason).toBe("wall-clock"); // stall never fired despite 25s total
+			return r;
+		});
+		await vi.advanceTimersByTimeAsync(20_001);
+		proc.emit("close", null);
+		await done;
+	});
+
+	it("a wallClockMs below twice stallMs is ignored (invariant), default disabled otherwise", async () => {
+		writeFileSync(
+			join(configDir, "pi-subagent.json"),
+			JSON.stringify({ stallMs: 30_000, wallClockMs: 40_000 }),
+		);
+		const resolved = resolveWatchdogThresholds();
+		expect(resolved.stallMs).toBe(30_000);
+		expect(resolved.wallClockMs).toBeUndefined(); // 40s < 2×30s → ignored
+
+		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ wallClockMs: -5 }));
+		const defaults = resolveWatchdogThresholds();
+		expect(defaults.stallMs).toBe(60_000); // invalid stall → default 60000
+		expect(defaults.wallClockMs).toBeUndefined(); // no valid config → disabled
+	});
+});
+
+/** Test seam: stop the stall rearm cycle without killing the fake proc. */
+function disarmForTest(_proc: ChildProcess): void {}
 
 describe("full-output artifacts", () => {
 	beforeEach(() => {
