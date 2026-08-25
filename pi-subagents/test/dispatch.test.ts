@@ -386,6 +386,53 @@ describe("spawnAgent", () => {
 });
 
 
+describe("failure classification", () => {
+	beforeEach(() => {
+		spawnMock.mockReset();
+		monitor.clear();
+	});
+	afterEach(() => monitor.clear());
+
+	it("provider/network stderr classifies transient", async () => {
+		const proc = fakeProc();
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const p = spawnAgent(registry, { callId: "f1", task: "x" });
+		proc.stderr!.emit("data", Buffer.from("ProviderError: request to https://api.example.com failed, reason: connect ECONNRESET"));
+		proc.emit("close", 1);
+		const r = await p;
+		expect(r.exitCode).toBe(1);
+		expect(r.failureClass).toBe("transient");
+	});
+
+	it("unpatterned stderr (unknown agent) classifies hard", async () => {
+		const proc = fakeProc();
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const p = spawnAgent(registry, { callId: "f2", task: "x" });
+		proc.stderr!.emit("data", Buffer.from("Error: Unknown agent: \"nope\""));
+		proc.emit("close", 1);
+		const r = await p;
+		expect(r.exitCode).toBe(1);
+		expect(r.failureClass).toBe("hard");
+	});
+
+	it("aborted calls never get a failureClass even with a non-zero exit", async () => {
+		vi.useFakeTimers(); // the watchdog timers exist; keep their firing deterministic
+		const proc = fakeProc();
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const p = spawnAgent(registry, { callId: "f3", task: "x" });
+		abortAgent(registry, "f3");
+		await vi.advanceTimersByTimeAsync(0);
+		proc.emit("close", null);
+		const r = await p;
+		expect(r.aborted).toBe(true);
+		expect(r.abortReason).toBe("user");
+		expect(r.failureClass).toBeUndefined();
+	});
+});
+
 describe("stall watchdog and wall-clock ceiling", () => {
 	let configDir: string;
 

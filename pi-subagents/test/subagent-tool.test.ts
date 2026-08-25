@@ -131,6 +131,27 @@ describe("shared context parameter", () => {
 		}
 	});
 });
+
+/** Fake ChildProcess that fails like a provider outage: stderr tail with a
+ *  transient-class pattern, non-zero exit. */
+function transientFailProc(): ChildProcess {
+	const stdout = new EventEmitter();
+	const stderr = new EventEmitter();
+	const bus = new EventEmitter();
+	const proc = Object.assign(bus, {
+		stdout,
+		stderr,
+		exitCode: null as number | null,
+		signalCode: null as string | null,
+		kill: vi.fn(),
+	}) as unknown as ChildProcess;
+	queueMicrotask(() => {
+		stderr.emit("data", Buffer.from("ProviderError: connect ECONNRESET"));
+		bus.emit("close", 1);
+	});
+	return proc;
+}
+
 describe("parallel output truncation and artifacts", () => {
 	it("a truncated output points at the full-output artifact; details carry outputPath", async () => {
 		spawnMock.mockImplementation(() => procWithFinalText("Y".repeat(60 * 1024)));
@@ -277,5 +298,36 @@ describe("structured output (outputSchema / schemaMode)", () => {
 		expect(details.results[0]?.schemaValid).toBe(true);
 		expect(capturedPrompt).toContain("Structured output");
 		expect(capturedPrompt).toContain("\"required\"");
+	});
+});
+
+describe("failure classification and replay grouping", () => {
+	it("mixed batches group by outcome; failures carry class and task summary", async () => {
+		spawnMock.mockImplementation(((_command: string, args: string[]) => {
+			const argv = JSON.stringify(args);
+			return argv.includes("doomed-task") ? transientFailProc() : procWithFinalText("all good");
+		}) as never);
+		const result = await subagentTool.execute!(
+			"call-1",
+			{
+				tasks: [
+					{ agent: "scout", task: "healthy-task one" },
+					{ agent: "scout", task: "doomed-task two" },
+				],
+			} as never,
+			new AbortController().signal,
+			undefined,
+			fakeCtx() as never,
+		);
+		const text = result.content[0];
+		expect(text.type === "text" && text.text).toContain("Parallel: 1/2 succeeded");
+		expect(text.type === "text" && text.text).toContain("## Succeeded (1)");
+		expect(text.type === "text" && text.text).toContain("## Failed (1) — replay these");
+		expect(text.type === "text" && text.text).toContain("class: transient");
+		expect(text.type === "text" && text.text).toContain("Task: doomed-task two"); // replay targeting
+		const details = result.details as { results: Array<{ failureClass?: string; taskSummary?: string }> };
+		expect(details.results[0]?.failureClass).toBeUndefined();
+		expect(details.results[0]?.taskSummary).toBe("healthy-task one"); // context-free first line
+		expect(details.results[1]?.failureClass).toBe("transient");
 	});
 });

@@ -247,6 +247,50 @@ export function resolveWatchdogThresholds(): { stallMs: number; wallClockMs: num
 	return { stallMs, wallClockMs };
 }
 
+// ---------------------------------------------------------------------------
+// Failure classification (omp parity)
+// ---------------------------------------------------------------------------
+
+export type AgentFailureClass = "transient" | "hard";
+
+/** Substrings (matched case-insensitively against the retained stderr tail)
+ *  that indicate the failure is environmental and a retry of the SAME task
+ *  can succeed: provider/network outages, rate limits, gateway errors. */
+const TRANSIENT_PATTERNS = [
+	"econnrefused",
+	"econnreset",
+	"etimedout",
+	"timeout",
+	"timed out",
+	"socket hang up",
+	"eai_again",
+	"enotfound",
+	"fetch failed",
+	"connection error",
+	"connection reset",
+	"connection closed",
+	"rate limit",
+	"too many requests",
+	"429",
+	"502",
+	"503",
+	"504",
+	"bad gateway",
+	"service unavailable",
+	"overloaded",
+	"temporarily unavailable",
+] as const;
+
+/**
+ * Classify one failure from the retained stderr tail only (spec: no extra
+ * process probing). `"transient"` = matches an environmental pattern so a
+ * replay makes sense; anything else is `"hard"`.
+ */
+export function classifyFailure(stderrTail: string): AgentFailureClass {
+	const tail = stderrTail.toLowerCase();
+	return TRANSIENT_PATTERNS.some((p) => tail.includes(p)) ? "transient" : "hard";
+}
+
 /** Row-friendly text for watchdog/abort reasons (monitor rows only; the
  *  structured reason lives on AgentSpawnResult.abortReason). */
 const ABORT_ROW_TEXT: Record<string, string | undefined> = {
@@ -431,6 +475,10 @@ export interface AgentSpawnResult {
 	/** Set (instead of {@link outputPath}) when the artifact could not be written;
 	 *  the call itself still succeeds. */
 	artifactWarning?: string;
+	/** For non-abort failures (`exitCode !== 0` or an error message): whether the
+	 *  retained stderr looks environmental (`transient`, replay makes sense) or
+	 *  `hard`. Undefined for successful and aborted calls. */
+	failureClass?: AgentFailureClass;
 }
 
 // ---------------------------------------------------------------------------
@@ -806,6 +854,10 @@ export async function spawnAgent(
 		});
 
 		result.exitCode = exitCode;
+		// Failure classification (aborts never participate).
+		if (!result.aborted && (result.exitCode !== 0 || result.errorMessage)) {
+			result.failureClass = classifyFailure(result.stderr);
+		}
 		// Full-output artifact, before the finally's callEnded settles the row:
 		// the tool result and UI can reference outputPath immediately. Never fatal.
 		const finalOutput = extractResult(result.messages).text;

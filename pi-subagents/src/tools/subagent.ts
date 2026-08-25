@@ -31,6 +31,8 @@ import {
 	getMaxConcurrency,
 	mapWithConcurrencyLimit,
 	NO_OUTPUT_PLACEHOLDER,
+	type AgentFailureClass,
+	classifyFailure,
 	spawnAgent,
 } from "../dispatch.ts";
 import { extractResult, lastAssistantText, type ResultExtractMethod } from "../text.ts";
@@ -206,6 +208,10 @@ interface SingleResult {
 	schemaValid?: boolean;
 	/** Set when permissive mode let an invalid payload through. */
 	schemaWarning?: string;
+	/** transient (environmental — replay makes sense) | hard; failures only. */
+	failureClass?: AgentFailureClass;
+	/** First line of the ORIGINAL task (context stripped) — replay targeting. */
+	taskSummary?: string;
 }
 
 interface SubagentDetails {
@@ -234,6 +240,16 @@ function getResultOutput(result: SingleResult): { text: string; method: ResultEx
 		return { text: reason || extracted.text, method: reason ? "none" : extracted.method };
 	}
 	return extracted;
+}
+
+/** First non-empty line of a task prompt, capped — the failure-group summary
+ *  the model uses to re-address just the failed tasks in a follow-up call. */
+function taskFirstLine(task: string, max = 80): string {
+	for (const line of task.split("\n")) {
+		const trimmed = line.trim();
+		if (trimmed) return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
+	}
+	return "(no task text)";
 }
 
 /** Per-task output text with the 50KB cap applied. A truncated output points
@@ -431,6 +447,7 @@ async function runSingleAgent(
 		aborted: r.aborted,
 		outputPath: r.outputPath,
 		artifactWarning: r.artifactWarning,
+		failureClass: r.failureClass,
 	};
 
 	// Structured-output validation runs on the CONTRACT-EXTRACTED text.
@@ -639,28 +656,44 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 					makeDetails("parallel"),
 					resolveSchemaPolicy(agentDef ?? SCHEMALESS_AGENT, t.outputSchema, t.schemaMode),
 				);
+				result.taskSummary = taskFirstLine(t.task);
 				allResults[index] = result;
 				emitParallelUpdate();
 				return result;
 			});
 
 			const successCount = results.filter((r) => !isFailedResult(r)).length;
-			const summaries = results.map((r) => {
+
+			// Per-task section: contract-hit extraction stays silent; heuristic or
+			// none is annotated so downstream can tell them apart.
+			const renderSection = (r: SingleResult): string => {
 				const { method } = getResultOutput(r);
 				const capped = truncateParallelOutput(r);
-				const status = isFailedResult(r)
-					? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}`
-					: "completed";
-				// Extraction-method annotation: silent when the contract was hit,
-				// visible so downstream can tell heuristics from contract hits.
+				if (isFailedResult(r)) {
+					const stopNote = r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : "";
+					const cls = r.failureClass ? ` · class: ${r.failureClass}` : "";
+					return `### [${r.agent}] failed${stopNote}${cls}\nTask: ${r.taskSummary ?? taskFirstLine(r.task)}\n\n${capped}`;
+				}
 				const note = method === "result-block" ? "" : ` (extracted: ${method})`;
-				return `### [${r.agent}] ${status}${note}\n\n${capped}`;
-			});
+				return `### [${r.agent}] completed${note}\n\n${capped}`;
+			};
+
+			// Success/failure grouping (reliability spec): the model can replay a
+			// partial batch by addressing only the Failed group's tasks.
+			const sections: string[] = [];
+			const succeeded = results.filter((r) => !isFailedResult(r));
+			const failed = results.filter((r) => isFailedResult(r));
+			if (succeeded.length > 0) {
+				sections.push(`## Succeeded (${succeeded.length})\n\n${succeeded.map(renderSection).join("\n\n---\n\n")}`);
+			}
+			if (failed.length > 0) {
+				sections.push(`## Failed (${failed.length}) — replay these if their class is transient\n\n${failed.map(renderSection).join("\n\n---\n\n")}`);
+			}
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}`,
+						text: `Parallel: ${successCount}/${results.length} succeeded\n\n${sections.join("\n\n")}`,
 					},
 				],
 				details: makeDetails("parallel")(results),
