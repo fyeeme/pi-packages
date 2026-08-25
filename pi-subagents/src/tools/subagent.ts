@@ -34,6 +34,7 @@ import {
 	spawnAgent,
 } from "../dispatch.ts";
 import { extractResult, lastAssistantText, type ResultExtractMethod } from "../text.ts";
+import { Compile } from "typebox/compile";
 
 /**
  * Explicit result contract appended to EVERY spawned agent's system prompt
@@ -201,6 +202,10 @@ interface SingleResult {
 	artifactWarning?: string;
 	/** How the delivered output was obtained (contract hit vs heuristic vs nothing). */
 	extractMethod?: ResultExtractMethod;
+	/** True when a resolved output schema validated cleanly. */
+	schemaValid?: boolean;
+	/** Set when permissive mode let an invalid payload through. */
+	schemaWarning?: string;
 }
 
 interface SubagentDetails {
@@ -248,10 +253,10 @@ function truncateParallelOutput(result: SingleResult): string {
 			: result.artifactWarning || "full output in tool details";
 		return `${truncated}\n\n[Output truncated: ${omitted} bytes omitted. ${suffix}]`;
 	}
-	if (result.artifactWarning) {
-		return `${output}\n\n[${result.artifactWarning}]`;
-	}
-	return output;
+	const notes: string[] = [];
+	if (result.schemaWarning) notes.push(result.schemaWarning);
+	if (result.artifactWarning) notes.push(result.artifactWarning);
+	return notes.length > 0 ? `${output}\n\n[${notes.join("; ")}]` : output;
 }
 
 type DisplayItem = { type: "text"; text: string } | { type: "toolCall"; name: string; args: Record<string, any> };
@@ -271,6 +276,87 @@ function getDisplayItems(messages: Message[]): DisplayItem[] {
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
+
+// ---------------------------------------------------------------------------
+// Structured output (omp parity)
+// ---------------------------------------------------------------------------
+
+/** Resolved schema policy for one call item: call-level outputSchema wins over
+ *  the agent frontmatter's `output:`; mode is call-level only (permissive
+ *  default — strict must be an explicit caller choice). */
+interface SchemaPolicy {
+	schema?: Record<string, unknown>;
+	mode: "permissive" | "strict";
+}
+
+/** Minimal stand-in for an unresolvable agent (unknown-name error path):
+ *  carries no output schema, which is all resolveSchemaPolicy reads. */
+const SCHEMALESS_AGENT: AgentConfig = {
+	name: "",
+	description: "",
+	systemPrompt: "",
+	source: "bundled",
+	filePath: "",
+};
+
+function resolveSchemaPolicy(
+	agent: AgentConfig,
+	callSchema: Record<string, unknown> | undefined,
+	callMode: "permissive" | "strict" | undefined,
+): SchemaPolicy {
+	return { schema: (callSchema ?? agent.output) as Record<string, unknown> | undefined, mode: callMode ?? "permissive" };
+}
+
+/** Prompt instruction appended when a schema applies: the <result> payload
+ *  becomes pure JSON conforming to the schema. */
+function schemaInstruction(schema: Record<string, unknown>): string {
+	return [
+		"# Structured output",
+		"",
+		"Your <result> payload MUST be exactly ONE JSON value (object unless the schema says otherwise) that validates against this JSON Schema:",
+		"",
+		"```json",
+		JSON.stringify(schema),
+		"```",
+		"",
+		"No markdown fences and no commentary inside the tags — only the JSON.",
+	].join("\n");
+}
+
+/** Validate the extracted result text against the schema. Returns the failure
+ *  detail for strict mode or the warning line for permissive mode; `ok` means
+ *  the payload parsed and validated. */
+function validateStructuredOutput(
+	policy: SchemaPolicy,
+	text: string,
+): { ok: boolean; error?: string; warning?: string } {
+	if (!policy.schema) return { ok: true };
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		const detail = `output was not valid JSON: ${reason}`;
+		if (policy.mode === "strict") return { ok: false, error: detail };
+		return { ok: false, warning: `schema ignored (${policy.mode}): ${detail}; original text preserved` };
+	}
+	try {
+		const check = Compile(policy.schema as never);
+		if (check.Check(parsed)) return { ok: true };
+		const errors = [...check.Errors(parsed)]
+			.slice(0, 10)
+			.map((e) => `${(e as { instancePath?: string }).instancePath || ""}: ${e.message}`);
+		const detail = `output failed JSON Schema validation:${errors.length ? "\n  - " + errors.join("\n  - ") : ""}`;
+		if (policy.mode === "strict") return { ok: false, error: detail };
+		return { ok: false, warning: `schema violated (${policy.mode}): ${detail}; original text preserved` };
+	} catch (err) {
+		// An unusable schema is a caller bug, not an agent failure — surface it
+		// as a warning either way rather than failing the spawn.
+		const reason = err instanceof Error ? err.message : String(err);
+		return { ok: false, warning: `output schema could not be applied: ${reason}` };
+	}
+}
+
 /** Spawn one agent by name through the dispatch core and normalize the
  *  result into the tool's SingleResult shape. */
 async function runSingleAgent(
@@ -283,6 +369,7 @@ async function runSingleAgent(
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	policy: SchemaPolicy = { mode: "permissive" },
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -313,7 +400,9 @@ async function runSingleAgent(
 		cwd: cwd ?? defaultCwd,
 		model: agent.model,
 		tools: agent.tools,
-		systemPrompt: [agent.systemPrompt, RESULT_CONTRACT_PROMPT].filter(Boolean).join("\n\n"),
+		systemPrompt: [agent.systemPrompt, RESULT_CONTRACT_PROMPT, policy.schema ? schemaInstruction(policy.schema) : ""]
+			.filter(Boolean)
+			.join("\n\n"),
 		maxTurns: maxTurns,
 		allowChildRecursion,
 		displayName: agentName,
@@ -343,6 +432,20 @@ async function runSingleAgent(
 		outputPath: r.outputPath,
 		artifactWarning: r.artifactWarning,
 	};
+
+	// Structured-output validation runs on the CONTRACT-EXTRACTED text.
+	if (policy.schema) {
+		const outcome = validateStructuredOutput(policy, extractResult(r.messages).text);
+		if (outcome.ok) {
+			result.schemaValid = true;
+		} else if (outcome.error && policy.mode === "strict") {
+			// Strict rejection: the item fails with the validation details.
+			result.exitCode = 1;
+			result.errorMessage = outcome.error;
+		} else if (outcome.warning) {
+			result.schemaWarning = outcome.warning;
+		}
+	}
 	if (onUpdate) {
 		onUpdate({
 			content: [{ type: "text", text: lastAssistantText(r.messages) || "(running...)" }],
@@ -352,10 +455,21 @@ async function runSingleAgent(
 	return result;
 }
 
+const SchemaMode = Type.Union([Type.Literal("permissive"), Type.Literal("strict")], {
+	description: "How a resolved output schema treats violations. permissive (default): attach a warning, pass the original text through. strict: the task fails with the validation errors.",
+});
+
+const JsonSchemaValue = Type.Record(Type.String(), Type.Unknown(), {
+	description:
+		"A JSON Schema (draft-style object) that this agent's <result> JSON payload must validate against. Overrides any `output:` schema declared in the agent frontmatter.",
+});
+
 const TaskItem = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
 	task: Type.String({ description: "Task to delegate to the agent" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+	outputSchema: Type.Optional(JsonSchemaValue),
+	schemaMode: Type.Optional(SchemaMode),
 });
 
 
@@ -380,6 +494,8 @@ const SubagentParams = Type.Object({
 				"Max assistant turns per agent. When reached, the subprocess is aborted (partial output preserved, marked budget-aborted). Must be a positive integer.",
 		}),
 	),
+	outputSchema: Type.Optional(JsonSchemaValue),
+	schemaMode: Type.Optional(SchemaMode),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
 });
 
@@ -390,6 +506,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 		"Delegate tasks to specialized subagents with isolated context.",
 		"Modes: single (agent + task), parallel (tasks array).",
 		"Agents are discovered from the bundled set (scout/planner/reviewer/worker), ~/.pi/agent/agents, and project .pi/agents.",
+		"Pass outputSchema (+ optional schemaMode: strict) to get machine-checkable JSON back — validation errors reject the task under strict or annotate it under permissive.",
 	].join(" "),
 	promptSnippet: "subagent — delegate to specialized agents (single/parallel)",
 	parameters: SubagentParams,
@@ -504,6 +621,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 			const ceiling = getMaxConcurrency();
 			const results = await mapWithConcurrencyLimit(params.tasks, ceiling, async (t, index) => {
 				const taskWithContext = params.context ? `${params.context}\n\n${t.task}` : t.task;
+				const agentDef = agents.find((a) => a.name === t.agent);
 				const result = await runSingleAgent(
 					ctx.cwd,
 					agents,
@@ -519,6 +637,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 						}
 					},
 					makeDetails("parallel"),
+					resolveSchemaPolicy(agentDef ?? SCHEMALESS_AGENT, t.outputSchema, t.schemaMode),
 				);
 				allResults[index] = result;
 				emitParallelUpdate();
@@ -550,6 +669,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 
 		if (params.agent && params.task) {
 			const taskWithContext = params.context ? `${params.context}\n\n${params.task}` : params.task;
+			const agentDef = agents.find((a) => a.name === params.agent);
 			const result = await runSingleAgent(
 				ctx.cwd,
 				agents,
@@ -560,9 +680,10 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 				signal,
 				onUpdate,
 				makeDetails("single"),
+				resolveSchemaPolicy(agentDef ?? SCHEMALESS_AGENT, params.outputSchema, params.schemaMode),
 			);
 			if (isFailedResult(result)) {
-				const errorMsg = getResultOutput(result);
+				const errorMsg = getResultOutput(result).text;
 				return {
 					content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${errorMsg}` }],
 					details: makeDetails("single")([result]),

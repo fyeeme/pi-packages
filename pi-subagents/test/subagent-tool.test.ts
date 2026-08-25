@@ -6,6 +6,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import { subagentTool } from "../src/tools/subagent.ts";
 
 const spawnImpl = vi.fn((_command: string, _args: string[], _opts: unknown) => fakeProc());
@@ -203,5 +204,78 @@ describe("result contract", () => {
 		);
 		expect(captured.length).toBe(1);
 		expect(captured[0]).toContain("<result>");
+	});
+});
+
+describe("structured output (outputSchema / schemaMode)", () => {
+	it("strict mode rejects a payload that violates the schema, with error details", async () => {
+		spawnMock.mockImplementation(() => procWithFinalText("<result>{\"name\": 123}</result>"));
+		const result = await subagentTool.execute!(
+			"call-1",
+			{
+				agent: "scout",
+				task: "strict-task",
+				outputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+				schemaMode: "strict",
+			} as never,
+			new AbortController().signal,
+			undefined,
+			fakeCtx() as never,
+		);
+		const text = result.content[0];
+		expect(text.type === "text" && text.text).toContain("failed JSON Schema validation");
+		const details = result.details as { results: Array<{ schemaValid?: boolean; errorMessage?: string }> };
+		expect(details.results[0]?.schemaValid).toBeUndefined();
+		expect(details.results[0]?.errorMessage).toContain("failed JSON Schema validation");
+	});
+
+	it("permissive mode (default) passes the original text through with a warning", async () => {
+		spawnMock.mockImplementation(() => procWithFinalText("<result>not json at all</result>"));
+		const result = await subagentTool.execute!(
+			"call-1",
+			{
+				tasks: [
+					{
+						agent: "scout",
+						task: "lenient-task",
+						outputSchema: { type: "object", properties: { name: { type: "string" } } },
+					},
+				],
+			} as never,
+			new AbortController().signal,
+			undefined,
+			fakeCtx() as never,
+		);
+		const text = result.content[0];
+		expect(text.type === "text" && text.text).toContain("not json at all"); // original preserved
+		// The warning rides the delivered text AND the details.
+		expect(text.type === "text" && text.text).toContain("schema ignored");
+		const details = result.details as { results: Array<{ schemaWarning?: string }> };
+		expect(details.results[0]?.schemaWarning).toContain("schema ignored");
+	});
+
+	it("a valid JSON payload passes strict validation cleanly and the prompt carries the schema", async () => {
+		let capturedPrompt = "";
+		spawnMock.mockImplementation(((_command: string, args: string[]) => {
+			const idx = args.indexOf("--append-system-prompt");
+			if (idx >= 0 && args[idx + 1]) capturedPrompt = readFileSync(args[idx + 1], "utf-8");
+			return procWithFinalText('<result>{"name": "ok"}</result>');
+		}) as never);
+		const result = await subagentTool.execute!(
+			"call-1",
+			{
+				agent: "scout",
+				task: "valid-task",
+				outputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+				schemaMode: "strict",
+			} as never,
+			new AbortController().signal,
+			undefined,
+			fakeCtx() as never,
+		);
+		const details = result.details as { results: Array<{ schemaValid?: boolean }> };
+		expect(details.results[0]?.schemaValid).toBe(true);
+		expect(capturedPrompt).toContain("Structured output");
+		expect(capturedPrompt).toContain("\"required\"");
 	});
 });

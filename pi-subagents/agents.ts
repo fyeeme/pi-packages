@@ -42,6 +42,9 @@ export interface AgentConfig {
 	description: string;
 	tools?: string[];
 	model?: string;
+	/** Optional JSON Schema (frontmatter `output:`) the agent's <result> payload
+	 *  must satisfy when the caller does not pass a per-call outputSchema. */
+	output?: Record<string, unknown>;
 	systemPrompt: string;
 	source: AgentSource;
 	filePath: string;
@@ -124,10 +127,10 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 			continue;
 		}
 
-		let frontmatter: Record<string, string>;
+		let frontmatter: Record<string, unknown>;
 		let body: string;
 		try {
-			const parsed = parseFrontmatter<Record<string, string>>(content);
+			const parsed = parseFrontmatter<Record<string, unknown>>(content);
 			frontmatter = parsed.frontmatter ?? {};
 			body = parsed.body;
 		} catch (err) {
@@ -142,16 +145,31 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 			);
 			continue;
 		}
-		const tools = frontmatter.tools
-			?.split(",")
-			.map((t: string) => t.trim())
-			.filter(Boolean);
+		const tools =
+			typeof frontmatter.tools === "string"
+				? frontmatter.tools
+						.split(",")
+						.map((t: string) => t.trim())
+						.filter(Boolean)
+				: undefined;
+
+		// `output:` must be a YAML mapping; anything else is ignored (warned) so
+		// a typo cannot silently disable validation.
+		let output: Record<string, unknown> | undefined;
+		if (frontmatter.output != null) {
+			if (typeof frontmatter.output === "object" && !Array.isArray(frontmatter.output)) {
+				output = frontmatter.output as Record<string, unknown>;
+			} else {
+				console.warn(`[pi-subagents] Ignoring non-object "output:" frontmatter in ${filePath}`);
+			}
+		}
 
 		agents.push({
-			name: frontmatter.name,
-			description: frontmatter.description,
+			name: frontmatter.name as string,
+			description: frontmatter.description as string,
 			tools: tools && tools.length > 0 ? tools : undefined,
-			model: frontmatter.model,
+			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
+			output,
 			systemPrompt: body,
 			source,
 			filePath,

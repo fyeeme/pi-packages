@@ -131,3 +131,43 @@ describe("malformed agent files", () => {
 		warn.mockRestore();
 	});
 });
+
+describe("output schema frontmatter", () => {
+	it("parses a YAML `output:` mapping into AgentConfig.output", () => {
+		fs.writeFileSync(
+			path.join(userDir, "structured.md"),
+			[
+				"---",
+				"name: structured",
+				"description: emits json",
+				"output:",
+				"  type: object",
+				"  properties:",
+				"    summary:",
+				"      type: string",
+				"  required:",
+				"    - summary",
+				"---",
+				"prompt body",
+			].join("\n"),
+		);
+		const agent = discoverAgents(tmpRoot, "both").agents.find((a) => a.name === "structured");
+		expect(agent?.output).toEqual({
+			type: "object",
+			properties: { summary: { type: "string" } },
+			required: ["summary"],
+		});
+	});
+
+	it("ignores and warns about non-object output frontmatter", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		fs.writeFileSync(
+			path.join(userDir, "bad-output.md"),
+			"---\nname: bad-output\ndescription: x\noutput: oops\n---\nbody\n",
+		);
+		const agent = discoverAgents(tmpRoot, "both").agents.find((a) => a.name === "bad-output");
+		expect(agent?.output).toBeUndefined();
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining('"output:"'));
+		warn.mockRestore();
+	});
+});
