@@ -6,7 +6,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir as td } from "node:os";
+import { join } from "node:path";
 import { subagentTool } from "../src/tools/subagent.ts";
 
 const spawnImpl = vi.fn((_command: string, _args: string[], _opts: unknown) => fakeProc());
@@ -329,5 +331,132 @@ describe("failure classification and replay grouping", () => {
 		expect(details.results[0]?.failureClass).toBeUndefined();
 		expect(details.results[0]?.taskSummary).toBe("healthy-task one"); // context-free first line
 		expect(details.results[1]?.failureClass).toBe("transient");
+	});
+});
+
+describe("spec anchors: ids, wire schema, trust gate, frontmatter schema", () => {
+	it("duplicate same-name tasks in one call get distinct stable ids (spec: uniquified)", async () => {
+		const result = await subagentTool.execute!(
+			"call-1",
+			{
+				tasks: [
+					{ agent: "scout", task: "dup-a" },
+					{ agent: "scout", task: "dup-b" },
+				],
+			} as never,
+			new AbortController().signal,
+			undefined,
+			fakeCtx() as never,
+		);
+		const details = result.details as { results: Array<{ id?: string }> };
+		const [a, b] = details.results;
+		expect(a?.id).toMatch(/^[A-Z][a-z]+[A-Z][a-z]+$/);
+		expect(b?.id).toMatch(/^[A-Z][a-z]+[A-Z][a-z]+$/);
+		expect(a?.id).not.toBe(b?.id);
+	});
+
+	it("the wire schema exposes no discovery/trust policy parameters (spec: no policy params)", () => {
+		const props = Object.keys((subagentTool.parameters as unknown as { properties: Record<string, unknown> }).properties);
+		expect(props).not.toContain("agentScope");
+		expect(props).not.toContain("confirmProjectAgents");
+		expect(props).toEqual(expect.arrayContaining(["agent", "task", "tasks", "context"]));
+	});
+
+	it("trust gate: interactive sessions prompt before project agents; refusal cancels before any spawn", async () => {
+		const dir = mkdtempSync(join(td(), "pi-sa-gate-"));
+		mkdirSync(join(dir, ".pi", "agents"), { recursive: true });
+		writeFileSync(
+			join(dir, ".pi", "agents", "pa.md"),
+			"---\nname: pa\ndescription: project agent\n---\nbody\n",
+		);
+		try {
+			const confirm = vi.fn(async () => false);
+			const ctx = { hasUI: true, mode: "tui", cwd: dir, ui: { confirm } } as never;
+			const refused = await subagentTool.execute!(
+				"call-1",
+				{ agent: "pa", task: "gated-task" } as never,
+				new AbortController().signal,
+				undefined,
+				ctx,
+			);
+			const text = refused.content[0];
+			expect(text.type === "text" && text.text).toContain("Canceled");
+			expect(confirm).toHaveBeenCalledTimes(1);
+			expect(spawnMock).not.toHaveBeenCalled(); // nothing spawned on refusal
+
+			spawnMock.mockImplementation(() => procWithFinalText("<result>ok</result>"));
+			const approved = await subagentTool.execute!(
+				"call-2",
+				{ agent: "pa", task: "gated-task" } as never,
+				new AbortController().signal,
+				undefined,
+				{ hasUI: true, mode: "tui", cwd: dir, ui: { confirm: async () => true } } as never,
+			);
+			expect(spawnMock).toHaveBeenCalled();
+			const d = approved.details as { results: Array<{ id?: string }> };
+			expect(d.results[0]?.id).toBeTruthy();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("confirmation can be disabled only via the settings file, never the wire", async () => {
+		const dir = mkdtempSync(join(td(), "pi-sa-nogate-"));
+		mkdirSync(join(dir, ".pi", "agents"), { recursive: true });
+		writeFileSync(join(dir, ".pi", "agents", "pa.md"), "---\nname: pa\ndescription: project agent\n---\nbody\n");
+		writeFileSync(join(dir, ".pi", "pi-subagent.json"), JSON.stringify({ confirmProjectAgents: false }));
+		try {
+			const confirm = vi.fn(async () => true);
+			await subagentTool.execute!(
+				"call-1",
+				{ agent: "pa", task: "ungated" } as never,
+				new AbortController().signal,
+				undefined,
+				{ hasUI: true, mode: "tui", cwd: dir, ui: { confirm } } as never,
+			);
+			expect(confirm).not.toHaveBeenCalled(); // settings off → no prompt at all
+			expect(spawnMock).toHaveBeenCalled();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("frontmatter output: validates when the caller passes no outputSchema (permissive warns)", async () => {
+		const dir = mkdtempSync(join(td(), "pi-sa-fm-"));
+		mkdirSync(join(dir, ".pi"), { recursive: true });
+		writeFileSync(join(dir, ".pi", "pi-subagent.json"), JSON.stringify({ confirmProjectAgents: false }));
+		const agentsDir = join(dir, ".pi", "agents");
+		mkdirSync(agentsDir, { recursive: true });
+		writeFileSync(
+			join(agentsDir, "structured.md"),
+			[
+				"---",
+				"name: fm-structured",
+				"description: frontmatter schema agent",
+				"output:",
+				"  type: object",
+				"  properties:",
+				"    summary:",
+				"      type: string",
+				"---",
+				"body",
+			].join("\n"),
+		);
+		spawnMock.mockImplementation(() => procWithFinalText("<result>plain text, not json</result>"));
+		try {
+			const result = await subagentTool.execute!(
+				"call-1",
+				{ agent: "fm-structured", task: "fm-task" } as never,
+				new AbortController().signal,
+				undefined,
+				{ hasUI: false, mode: "headless", cwd: dir, ui: {} } as never,
+			);
+			const text = result.content[0];
+			expect(text.type === "text" && text.text).toContain("plain text, not json"); // original preserved
+			const details = result.details as { results: Array<{ schemaWarning?: string }> };
+			expect(details.results[0]?.schemaWarning).toContain("schema ignored");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

@@ -286,7 +286,7 @@ describe("fleet surface stat density (merged widget + roster info set)", () => {
 		list.setUICtx(ctx.ui);
 		for (let i = 0; i < count; i++) {
 			const callId = `a${i}`;
-			monitor.callStarted({ callId, task: `Task ${i}`, displayName: "worker", controller: new AbortController(), messages: [], model: "m-1" });
+			monitor.callStarted({ callId, id: `Worker${i}`, task: `Task ${i}`, displayName: "worker", controller: new AbortController(), messages: [], model: "m-1" });
 			monitor.messageEnd(callId, {
 				role: "assistant",
 				content: [{ type: "text", text: "step" }],
@@ -312,6 +312,8 @@ describe("fleet surface stat density (merged widget + roster info set)", () => {
 		const lines = renderFleet(4);
 		const agentRows = lines.filter((l) => l.includes("worker"));
 		expect(agentRows.length).toBe(4);
+			expect(agentRows[0]).toContain("Worker0"); // spec: stable id visible on the row
+
 		for (const row of agentRows) {
 			expect(row).toMatch(/↻\d+/); // turns
 			expect(row).toContain("tools"); // tool uses
