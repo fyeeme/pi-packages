@@ -45,3 +45,42 @@ export function lastAssistantText(messages: Message[]): string {
 	}
 	return parts.join("\n").trim();
 }
+
+// ---------------------------------------------------------------------------
+// Explicit result contract (omp parity)
+// ---------------------------------------------------------------------------
+
+/** How the final result text handed to the caller was obtained. */
+export type ResultExtractMethod = "result-block" | "assistant-text" | "none";
+
+export interface ExtractedResult {
+	/** The extracted final output; never an empty string. */
+	text: string;
+	method: ResultExtractMethod;
+}
+
+/** Explicit placeholder returned when a call produced no usable output. */
+export const NO_OUTPUT_PLACEHOLDER = "(no output)";
+
+/** Complete `<result>…</result>` pairs in one text blob. Unclosed tags are
+ *  deliberately not matched — half a contract must not swallow the answer. */
+const RESULT_BLOCK_RE = /<result>([\s\S]*?)<\/result>/g;
+
+/**
+ * Result extraction for a finished agent, in spec order:
+ * 1. the LAST complete `<result>` block inside the final assistant run;
+ * 2. otherwise the same run's plain text (the pre-contract heuristic);
+ * 3. otherwise the explicit `(no output)` placeholder — never `""`.
+ * An empty last block counts as absent so the fallback still applies.
+ */
+export function extractResult(messages: Message[]): ExtractedResult {
+	const finalText = lastAssistantText(messages);
+	if (!finalText) return { text: NO_OUTPUT_PLACEHOLDER, method: "none" };
+
+	let lastBlock: string | undefined;
+	for (const match of finalText.matchAll(RESULT_BLOCK_RE)) {
+		lastBlock = match[1]?.trim();
+	}
+	if (lastBlock) return { text: lastBlock, method: "result-block" };
+	return { text: finalText, method: "assistant-text" };
+}

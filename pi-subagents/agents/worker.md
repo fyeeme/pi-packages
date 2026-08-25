@@ -21,3 +21,7 @@ Anything the main agent should know.
 If handing off to another agent (e.g. reviewer), include:
 - Exact file paths changed
 - Key functions/types touched (short list)
+
+# Final output
+
+End your FINAL message with your complete answer wrapped exactly once in <result></result> tags. Everything inside those tags is what the caller receives verbatim — keep reasoning and progress notes outside them.

@@ -162,3 +162,46 @@ describe("parallel output truncation and artifacts", () => {
 		expect(text.type === "text" && text.text.includes("Output truncated")).toBe(false);
 	});
 });
+
+describe("result contract", () => {
+	it("the <result> block is delivered and details record the extraction method", async () => {
+		const body = "narration first\n<result>CONTRACT-ANSWER</result>";
+		spawnMock.mockImplementation(() => procWithFinalText(body));
+		// The contract prompt must ride --append-system-prompt.
+		const result = await subagentTool.execute!(
+			"call-1",
+			{ tasks: [{ agent: "scout", task: "contract-task" }] } as never,
+			new AbortController().signal,
+			undefined,
+			fakeCtx() as never,
+		);
+		const text = result.content[0];
+		expect(text.type === "text" && text.text.includes("CONTRACT-ANSWER")).toBe(true);
+		expect(text.type === "text" && text.text.includes("narration first")).toBe(false);
+		expect(text.type === "text" && /extracted:/.test(text.text)).toBe(false); // silent on contract hit
+		const details = result.details as { results: Array<{ extractMethod?: string }> };
+		expect(details.results[0]?.extractMethod).toBe("result-block");
+	});
+
+	it("every spawn's appended system prompt carries the result-contract instruction", async () => {
+		// The system prompt rides a temp file passed to --append-system-prompt,
+		// unlinked again in spawnAgent's finally — so capture its content AT
+		// spawn time from inside the mocked spawn.
+		const { readFileSync } = await import("node:fs");
+		const captured: string[] = [];
+		spawnMock.mockImplementationOnce(((_command: string, args: string[]) => {
+			const idx = args.indexOf("--append-system-prompt");
+			if (idx >= 0 && args[idx + 1]) captured.push(readFileSync(args[idx + 1], "utf-8"));
+			return fakeProc();
+		}) as never);
+		await subagentTool.execute!(
+			"call-1",
+			{ agent: "scout", task: "single-task" } as never,
+			new AbortController().signal,
+			undefined,
+			fakeCtx() as never,
+		);
+		expect(captured.length).toBe(1);
+		expect(captured[0]).toContain("<result>");
+	});
+});

@@ -29,10 +29,27 @@ import {
 	createSpawnRegistry,
 	type AgentSpawnRegistry,
 	getMaxConcurrency,
-	lastAssistantText,
 	mapWithConcurrencyLimit,
+	NO_OUTPUT_PLACEHOLDER,
 	spawnAgent,
 } from "../dispatch.ts";
+import { extractResult, lastAssistantText, type ResultExtractMethod } from "../text.ts";
+
+/**
+ * Explicit result contract appended to EVERY spawned agent's system prompt
+ * (prompt-layer mechanism, D4 — zero subprocess cooperation needed): the final
+ * answer rides inside one <result> block so extraction cannot confuse
+ * reasoning chatter with the deliverable. The extractor still falls back to
+ * the last-assistant-text heuristic, so an agent ignoring the contract never
+ * yields less than the pre-contract behavior.
+ */
+const RESULT_CONTRACT_PROMPT = [
+	"# Final output contract",
+	"",
+	"End your FINAL message with your complete answer wrapped exactly once in <result></result> tags.",
+	"Everything inside those tags is delivered to the caller verbatim; reasoning, progress notes,",
+	"and narration belong outside them.",
+].join("\n");
 
 /** Parallel-mode task-count ceiling. 16 covers the review skill's largest
  *  instructed single batch (10 finders at xhigh/max) plus grouped-verifier
@@ -182,6 +199,8 @@ interface SingleResult {
 	outputPath?: string;
 	/** Set instead of outputPath when the artifact could not be written. */
 	artifactWarning?: string;
+	/** How the delivered output was obtained (contract hit vs heuristic vs nothing). */
+	extractMethod?: ResultExtractMethod;
 }
 
 interface SubagentDetails {
@@ -199,18 +218,24 @@ function isFailedResult(result: SingleResult): boolean {
 	);
 }
 
-function getResultOutput(result: SingleResult): string {
+/** Delivered output text for one result plus how it was extracted. Failures
+ *  report the error/stderr first; the extractor's placeholder guarantees the
+ *  text is never empty. */
+function getResultOutput(result: SingleResult): { text: string; method: ResultExtractMethod } {
+	const extracted = extractResult(result.messages);
+	result.extractMethod = extracted.method;
 	if (isFailedResult(result)) {
-		return result.errorMessage || result.stderr || lastAssistantText(result.messages) || "(no output)";
+		const reason = result.errorMessage || result.stderr;
+		return { text: reason || extracted.text, method: reason ? "none" : extracted.method };
 	}
-	return lastAssistantText(result.messages) || "(no output)";
+	return extracted;
 }
 
 /** Per-task output text with the 50KB cap applied. A truncated output points
  *  at the full-output artifact; a failed artifact write degrades to a warning
  *  line instead of an error. */
 function truncateParallelOutput(result: SingleResult): string {
-	const output = getResultOutput(result);
+	const output = getResultOutput(result).text;
 	const byteLength = Buffer.byteLength(output, "utf8");
 	if (byteLength > PER_TASK_OUTPUT_CAP) {
 		let truncated = output.slice(0, PER_TASK_OUTPUT_CAP);
@@ -280,13 +305,15 @@ async function runSingleAgent(
 	// explicitly allowed to fan out itself; any other child loads without the
 	// tool and physically cannot recurse.
 	const allowChildRecursion = agent.tools?.includes("subagent") ?? false;
+	// Prompt-layer result contract (see RESULT_CONTRACT_PROMPT): appended after
+	// the agent's own system prompt, never replacing it.
 	const r = await spawnAgent(registry, {
 		callId,
 		task,
 		cwd: cwd ?? defaultCwd,
 		model: agent.model,
 		tools: agent.tools,
-		systemPrompt: agent.systemPrompt,
+		systemPrompt: [agent.systemPrompt, RESULT_CONTRACT_PROMPT].filter(Boolean).join("\n\n"),
 		maxTurns: maxTurns,
 		allowChildRecursion,
 		displayName: agentName,
@@ -500,11 +527,15 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 
 			const successCount = results.filter((r) => !isFailedResult(r)).length;
 			const summaries = results.map((r) => {
-				const output = truncateParallelOutput(r);
+				const { method } = getResultOutput(r);
+				const capped = truncateParallelOutput(r);
 				const status = isFailedResult(r)
 					? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}`
 					: "completed";
-				return `### [${r.agent}] ${status}\n\n${output}`;
+				// Extraction-method annotation: silent when the contract was hit,
+				// visible so downstream can tell heuristics from contract hits.
+				const note = method === "result-block" ? "" : ` (extracted: ${method})`;
+				return `### [${r.agent}] ${status}${note}\n\n${capped}`;
 			});
 			return {
 				content: [
@@ -542,7 +573,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 				content: [
 					{
 						type: "text",
-						text: lastAssistantText(result.messages) || "(no output)",
+						text: getResultOutput(result).text,
 					},
 				],
 				details: makeDetails("single")([result]),
@@ -607,7 +638,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 			const isError = isFailedResult(r);
 			const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
 			const displayItems = getDisplayItems(r.messages);
-			const finalOutput = lastAssistantText(r.messages);
+			const finalOutput = extractResult(r.messages).text;
 
 			if (expanded) {
 				const container = new Container();
@@ -701,7 +732,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 				for (const r of details.results) {
 					const rIcon = isFailedResult(r) ? theme.fg("error", "✗") : theme.fg("success", "✓");
 					const displayItems = getDisplayItems(r.messages);
-					const finalOutput = lastAssistantText(r.messages);
+					const finalOutput = extractResult(r.messages).text;
 
 					container.addChild(new Spacer(1));
 					container.addChild(

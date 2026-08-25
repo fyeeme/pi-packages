@@ -34,3 +34,7 @@ Numbered steps, each small and actionable:
 Anything to watch out for.
 
 Keep the plan concrete. The worker agent will execute it verbatim.
+
+# Final output
+
+End your FINAL message with your complete answer wrapped exactly once in <result></result> tags. Everything inside those tags is what the caller receives verbatim — keep reasoning and progress notes outside them.

@@ -47,3 +47,7 @@ Brief explanation of how the pieces connect.
 
 ## Start Here
 Which file to look at first and why.
+
+# Final output
+
+End your FINAL message with your complete answer wrapped exactly once in <result></result> tags. Everything inside those tags is what the caller receives verbatim — keep reasoning and progress notes outside them.

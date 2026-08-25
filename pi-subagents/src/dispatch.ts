@@ -32,7 +32,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { monitor } from "./monitor.ts";
-import { lastAssistantText } from "./text.ts";
+import { extractResult, lastAssistantText, NO_OUTPUT_PLACEHOLDER } from "./text.ts";
 import { loadCoreSettings } from "./concurrency.ts";
 
 export { AgentMonitor, monitor } from "./monitor.ts";
@@ -44,7 +44,9 @@ export type {
 } from "./monitor.ts";
 export { loadCoreSettings } from "./concurrency.ts";
 export type { SubagentCoreSettings } from "./concurrency.ts";
-export { contentText, contentTextBlocks, lastAssistantText } from "./text.ts";
+export { contentText, contentTextBlocks, extractResult, lastAssistantText } from "./text.ts";
+export { NO_OUTPUT_PLACEHOLDER } from "./text.ts";
+export type { ExtractedResult, ResultExtractMethod } from "./text.ts";
 
 /** Fire a monitor notification. UI observability must never break dispatch. */
 function notifyMonitor(fn: () => void): void {
@@ -733,8 +735,10 @@ export async function spawnAgent(
 		result.exitCode = exitCode;
 		// Full-output artifact, before the finally's callEnded settles the row:
 		// the tool result and UI can reference outputPath immediately. Never fatal.
-		const finalOutput = lastAssistantText(result.messages);
-		if (finalOutput) Object.assign(result, writeOutputArtifact(stableId, finalOutput));
+		const finalOutput = extractResult(result.messages).text;
+		if (finalOutput !== NO_OUTPUT_PLACEHOLDER) {
+			Object.assign(result, writeOutputArtifact(stableId, finalOutput));
+		}
 		return result;
 	} catch (err) {
 		// A failure before/during spawn (temp-file write, E2BIG, ENOENT on pi)
