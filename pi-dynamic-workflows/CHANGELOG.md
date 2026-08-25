@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `/implement-and-review` prompt preset (migrated from pi-subagents, rewritten for the post-chain tool): implement → review → fix as successive `subagent` calls you coordinate yourself. pi-subagents dropped its chain mode and prompt presets in 2.1.0; this is the surviving recipe.
 ## [2.0.0] - 2026-08-25
 
 **Major release** (from 1.1.0 on npm), part of the 2.0 extensions family wave: the extension factory now composes `@fyeeme/pi-subagents` 2.0.0 from npm (live agent UI + `subagent` tool out of the box, no manifest path wiring), plus the run-persistence layer (journal/manifest resumable runs) and the per-call budget override. Highlights below.

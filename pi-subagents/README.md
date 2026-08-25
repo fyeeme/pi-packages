@@ -1,6 +1,6 @@
 # @fyeeme/pi-subagents
 
-**2.0.0 — major release**, head of the 2.0 extensions family wave (pi-review and pi-dynamic-workflows compose this package as their fan-out engine):
+**2.1.0** (omp-parity release), following the 2.0 major that headed the extensions family wave (pi-review and pi-dynamic-workflows compose this package as their fan-out engine):
 
 - **Composition architecture** — consumers call `piSubagents(pi)` inside their own factories; tool + UI light up from the version-pinned dependency copy, and the `subagent` tool registers exactly once per process (globalThis guard) so a standalone install coexists with any consumer.
 - **Reload-safe registration** — `session_shutdown(reload)` releases the tool-registration guard, so the `subagent` tool survives `/reload` (previously it silently vanished until restart).
@@ -12,11 +12,11 @@ General-purpose subagent fan-out for [pi](https://github.com/earendil-works/pi-m
 
 | Layer | Where | What |
 |---|---|---|
-| Tool | `src/tools/subagent.ts` | `subagent` — single `{agent, task}`, parallel `{tasks[]}` (max 16 per call, shared concurrency ceiling), optional shared `context` prepended to every spawn |
+| Tool | `src/tools/subagent.ts` | `subagent` — single `{agent, task}`, parallel `{tasks[]}` (max 16 per call, shared concurrency ceiling), shared `context`, `<result>` contract extraction, structured output via `outputSchema` (+ `schemaMode`) and agent frontmatter `output:` |
 | Agents | `agents.ts` + `agents/` | Discovery: project `.pi/agents` > user `~/.pi/agent/agents` > bundled `agents/` (scout / planner / reviewer / worker). Drop-in registration, re-discovered per call |
-| Dispatch core | `src/dispatch.ts` | `spawnAgent`, `mapWithConcurrencyLimit`, `createSpawnRegistry`, `abortAgent`, `getPiInvocation`, per-callId abort, maxTurns budget, whitelist-by-default recursion guard |
-| Settings | `src/concurrency.ts` | `pi-subagent.json` (global `<agentDir>` + project `.pi/`): `fleetView`, `maxConcurrency` (any positive integer, default 5), `confirmProjectAgents`, `stallMs` (default 60000), `wallClockMs` (default 0 = disabled). No environment-variable configuration channel |
-| UI | `index.ts` + `src/ui/` | Below-editor FleetView roster + conversation viewer — driven by the process-global monitor every spawn notifies (activate with ↓ at an empty editor) |
+| Dispatch core | `src/dispatch.ts` | `spawnAgent` (stable ids, stall watchdog + wall-clock ceiling, failure classification, full-output artifacts), `mapWithConcurrencyLimit`, `createSpawnRegistry`, `abortAgent`, per-callId abort, maxTurns budget, whitelist-by-default recursion guard |
+| Settings | `src/concurrency.ts` | `pi-subagent.json` (global `<agentDir>` + project `.pi/`): `fleet`, `maxConcurrency` (any positive integer, default 5), `confirmProjectAgents`, `stallMs` (default 60000), `wallClockMs` (default 0 = disabled). No environment-variable configuration channel |
+| UI | `index.ts` + `src/ui/` | Single below-editor fleet surface (`main` + every agent, full stat rows) with Enter-to-open conversation viewer — event-driven rendering on monitor notifications; ↓/← at an empty editor activates it |
 
 ## Install
 
@@ -89,30 +89,30 @@ environment-variable override.
 
 ```json
 {
-  "fleetView": true,              // below-editor fleet surface on/off
+  "fleet": true,                  // below-editor fleet surface on/off
   "maxConcurrency": 5,            // any positive integer; invalid → default
   "confirmProjectAgents": true,   // prompt before running repo-controlled agents
-  "stallMs": 60000,               // abort a call silent for this long
-  "wallClockMs": 0                // hard per-call ceiling; 0 = disabled
+  "stallMs": 60000,               // abort a call with no subprocess event for this long
+  "wallClockMs": 0                // hard per-call ceiling; unset/0 = disabled; must be ≥ 2× stallMs
 }
 ```
 
 `maxConcurrency` is read at call time (edits apply on the next fan-out);
-`fleetView` is read once per process at extension start.
+`fleet` is read once per process at extension start.
 
 ### Migration from 2.0
 
 | 2.0 | 2.1 |
 |---|---|
-| `widget: "all"/"background"/"off"` | removed (the widget merged into the fleet surface) |
-| `fleetView` | unchanged |
+| `widget: "all"/"background"/"off"` | removed (the widget merged into the fleet surface); ignored with a stderr warning |
+| `fleetView` | renamed to `fleet`; the old key is ignored with a stderr warning |
 | `PI_MAX_CONCURRENT_SUBAGENTS` env var | use `maxConcurrency` in the settings file |
 | `agentScope` / `confirmProjectAgents` tool parameters | discovery is always three-source; confirmation is the settings key only — models can no longer weaken it per call |
 | `chain[]` + `{previous}` + `/implement` presets | successive `subagent` calls or a workflow engine |
 
 ## Output display
 
-Collapsed: status icon (✓/✗/⏳), agent name, last items, usage stats (`3 turns ↑↓ R W $cost ctx model`). Expanded (Ctrl+O): full task, all tool calls, final output as Markdown, per-task usage. Parallel mode streams live per-task status; per-task model-visible output is capped at 50 KB (full output preserved in tool details).
+Collapsed: status icon (✓/✗/⏳), agent name, last items, usage stats (`3 turns ↑↓ R W $cost ctx model`). Expanded (Ctrl+O): full task, all tool calls, final output as Markdown, per-task usage. Parallel mode streams live per-task status and groups results under Succeeded / Failed headers — failures carry a `failureClass` (transient/hard) and their task's first line so a follow-up call can replay exactly the failed tasks. Per-task model-visible output is capped at 50 KB; the marker points at the full-output artifact written to `<tmpdir>/pi-subagents/<pid>-<n>/<stable-id>.md`.
 
 ## Testing
 

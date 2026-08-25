@@ -2,7 +2,7 @@
 
 **2.0.0 — major release** (from 1.1.0 on npm), part of the 2.0 extensions family wave:
 
-- **Composed sub-agent stack** — the extension factory composes [`@fyeeme/pi-subagents`](https://www.npmjs.com/package/@fyeeme/pi-subagents) 2.0.0 from its npm dependency: the live agent UI (widget / FleetView / `/agents`) and the `subagent` tool work out of the box; no manifest path wiring, no separate install.
+- **Composed sub-agent stack** — the extension factory composes [`@fyeeme/pi-subagents`](https://www.npmjs.com/package/@fyeeme/pi-subagents) 2.0.0 from its npm dependency: the live agent fleet surface and the `subagent` tool work out of the box; no manifest path wiring, no separate install.
 - **Run persistence** — journaled runs under `.pi/workflows/` (journal + manifest): a re-run resumes cached agent calls keyed by `sha256(workflow + prompt + signature)` with zero re-dispatch, and the manifest tracks live state for inspection.
 - **Per-call budget override** — `run_workflow` accepts a `budget` object that merges over the workflow definition's own `maxAgents`/`maxTokens`, making "halve the fan-out for large diffs" an actual parameter.
 - **Authoring aids shipped** — `workflow-author` skill, `/wf-*` prompts, and seed workflows (`review-local-diff`, `review-extension`) using `import type` for load determinism.
@@ -29,7 +29,7 @@ A workflow run is a list of steps (`agent` / `code` / `log` / `fan_out` / `loop_
 
 **Batteries included**: this package's extension factory composes
 [`@fyeeme/pi-subagents`](https://www.npmjs.com/package/@fyeeme/pi-subagents)
-(live agent UI — widget / FleetView / `/agents` — and the `subagent` tool)
+(the single below-editor fleet surface with its conversation viewer, and the `subagent` tool)
 from its version-pinned dependency copy, so workflow runs are observable out
 of the box. A standalone pi-subagents install is optional and coexists
 (idempotent composition).
@@ -49,10 +49,10 @@ import { defineWorkflow, runWorkflow } from "@fyeeme/pi-dynamic-workflows/src/in
 ```
 
 > The package's `pi.extensions` entry registers the `run_workflow` tool plus
-> the shared sub-agent UI from pi-subagents (live agent widget above the
-> editor, FleetView below it, and the `/agents` transcript viewer — every
-> spawned workflow agent appears there under its step id). The engine is also
-> fully usable via the imports shown here.
+> the shared sub-agent UI from pi-subagents (the below-editor fleet roster —
+> every spawned workflow agent appears there under its stable id; ↓ at an
+> empty editor opens the list, Enter shows an agent's live transcript). The
+> engine is also fully usable via the imports shown here.
 
 ---
 
