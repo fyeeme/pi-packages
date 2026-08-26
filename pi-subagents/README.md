@@ -100,6 +100,69 @@ environment-variable override.
 `maxConcurrency` is read at call time (edits apply on the next fan-out);
 `fleet` is read once per process at extension start.
 
+### Recommended configurations
+
+Presets by API-quota profile. Keep `confirmProjectAgents` at the default
+`true` in all of them — it is a safety gate, and it never prompts in headless
+runs (see pitfalls below).
+
+**Rate-limit sensitive** — small provider quota (429s under heavy fan-out):
+
+```json
+{
+  "fleet": true,
+  "maxConcurrency": 3,
+  "stallMs": 180000,
+  "wallClockMs": 900000
+}
+```
+
+- `maxConcurrency: 3` — every subagent is an independent pi subprocess with
+  its own multi-turn request stream; 5 concurrent finders plus the parent
+  session is a common 429 trigger on quota-capped accounts. 3 cuts the
+  instantaneous request rate ~40% for a small wall-clock cost.
+- `stallMs: 180000` (3 min) — the stall watchdog rearms only on subprocess
+  stdout/stderr activity; a child executing one long tool call (build, test
+  suite) emits nothing for its duration and would be killed as "stalled" at
+  the 60 s default.
+- `wallClockMs: 900000` (15 min) — runaway ceiling; satisfies the
+  `≥ 2 × stallMs` requirement (900000 ≥ 2×180000).
+
+**Balanced (default, quota headroom)**:
+
+```json
+{
+  "fleet": true,
+  "maxConcurrency": 5,
+  "stallMs": 120000,
+  "wallClockMs": 0
+}
+```
+
+**High quota / heavy fan-out**:
+
+```json
+{
+  "fleet": true,
+  "maxConcurrency": 8,
+  "stallMs": 120000,
+  "wallClockMs": 600000
+}
+```
+
+### Known pitfalls
+
+1. `stallMs: 0` is not "disabled" — non-positive values are silently dropped
+   and the 60000 default applies. There is no disable value.
+2. `wallClockMs` below `2 × stallMs` is silently ignored (no warning) — the
+   configured ceiling does not exist.
+3. `fleet: false` removes the only entry to the conversation viewer and its
+   stop gesture (the `/agents` command is gone in 2.1).
+4. Legacy keys (`widget`, `fleetView`) warn on every settings load, and
+   settings are re-read per fan-out — a stale file warns repeatedly.
+5. `confirmProjectAgents` prompts only in interactive sessions; headless
+   `pi -p` runs load project agents with no gate at all.
+
 ### Migration from 2.0
 
 | 2.0 | 2.1 |
