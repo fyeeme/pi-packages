@@ -252,27 +252,6 @@ describe("ask tool rich dialog path", () => {
 		expect(result.content[0].text).toBe("User answers:\nauth: JWT\ndeploy: [staging]");
 	});
 
-	it("maps a chat redirect result", async () => {
-		const pi = createFakePi();
-		const ui = new FakeTuiUi();
-		const pending = runAsk(pi, ui, SINGLE_PARAMS);
-		await new Promise(r => setTimeout(r, 0));
-		// Drive the dialog straight to a chat outcome via externalCancel is not
-		// the chat path; instead simulate by resolving the custom promise with
-		// a chat result — exercised through a dedicated host.
-		const chatUi = {
-			dialogs: [] as unknown[],
-			custom<T>(): Promise<T> {
-				return Promise.resolve({ kind: "chat" } as T);
-			},
-		};
-		const chatResult = await runAsk(pi, chatUi, SINGLE_PARAMS);
-		expect(chatResult.content[0].text).toContain("User chose to chat about this");
-		expect(chatResult.details?.chatRedirect).toBe(true);
-		void pending;
-		void ui;
-	});
-
 	it("cancelling the dialog aborts the turn with an error (omp semantics)", async () => {
 		const pi = createFakePi();
 		const ui = new FakeTuiUi();
@@ -323,7 +302,7 @@ describe("ask transcript rendering", () => {
 		expect(tool.renderCall!({ questions: "double-encoded" }, passthroughTheme).render(80).map(line => line.trim())).toEqual(["Ask"]);
 	});
 
-	it("result block re-renders when width changes after a resize", () => {
+	it("result block compresses to one question → answer line per question", () => {
 		const tool = createFakePi().tools.get("ask")!;
 		const component = tool.renderResult!(
 			{
@@ -338,21 +317,33 @@ describe("ask transcript rendering", () => {
 			{} as never,
 			passthroughTheme,
 		);
-		const wide = component.render(100);
-		expect(wide.every(line => visibleWidth(line) <= 100)).toBe(true);
-		// Shrinking the terminal must re-render at the new width instead of
-		// returning stale wide lines that the terminal would hardware-wrap.
-		const narrow = component.render(40);
-		expect(narrow.every(line => visibleWidth(line) <= 40)).toBe(true);
-		expect(narrow.some(line => visibleWidth(line) > 40)).toBe(false);
-		expect(narrow[0] && visibleWidth(narrow[0])).toBe(40);
-		// Growing back re-expands (cache is keyed by width, not one-shot).
-		const wideAgain = component.render(100);
-		expect(wideAgain.every(line => visibleWidth(line) <= 100)).toBe(true);
-		expect(wideAgain[0] && visibleWidth(wideAgain[0])).toBe(100);
+		const lines = component.render(80).map(line => line.trim());
+		expect(lines).toEqual(["Which auth method? → JWT"]);
+		// Unselected options are not re-listed in the transcript.
+		expect(lines.join("\n")).not.toContain("Session");
 	});
 
-	it("result block lines carry no full SGR reset that would punch holes in the tool background", () => {
+	it("result block renders one line per multi-part question with timeout markers", () => {
+		const tool = createFakePi().tools.get("ask")!;
+		const component = tool.renderResult!(
+			{
+				content: [{ type: "text", text: "User answers:" }],
+				details: {
+					results: [
+						{ id: "auth", question: "Which?", options: ["JWT", "Session"], multi: false, selectedOptions: ["JWT"], timedOut: true },
+						{ id: "deploy", question: "Where?", options: ["staging", "prod"], multi: true, selectedOptions: [], customInput: "blue-green" },
+					],
+				},
+			} as never,
+			{} as never,
+			passthroughTheme,
+		);
+		const text = component.render(100).join("\n");
+		expect(text).toContain("[auth] Which? → JWT · auto-selected after timeout");
+		expect(text).toContain("[deploy] Where? → “blue-green”");
+	});
+
+	it("result block wraps within the terminal width", () => {
 		const tool = createFakePi().tools.get("ask")!;
 		const component = tool.renderResult!(
 			{
@@ -367,15 +358,11 @@ describe("ask transcript rendering", () => {
 			{} as never,
 			passthroughTheme,
 		);
-		// Markdown pads its lines to the render width; if sections render at
-		// the full frame width, row() truncates them and truncateToWidth appends
-		// \x1b[0m, which resets the surrounding toolSuccessBg background and
-		// leaves bg holes on the right edge of those rows.
 		for (const width of [80, 60, 40]) {
 			const lines = component.render(width);
 			expect(lines.length).toBeGreaterThan(0);
 			for (const line of lines) {
-				expect(line.includes("\u001b[0m")).toBe(false);
+				expect(visibleWidth(line) <= width).toBe(true);
 			}
 		}
 	});

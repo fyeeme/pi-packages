@@ -1,75 +1,129 @@
 # pi-ask-user
 
-**2.0.0 — first npm release**, part of the 2.0 extensions family wave. Release highlights:
+- **Faithful omp port** — the tabbed ask dialog (Submit review tab, radio/checkbox markers, markdown/code previews with fence splitting and render caching), the inactivity countdown, and the legacy per-question selector path carried over file-by-file.
+- **Compact transcript** — the pending call renders only an `Ask · N questions` summary; the result renders one compact `question → answer` line per question (multi-question lines prefixed `[id]`) — no framed block, no re-listed options.
+- **Robustness fixes over the omp source** — countdown expiry mid-typing keeps the user's answer, live frame-width measurement replaces the hardcoded 80 columns, and dialog failures propagate instead of degrading to a phantom "user cancelled".
+- **Headless-safe** — print/JSON hosts cannot prompt, so the tool is stripped from the active set; a stray call throws a "question was never shown" error instead of hanging.
 
-- **Review page** — multi-question dialogs summarize every answer (custom inputs, notes, unanswered warnings) before submitting; `enter` confirms, `left` revises.
-- **Inline free-text editor** — `Other` answers and notes type directly inside the dialog (option list stays visible, `esc` returns, empty submit declines).
-- **Numbered options** — rows render `1. label` and answers echo the number back (`auth: 1. JWT`), plus a per-question status strip and `tab`/`shift+tab` navigation.
-- Selection semantics hardened: single-select no longer stacks markers, multi-select `enter` with nothing checked is a no-op, custom `Other` answers clear stale checkboxes.
+oh-my-pi's `ask` tool, migrated to a [pi](https://github.com/earendil-works/pi-coding-agent) extension.
 
-Structured `ask_user` tool for [pi](https://github.com/earendil-works/pi-coding-agent). It lets the LLM surface clarifying questions with selectable options while it works, instead of guessing when choices have materially different tradeoffs.
-
-Ported from the interactive ask flow of [oh-my-pi](https://github.com/can1357/oh-my-pi), adapted to pi's public extension API.
+This is a source migration of the interactive ask feature from
+[oh-my-pi](https://github.com/can1357/oh-my-pi) (a fork of badlogic/pi-mono), not a reimplementation: the tool flow,
+the tabbed ask dialog, the legacy per-question selector path, and the result wording are carried over from
+`packages/coding-agent/src/tools/ask.ts` and `src/modes/components/ask-dialog.ts`, then adapted file-by-file to pi's
+public extension API. Sister extension of [pi-ask-user-lite](../pi-ask-user-lite); the two expose different tools
+(`ask` vs `ask_user`) and should not be enabled together — see
+[pi-ask-user or pi-ask-user-lite?](#pi-ask-user-or-pi-ask-user-lite) below.
 
 ## Features
 
-- **Multiple questions in one dialog** — all questions presented through a single dialog with a `[1/3]` progress counter and a per-question status strip (`● Framework  ○ Style`); `←` revisits earlier questions to revise answers (cursor and selections preserved), `→` moves forward once the current question is answered.
-- **Review before submit** — after the last question, multi-question dialogs show a summary page listing every answer (custom inputs, notes, unanswered warnings); `enter` confirms, `←` goes back to revise. Single-question dialogs still submit immediately.
-- **Smart advance** — answering jumps to the next unanswered question, or straight to the review page once everything is answered; revising an earlier answer never forces a re-walk of already-answered ones.
-- **Single or multi select** — `multi: true` renders checkboxes (`space` toggles, `enter` records the set and is a no-op while nothing is checked); single-select renders radio markers with the recommended option pre-cursored and suffixed `(Recommended)`.
-- **Timeout auto-selection** — optional `timeoutSeconds` budget for the whole dialog; on expiry unanswered questions auto-select the recommended option (or the first) and are flagged `timedOut` so the LLM knows no human chose them.
-- **Option descriptions & previews** — short tradeoff text under each label; an option's `preview` lines render while the cursor rests on it. Options render and echo back numbered (`1. label`), so answers read `auth: 1. JWT`.
-- **Free-form "Other"** — every question gets an automatic `Other (type your own)` row that opens an editor embedded in the dialog: the option list stays visible while typing, `esc` returns to the rows, and an empty submit declines. Re-selecting an option clears a previous custom input.
-- **Answer notes** — press `n` to attach a note through the same inline editor (prefilled when revising); notes are echoed back to the LLM.
-- **"Chat about this" redirect** — a reserved row that ends the call with a `chatRedirect` result, telling the LLM the user prefers discussing over answering.
-- **Abort-safe** — if the agent turn is aborted while a question is open, the dialog closes and the tool settles as cancelled instead of hanging.
-- **Branch-safe state** — answers live in the tool result `details`, so `/tree` branching and session replay see exactly what was asked and answered.
-- **Headless-safe** — throws a proper tool error in `-p`/JSON modes instead of hanging.
+- **Tabbed multi-question dialog** — one question per tab with `header` chips in the tab bar, radio markers for single-select, checkboxes for `multi`; select keys resolve through the injected `KeybindingsManager`, so rebound keys keep working.
+- **Submit review gate** — calls with 3+ questions or any `multi` question get a Submit review tab before the answers go out; 1–2 single-select questions advance Enter-to-submit without a review page.
+- **Markdown/code previews** — an option's `preview` (markdown, fenced code) renders fence-split with render caching. On wide terminals (inner width ≥ 80) the dialog splits into an options pane and a cursor-following preview pane (fzf-style); narrow terminals keep the preview inline under the cursored row.
+- **Inline `Other` input with real editor semantics** — the dialog implements pi's `Focusable` contract and embeds a pi-tui `Input` that renders the input line itself: the hardware cursor and IME candidate window sit at the input point, with multi-char CJK IME commits, grapheme-aware cursor/delete (emoji as one unit), bracketed paste, kitty CSI-u decoding, undo, and kill ring. A countdown expiring mid-typing keeps the typed answer.
+- **Inactivity countdown** — `timeoutSeconds` is an idle budget: dialog keypresses reset it (not while typing); expiry auto-picks the recommended option (or the first) and marks it `auto-selected after timeout`.
+- **Compact transcript** — the pending call renders a single `Ask · N questions` line; the result renders one compact `question → answer` line per question (`[id]`-prefixed on multi-question calls) without re-listing unselected options.
+- **omp semantics kept** — cancelling aborts the agent turn; headless hosts (print/JSON) strip the tool at `session_start` with an execute backstop that errors "question was never shown"; a terminal bell rings on ask (opt out with `PI_OMK_ASK_NOTIFY=0`); answers persist in the tool result `details`.
+
+## What migrated
+
+| oh-my-pi source | Here | Notes |
+|---|---|---|
+| `tools/ask.ts` — `AskTool.execute` | `index.ts` | result-count validation, empty-single-select cancellation (#8265), multi-question loop with navigation state, cancel-aborts-turn semantics |
+| `tools/ask.ts` — `askSingleQuestion` + custom-input title windowing | `src/ask-legacy.ts` | multi-select toggle loop with `+ Done selecting`, recommended suffixes, `Other` via editor, timeout tolerance heuristic (`TIMEOUT_DETECTION_TOLERANCE_MS`), `(i/n)` progress titles |
+| `modes/components/ask-dialog.ts` — `AskDialogComponent` | `src/ask-dialog.ts` | tabbed dialog, Submit review tab, radio/checkbox markers, markdown/code previews with fence splitting and render caching, fixed-height panel sizing, cursor-following scroll, inactivity countdown, malformed-args normalization |
+| `modes/components/countdown-timer.ts` | `src/countdown-timer.ts` | verbatim |
+| `modes/components/overlay-box.ts` (subset) | `src/overlay-box.ts` | `topBorder`/`divider`/`row`/`bottomBorder`/`fit` |
+| `prompts/tools/ask.md` | `index.ts` | tool description, verbatim |
+| theme symbol defaults (`modes/theme/symbols.ts`) | `src/compat.ts` | `❯ ◉ ○ ☑ ☐ ╭╮╰╯` |
+
+## Adaptation notes (omp surface → pi extension API)
+
+Each omp-internal surface maps onto the closest public pi extension boundary:
+
+- **`AgentTool` + `createIf` gate** → `pi.registerTool` + `session_start` strip: print/JSON hosts cannot prompt, so the
+  tool is removed from the active set; if it is still called, `execute` throws with a "question was never shown" error
+  so the model stops retrying instead of misreading a cancel.
+- **ArkType schema + reserved-label narrow** → typebox schema; the narrow runs at the top of `execute`.
+- **`concurrency: "exclusive"`** → `executionMode: "sequential"` (pi tool batches).
+- **`ExtensionUIContext.askDialog`** → `ctx.ui.custom()` mounting `AskDialogComponent`.
+- **`#presentDialog` serial queue** → not needed: `ui.custom()` is a single editor slot and the sequential execution
+  mode already serializes ask calls.
+- **Nested `HookEditorComponent` prompts** (Other) → an embedded prompt mode inside the dialog: pi extensions own
+  one custom component slot, so the dialog renders the input row itself (`#promptActive`) with Enter confirm / Esc back.
+- **Keybindings** — omp's global `matchesSelectUp/…` matchers resolve through the `KeybindingsManager` pi injects into
+  `ui.custom()`, so rebound select keys keep working; footer hints use the configured keys.
+- **`ui.select` dialog options** — pi's select accepts only `{signal, timeout}`. The legacy path keeps the full omp
+  `UIContext` logic (initial index, navigation, markers, timeout callbacks) and degrades on pi: no radio/checkbox
+  markers, no initial cursor, no ←/→ question navigation, and option descriptions are dropped from the visible list.
+- **`ui.editor` prompt style** → pi's `ui.editor` (multi-line) with a signal race; falls back to `ui.input`.
+- **settings `ask.timeout` / `ask.notify`** → `timeoutSeconds` tool parameter + terminal bell, opt-out with
+  `PI_OMK_ASK_NOTIFY=0` (pi extensions cannot read pi settings or send desktop notifications).
+- **`ToolAbortError` + `context.abort()`** → `ctx.abort()` + thrown error (cancel aborts the agent turn, omp semantics).
+- **Transcript renderer** — omp merges call+result in one framed block that updates in place when the user answers;
+  pi's tool rows append the result render below the call render, so the call slot renders only a `Ask · N questions`
+  summary line while pending, and the result slot renders one compact `question → answer` line per question
+  (multi-question lines prefixed `[id]`, with the `auto-selected after timeout — not a user choice` marker).
+
+**Dropped (no pi extension surface):** TTS vocalizer, plan-mode timeout suppression, collab guest racing, ACP
+elicitation forms, `/tree` re-answer, `loadMode: "discoverable"`, the draft-editor input guard, and
+`renderInlineMarkdown` for labels (labels render as plain text; block markdown in questions/previews still uses pi's
+Markdown component + `getMarkdownTheme`). Post-2.0 the per-answer note subsystem and the dead chat-redirect surface
+were also removed (see [Unreleased](./CHANGELOG.md)).
 
 ## Tool schema
 
 ```text
-ask_user(
+ask(
   questions: [
     {
       id: string              // stable identifier, echoed in the answer
       question: string        // shown to the user
-      header?: string         // short chip rendered next to the progress counter
-      options: [{             // 2-6 options
+      header?: string         // short chip in the tab bar
+      options: [{
         label,
         description?,         // tradeoff text under the label
-        preview?              // lines shown while the cursor rests on the option
+        preview?              // markdown / fenced code shown under the cursored option
       }]
       multi?: boolean         // allow multiple selections
-      recommended?: number    // 0-based index of the recommended option
+      recommended?: number    // 0-based index; "(Recommended)" added automatically
     }
   ],
-  timeoutSeconds?: number     // overall budget; expiry auto-selects recommended
+  timeoutSeconds?: number     // omp settings ask.timeout, parameterized; idle budget,
+                             // dialog keypresses reset it (not while typing Other),
+                             // expiry auto-picks the recommended option (or the first)
 )
 ```
 
-## Keys
+## Result semantics (omp wording, verbatim)
 
-| Key | Action |
-|-----|--------|
-| `up` / `down` | Move cursor across rows |
-| `space` | Toggle checkbox (multi-select only) |
-| `enter` | Select / record answer / advance to the next unanswered question (no-op in multi-select with nothing checked); on the review page, submit |
-| `←` / `→` | Previous / next question (`→` requires an answer first) |
-| `tab` / `shift+tab` | Aliases for `→` / `←` |
-| `n` | Attach a note to the current answer |
-| `esc` | Cancel the whole call (inside the inline editor: back to the rows) |
+```text
+User selected: JWT
+User provided custom input: mTLS everywhere
+User answers:
+auth: JWT
+deploy: [staging, prod]
+deploy: staging (auto-selected after timeout)
+```
 
-## Trying it out: `/ask-demo`
+Cancelling (Escape) aborts the agent turn — omp's "cancel the whole call" semantics, via `ctx.abort()` plus a tool
+error. An unreachable host (print/JSON) raises a different error stating the question was never displayed.
 
-The extension registers an interactive battery that exercises every feature end-to-end:
+## pi-ask-user or pi-ask-user-lite?
 
-1. **All question types** — single-select with `(Recommended)` + cursor-rest `preview`, multi-select checkboxes, and an `Other (type your own)` free-form answer (add a note with `n` on the last question), then confirm on the review page.
-2. **Timeout** — a dialog with a 6-second budget; do nothing and watch it auto-select the recommended option.
-3. **Chat redirect** — pick the `Chat about this` row.
-4. **Cancel** — press `Esc` on the first of two questions and confirm the second is never asked.
+Sister packages with intentionally different scopes — pick one, do not enable both:
 
-Each phase reports the collected answers back through a notification so you can verify what the LLM would receive.
+| | pi-ask-user (this one, tool `ask`) | pi-ask-user-lite (tool `ask_user`) |
+|---|---|---|
+| Lineage | File-by-file source port of oh-my-pi's `ask` tool | Pi-native reimplementation of the ask flow |
+| Dialog | Tabbed dialog; Submit review tab for 3+ questions or any `multi`; fzf-style side-by-side preview pane on wide terminals | Single question-page dialog with `[n/m]` counter and per-question status strip; review page after the last question |
+| Option rows | omp radio/checkbox markers | Numbered (`1. label`); answers echo the number back |
+| Previews | Markdown/code, fence-split with render caching | Plain `preview` lines under the cursored option |
+| Timeout | Inactivity countdown reset by keypresses (paused while typing); expiry auto-picks the recommended option | Whole-dialog budget; expiry auto-selects recommended and flags `timedOut` |
+| Notes | Not available (removed post-2.0) | Per-answer notes via `n`, echoed to the LLM |
+| Chat redirect | Removed (dead omp surface) | Reserved `Chat about this` row |
+| Cancel | Aborts the agent turn (omp semantics) | Tool settles cancelled; the LLM is told to proceed conservatively |
+| Extras | Terminal bell (opt out with `PI_OMK_ASK_NOTIFY=0`) | `/ask-demo` interactive battery |
 
 ## Install
 
@@ -87,48 +141,14 @@ Or load ad hoc:
 pi -e ./packages/extensions/pi-ask-user/index.ts
 ```
 
-## Usage
-
-Just ask the agent something ambiguous; with the tool active the LLM can call:
-
-```json
-{
-  "questions": [
-    {
-      "id": "storage",
-      "question": "Which storage backend should this feature use?",
-      "options": [
-        { "label": "SQLite", "description": "Zero-config, file-based" },
-        { "label": "PostgreSQL", "description": "Full server, richer types" }
-      ],
-      "recommended": 0
-    },
-    {
-      "id": "flags",
-      "question": "Which extras should be enabled?",
-      "multi": true,
-      "options": [{ "label": "Telemetry" }, { "label": "Auto-update" }]
-    }
-  ]
-}
-```
-
-The user picks with arrow keys (`space` toggles in multi mode, `enter` submits, `←` revises earlier answers, `esc` cancels). Cancelling marks the call cancelled and tells the LLM to proceed conservatively.
-
-## Boundaries
-
-- Requires an interactive session (TUI or RPC); in print/JSON mode the tool errors out.
-- No per-question timers: `timeoutSeconds` budgets the whole dialog, not each question.
-- No TTS, system-level notifications, or `/tree` re-answer branching — pi's extension API does not expose those surfaces; answers remain inspectable via persisted `details`.
-
 ## Development
 
 ```bash
-npm install --ignore-scripts
+npm install
 npm run typecheck
 npm test
 ```
 
 ## License
 
-MIT
+MIT — the migrated oh-my-pi sources retain their upstream origin (can1357/oh-my-pi, fork of badlogic/pi-mono).

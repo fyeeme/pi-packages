@@ -9,8 +9,8 @@ A coordinated **major-version wave** across the sub-agent ecosystem:
 - **[@fyeeme/pi-subagents 2.0.0](./pi-subagents)** — first npm release of the fan-out engine (subagent tool, dispatch core, live agent UI, workflow prompt presets); consumers compose its extension factory from a version-pinned npm dependency.
 - **[@fyeeme/pi-review 2.0.0](./pi-review)** — sandwich refactor: methodology skills + orchestration prompts as data + 12 bundled finder/cleaner/verifier agents, composing pi-subagents for fan-out.
 - **[@fyeeme/pi-dynamic-workflows 2.0.0](./pi-dynamic-workflows)** — composed sub-agent stack, journaled resumable runs, per-call budget override.
-- **[@fyeeme/pi-ask-user 2.0.0](./pi-ask-user)** — first npm release: structured `ask_user` dialogs with review page, inline editor, numbered options.
-- **[@fyeeme/pi-omp-ask 2.0.0](./pi-omp-ask)** — first npm release: oh-my-pi's tabbed `ask` dialog ported to pi's extension API.
+- **[@fyeeme/pi-ask-user-lite 2.0.0](./pi-ask-user-lite)** — first npm release: structured `ask_user` dialogs with review page, inline editor, numbered options.
+- **[@fyeeme/pi-ask-user 2.0.0](./pi-ask-user)** — first npm release: oh-my-pi's tabbed `ask` dialog ported to pi's extension API.
 
 All five install with `pi install npm:@fyeeme/<name>`; pi-review and pi-dynamic-workflows pull pi-subagents from npm automatically (no manual wiring).
 
@@ -20,8 +20,8 @@ All five install with `pi install npm:@fyeeme/<name>`; pi-review and pi-dynamic-
 
 | Package | Description |
 |---------|-------------|
-| [pi-ask-user](./pi-ask-user) | Structured `ask_user` tool — multi-question clarifying prompts with options, multi-select, recommended defaults, and free-form Other input |
-| [pi-omp-ask](./pi-omp-ask) | oh-my-pi's `ask` tool migrated to a pi extension — source port of the tabbed ask dialog (review tab, notes, markdown/code previews, inactivity countdown), legacy per-question selector path, and omp result semantics |
+| [pi-ask-user-lite](./pi-ask-user-lite) | Structured `ask_user` tool — multi-question clarifying prompts with options, multi-select, recommended defaults, and free-form Other input |
+| [pi-ask-user](./pi-ask-user) | oh-my-pi's `ask` tool migrated to a pi extension — source port of the tabbed ask dialog (review tab, notes, markdown/code previews, inactivity countdown), legacy per-question selector path, and omp result semantics |
 | [pi-dynamic-workflows](./pi-dynamic-workflows) | Deterministic TypeScript workflow orchestration — declarative typed steps with resumable, budget-bounded, abortable execution |
 | [pi-hooks](./pi-hooks) | Claude Code-compatible hooks runner — reads `.pi/hooks.json` and maps lifecycle events to hook scripts |
 | [pi-mermaid-viewer](./pi-mermaid-viewer) | Renders Mermaid diagrams from conversations as an HTML page in the default browser |

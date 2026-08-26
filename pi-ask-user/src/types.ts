@@ -35,7 +35,6 @@ export interface ExtensionAskDialogResultItem {
 	multi: boolean;
 	selectedOptions: string[];
 	customInput?: string;
-	note?: string;
 	timedOut?: boolean;
 }
 
@@ -44,14 +43,7 @@ export interface ExtensionAskDialogSubmitResult {
 	results: ExtensionAskDialogResultItem[];
 }
 
-/** Chat-redirect result: the user chose "Chat about this" instead of
- *  answering. Distinct from `undefined` (cancel) so AskTool can hand off to
- *  the chat loop rather than aborting. */
-export interface ExtensionAskDialogChatResult {
-	kind: "chat";
-}
-
-export type ExtensionAskDialogResult = ExtensionAskDialogSubmitResult | ExtensionAskDialogChatResult;
+export type ExtensionAskDialogResult = ExtensionAskDialogSubmitResult;
 
 /**
  * Ask dialog types — migrated from oh-my-pi. The ExtensionAskDialog / ExtensionUI
@@ -67,7 +59,6 @@ export interface QuestionResult {
 	multi: boolean;
 	selectedOptions: string[];
 	customInput?: string;
-	note?: string;
 	timedOut?: boolean;
 }
 
@@ -77,11 +68,8 @@ export interface AskToolDetails {
 	multi?: boolean;
 	selectedOptions?: string[];
 	customInput?: string;
-	note?: string;
 	timedOut?: boolean;
 	results?: QuestionResult[];
-	chatRedirect?: boolean;
-	questions?: string[];
 }
 
 export interface AskOption {

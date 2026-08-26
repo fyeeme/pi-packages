@@ -2,10 +2,10 @@
  * AskDialogComponent — migrated from oh-my-pi
  * (packages/coding-agent/src/modes/components/ask-dialog.ts).
  *
- * The multi-question tabbed ask dialog: one tab per question plus a Submit
- * review tab, radio/checkbox markers, per-answer notes, markdown/code option
- * previews, an inactivity countdown that auto-picks recommended options, and
- * an embedded single-line prompt for "Other" answers and notes.
+ * The multi-question tabbed ask dialog: one tab per question (plus a Submit
+ * review tab for 3+ questions or any multi question), radio/checkbox markers,
+ * markdown/code option previews, an inactivity countdown that auto-picks
+ * recommended options, and an embedded single-line prompt for "Other" answers.
  *
  * Adaptations for pi's extension API (everything else is omp code):
  * - omp's global `theme` singleton and `getMarkdownTheme()` become a pi Theme
@@ -30,7 +30,7 @@ import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
 import { getMarkdownTheme, highlightCode } from "@earendil-works/pi-coding-agent";
 import type { MarkdownTheme } from "@earendil-works/pi-tui";
 import { Markdown } from "@earendil-works/pi-tui";
-import { Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, Input } from "@earendil-works/pi-tui";
 import {
 	clamp,
 	ELLIPSIS,
@@ -42,8 +42,7 @@ import {
 	clipIndicator,
 } from "./compat.ts";
 import { CountdownTimer, type TuiRenderHandle } from "./countdown-timer.ts";
-import { bottomBorder, divider, row, topBorder } from "./overlay-box.ts";
-import type {
+import { bottomBorder, divider, fit, row, topBorder } from "./overlay-box.ts";import type {
 	ExtensionAskDialogOption,
 	ExtensionAskDialogQuestion,
 	ExtensionAskDialogResultItem,
@@ -65,8 +64,11 @@ const MAX_HEADER_CHIP_WIDTH = 16;
  *  or multi-line question cannot push the option list off-screen. */
 const MAX_HEADER_ROWS = 4;
 /** Maximum rows of the embedded prompt view (title + input + hint) rendered
- *  inside the dialog frame while the user types an Other answer or a note. */
+ *  inside the dialog frame while the user types an Other answer. */
 const MAX_PROMPT_TITLE_ROWS = 3;
+
+/** Minimum inner width for the side-by-side option/preview split. */
+const SPLIT_MIN_WIDTH = 80;
 
 interface AskDialogCallbacks {
 	onSubmit(result: ExtensionAskDialogSubmitResult): void;
@@ -82,8 +84,6 @@ interface AskDialogOptions {
 interface QuestionState {
 	selectedOptions: Set<string>;
 	customInput: string | undefined;
-	note: string | undefined;
-	noteRowKey: string | undefined;
 	cursorIndex: number;
 	scrollOffset: number;
 	manualScroll: boolean;
@@ -113,17 +113,17 @@ interface PreviewSegment {
 
 type PreviewRenderCache = Map<string, Map<number, readonly string[]>>;
 
-/** Embedded prompt state (replaces omp's nested HookEditorComponent). */
+/** Embedded prompt state (replaces omp's nested HookEditorComponent):
+ *  a pi-tui Input instance owns the input line — cursor marker (IME
+ *  positioning), horizontal scroll, grapheme edits, paste, undo — while the
+ *  dialog keeps the question/state snapshot. */
 interface EmbeddedPrompt {
-	kind: "other" | "note";
 	title: string;
-	value: string;
-	cursor: number;
+	input: Input;
 	prefill: string | undefined;
 	/** State snapshot of the question the prompt belongs to. */
 	question: ExtensionAskDialogQuestion;
 	state: QuestionState;
-	rowItem: QuestionRow;
 }
 
 function stripRecommendedSuffix(label: string): string {
@@ -218,6 +218,9 @@ function renderPreviewContent(theme: Theme, preview: string, width: number): str
 	return out;
 }
 
+/** Cached preview render at a given width. Returns raw lines; callers add
+ *  their own gutter (inline mode indents under the option, split mode draws
+ *  the right pane). */
 function renderCachedPreview(theme: Theme, cache: PreviewRenderCache, preview: string, width: number): readonly string[] {
 	let byWidth = cache.get(preview);
 	if (!byWidth) {
@@ -226,9 +229,7 @@ function renderCachedPreview(theme: Theme, cache: PreviewRenderCache, preview: s
 	}
 	let rendered = byWidth.get(width);
 	if (!rendered) {
-		rendered = renderPreviewContent(theme, preview, width).map(
-			line => `      ${theme.fg("borderMuted", "│")} ${line}`,
-		);
+		rendered = renderPreviewContent(theme, preview, width);
 		byWidth.set(width, rendered);
 	}
 	return rendered;
@@ -250,28 +251,6 @@ function renderAnswerSummary(theme: Theme, question: ExtensionAskDialogQuestion,
 	return selected[0] ?? theme.fg("warning", "unanswered");
 }
 
-function clearNote(state: QuestionState): void {
-	state.note = undefined;
-	state.noteRowKey = undefined;
-}
-
-function clearNoteIfRow(state: QuestionState, rowKey: string): void {
-	if (state.noteRowKey === rowKey) clearNote(state);
-}
-
-function clearNoteUnlessRow(state: QuestionState, rowKey: string): void {
-	if (state.noteRowKey !== undefined && state.noteRowKey !== rowKey) clearNote(state);
-}
-
-function noteForSubmittedAnswer(question: ExtensionAskDialogQuestion, state: QuestionState): string | undefined {
-	if (state.note === undefined || state.noteRowKey === undefined) return undefined;
-	if (state.noteRowKey === "other") return state.customInput !== undefined ? state.note : undefined;
-	const match = /^option:(\d+)$/.exec(state.noteRowKey);
-	const optionIndex = match?.[1] === undefined ? Number.NaN : Number.parseInt(match[1], 10);
-	const option = Number.isInteger(optionIndex) ? question.options[optionIndex] : undefined;
-	return option && state.selectedOptions.has(option.label) ? state.note : undefined;
-}
-
 function optionMarker(theme: Theme, question: ExtensionAskDialogQuestion, checked: boolean): string {
 	if (question.multi) return checked ? SYMBOLS.checkbox.checked : SYMBOLS.checkbox.unchecked;
 	return checked ? SYMBOLS.radio.selected : SYMBOLS.radio.unselected;
@@ -285,6 +264,7 @@ function renderRowLabel(
 	selected: boolean,
 	previewCache: PreviewRenderCache,
 	width: number,
+	showInlinePreview: boolean,
 ): string[] {
 	const isOption = rowItem.kind === "option";
 	const isOther = rowItem.kind === "other";
@@ -295,12 +275,10 @@ function renderRowLabel(
 	const marker = `${theme.fg(checked ? "success" : "dim", optionMarker(theme, question, checked))} `;
 	const cursor = selected ? theme.fg("accent", `${SYMBOLS.nav.cursor} `) : "  ";
 	const label = renderInlineMarkdown(rowItem.label, t => theme.fg(color, t));
-	const noteMarker = state.note && state.noteRowKey === rowItem.key ? theme.fg("success", "  ✎ note") : "";
-	const noteWidth = noteMarker ? visibleWidth(noteMarker) : 0;
-	const labelWidth = Math.max(1, width - visibleWidth(cursor) - visibleWidth(marker) - noteWidth);
+	const labelWidth = Math.max(1, width - visibleWidth(cursor) - visibleWidth(marker));
 	const wrappedLabel = wrapTextWithAnsi(label, labelWidth);
 	const indent = " ".repeat(visibleWidth(cursor) + visibleWidth(marker));
-	const lines = [`${cursor}${marker}${wrappedLabel[0] ?? ""}${noteMarker}`];
+	const lines = [`${cursor}${marker}${wrappedLabel[0] ?? ""}`];
 	for (let i = 1; i < wrappedLabel.length; i++) {
 		lines.push(`${indent}${wrappedLabel[i] ?? ""}`);
 	}
@@ -313,9 +291,13 @@ function renderRowLabel(
 				lines.push(`      ${truncateToWidth(line, Math.max(1, width - 6), ELLIPSIS)}`);
 			}
 		}
-		if (option?.preview?.trim()) {
+		if (option?.preview?.trim() && showInlinePreview) {
 			const previewWidth = Math.max(1, width - 8);
-			lines.push(...renderCachedPreview(theme, previewCache, option.preview, previewWidth));
+			lines.push(
+				...renderCachedPreview(theme, previewCache, option.preview, previewWidth).map(
+				line => `      ${theme.fg("borderMuted", "│")} ${line}`,
+			),
+			);
 		}
 	}
 	if (isOther && state.customInput !== undefined) {
@@ -375,6 +357,21 @@ function boundPromptTitle(theme: Theme, prefix: string, question: string): strin
 }
 
 export class AskDialogComponent {
+	/** Focusable (IME support, pi-tui contract): the TUI sets `focused` when
+	 *  this component gains keyboard focus. While the embedded prompt is
+	 *  open, focus propagates to its pi-tui Input so CURSOR_MARKER (and with
+	 *  it the hardware cursor / IME candidate window) tracks the input point;
+	 *  outside the prompt the dialog renders no marker and keeps the cursor
+	 *  hidden. */
+	#focused = false;
+	get focused(): boolean {
+		return this.#focused;
+	}
+	set focused(value: boolean) {
+		this.#focused = value;
+		if (this.#embeddedPrompt) this.#embeddedPrompt.input.focused = value;
+	}
+
 	#states: QuestionState[];
 	#activeTabIndex = 0;
 	#submitScrollOffset = 0;
@@ -412,8 +409,6 @@ export class AskDialogComponent {
 			return {
 				selectedOptions: new Set<string>(),
 				customInput: undefined,
-				note: undefined,
-				noteRowKey: undefined,
 				cursorIndex: clamp(recommended ?? 0, 0, maxIndex),
 				scrollOffset: 0,
 				manualScroll: false,
@@ -455,7 +450,7 @@ export class AskDialogComponent {
 			this.#finishCancel();
 			return;
 		}
-		if (this.#hasSubmitTab() && this.#handleTabSwitchKey(keyData)) {
+		if (this.#hasTabBar() && this.#handleTabSwitchKey(keyData)) {
 			this.#requestRender();
 			return;
 		}
@@ -510,7 +505,7 @@ export class AskDialogComponent {
 	#measureHeight(width: number, termRows: number): number {
 		const maxHeight = Math.max(MIN_DIALOG_ROWS, Math.floor(termRows * DIALOG_HEIGHT_RATIO));
 		const chrome = 5; // topBorder + divider + divider + footer + bottomBorder
-		const tabBarRows = this.#hasSubmitTab() ? 1 : 0;
+		const tabBarRows = this.#hasTabBar() ? 1 : 0;
 		let needed = MIN_DIALOG_ROWS;
 		for (let index = 0; index < this.#questions.length; index++) {
 			const question = this.#questions[index];
@@ -519,8 +514,32 @@ export class AskDialogComponent {
 			const headerRows = tabBarRows + renderQuestionTitle(this.#theme, question, width).length;
 			const rowItems = this.#questionRows(question);
 			let body = 0;
+			const split = this.#useSplitLayout(question, width);
+			const { leftWidth, rightWidth } = this.#splitWidths(width);
 			for (const rowItem of rowItems) {
-				body += renderRowLabel(this.#theme, rowItem, question, state, false, this.#previewCache, width).length;
+				body += renderRowLabel(
+					this.#theme,
+					rowItem,
+					question,
+					state,
+					false,
+					this.#previewCache,
+					split ? leftWidth : width,
+					!split,
+				).length;
+			}
+			if (split) {
+				// The right pane must fit the tallest preview at its width.
+				let previewRows = 0;
+				for (const option of question.options) {
+					if (option.preview?.trim()) {
+						previewRows = Math.max(
+							previewRows,
+							renderCachedPreview(this.#theme, this.#previewCache, option.preview, rightWidth).length,
+						);
+					}
+				}
+				body = Math.max(body, previewRows);
 			}
 			needed = Math.max(needed, chrome + headerRows + Math.max(MIN_BODY_ROWS, body));
 		}
@@ -535,11 +554,20 @@ export class AskDialogComponent {
 		return this.#remainingSeconds === undefined ? "Ask" : `Ask (${this.#remainingSeconds}s)`;
 	}
 
+	#hasTabBar(): boolean {
+		// Multi-question dialogs always get a tab bar for ←/→ navigation, even
+		// when there is no Submit review tab to switch to; a Submit tab alone
+		// (single multi question) also needs its chip row.
+		return this.#questions.length > 1 || this.#hasSubmitTab();
+	}
+
 	#hasSubmitTab(): boolean {
+		// The Submit review tab appears for 3+ questions or any multi question.
 		// Multi questions confirm on the Submit tab (Enter toggles, never
 		// submits), so any multi question forces the tab even when there is
-		// only one question.
-		return this.#questions.length > 1 || this.#questions.some(question => question.multi);
+		// only one question. Fewer than three single-select questions advance
+		// Enter-to-submit without a review page.
+		return this.#questions.length >= 3 || this.#questions.some(question => question.multi);
 	}
 
 	#submitTabIndex(): number {
@@ -561,7 +589,7 @@ export class AskDialogComponent {
 	#renderHeader(width: number): string[] {
 		const theme = this.#theme;
 		const lines: string[] = [];
-		if (this.#hasSubmitTab()) {
+		if (this.#hasTabBar()) {
 			lines.push(...this.#renderTabBar(width));
 		}
 		if (this.#isSubmitTab()) {
@@ -586,10 +614,12 @@ export class AskDialogComponent {
 			const dot = answered ? theme.fg("success", "●") : theme.fg("dim", "○");
 			chips.push(active ? theme.fg("accent", `${SYMBOLS.nav.cursor} ${label} `) : `${dot}${theme.fg("muted", ` ${label} `)}`);
 		});
-		if (this.#isSubmitTab()) {
-			chips.push(theme.fg("accent", `${SYMBOLS.nav.cursor} ${SUBMIT_OPTION} `));
-		} else {
-			chips.push(theme.fg("muted", `  ${SUBMIT_OPTION} `));
+		if (this.#hasSubmitTab()) {
+			if (this.#isSubmitTab()) {
+				chips.push(theme.fg("accent", `${SYMBOLS.nav.cursor} ${SUBMIT_OPTION} `));
+			} else {
+				chips.push(theme.fg("muted", `  ${SUBMIT_OPTION} `));
+			}
 		}
 		const joined = chips.join("");
 		return [truncateToWidth(joined, Math.max(1, width), "")];
@@ -607,10 +637,12 @@ export class AskDialogComponent {
 			return `Enter submit · ↑/↓ scroll ·${scroll} ${cancel}`;
 		}
 		const question = this.#questions[this.#currentQuestionIndex()];
-		// Enter advances in multi-question dialogs and submits single-question ones.
-		const enterAction = this.#questions.length > 1 ? "next" : "submit";
-		const action = question?.multi ? `Space toggle · Enter ${enterAction}` : "Enter select · n note";
-		const tabs = this.#hasSubmitTab() ? " · Tab/←/→" : "";
+		// Enter advances in multi-question dialogs and submits on the last
+		// question when there is no review tab.
+		const isLast = this.#currentQuestionIndex() >= this.#questions.length - 1;
+		const enterAction = !this.#hasSubmitTab() && isLast ? "submit" : "next";
+		const action = question?.multi ? `Space toggle · Enter ${enterAction}` : "Enter select";
+		const tabs = this.#hasTabBar() ? " · Tab/←/→" : "";
 		if (this.#questionCanPage && indicator) {
 			const pageUp = keyLabel(this.#keybindings.getKeys("tui.select.pageUp"), "PgUp");
 			const pageDown = keyLabel(this.#keybindings.getKeys("tui.select.pageDown"), "PgDn");
@@ -644,7 +676,7 @@ export class AskDialogComponent {
 
 	#handleTabSwitchKey(keyData: string): boolean {
 		const switchTab = (direction: 1 | -1): void => {
-			const tabCount = this.#questions.length + 1;
+			const tabCount = this.#questions.length + (this.#hasSubmitTab() ? 1 : 0);
 			this.#activeTabIndex = (this.#activeTabIndex + direction + tabCount) % tabCount;
 			this.#submitScrollOffset = 0;
 		};
@@ -690,17 +722,11 @@ export class AskDialogComponent {
 		}
 		const rowItem = rows[state.cursorIndex];
 		if (!rowItem) return;
-		if (keyData === "n" || keyData === "N") {
-			if (rowItem.kind === "option" || rowItem.kind === "other") {
-				this.#openEmbeddedPrompt("note", rowItem, question, state);
-			}
-			return;
-		}
 		const isEnter = this.#keybindings.matches(keyData, "tui.select.confirm") || keyData === "\n";
 		const isSpace = matchesKey(keyData, Key.space) || keyData === " ";
 		if (!isEnter && !(question.multi && isSpace)) return;
 		if (rowItem.kind === "other") {
-			this.#openEmbeddedPrompt("other", rowItem, question, state);
+			this.#openEmbeddedPrompt(question, state);
 			return;
 		}
 		const option = question.options[rowItem.optionIndex ?? -1];
@@ -709,13 +735,12 @@ export class AskDialogComponent {
 			if (isEnter) {
 				// Enter confirms the current selection without toggling the
 				// focused option; Space toggles. Advances to the next question
-				// (submitting only for a single-question dialog).
+				// (submitting only when no review tab remains).
 				this.#advanceAfterQuestion();
 				return;
 			}
 			if (state.selectedOptions.has(option.label)) {
 				state.selectedOptions.delete(option.label);
-				clearNoteIfRow(state, rowItem.key);
 			} else {
 				state.selectedOptions.add(option.label);
 			}
@@ -724,7 +749,6 @@ export class AskDialogComponent {
 		}
 		state.selectedOptions = new Set([option.label]);
 		state.customInput = undefined;
-		clearNoteUnlessRow(state, rowItem.key);
 		this.#advanceAfterQuestion();
 	}
 
@@ -746,116 +770,70 @@ export class AskDialogComponent {
 
 	#advanceAfterQuestion(): void {
 		const current = this.#currentQuestionIndex();
-		if (this.#questions.length === 1) {
-			this.#finishSubmit();
+		if (this.#hasSubmitTab()) {
+			this.#activeTabIndex = current + 1 < this.#submitTabIndex() ? current + 1 : this.#submitTabIndex();
+			this.#submitScrollOffset = 0;
+			this.#requestRender();
 			return;
 		}
-		this.#activeTabIndex = current + 1 < this.#questions.length ? current + 1 : this.#submitTabIndex();
-		this.#submitScrollOffset = 0;
-		this.#requestRender();
+		if (current + 1 < this.#questions.length) {
+			this.#activeTabIndex = current + 1;
+			this.#requestRender();
+			return;
+		}
+		this.#finishSubmit();
 	}
 
 	// --- embedded prompt (replaces omp's nested HookEditorComponent) --------
 
-	#openEmbeddedPrompt(
-		kind: "other" | "note",
-		rowItem: QuestionRow,
-		question: ExtensionAskDialogQuestion,
-		state: QuestionState,
-	): void {
-		const prefix = kind === "other" ? "Custom answer: " : `Note for ${rowItem.label}: `;
-		const prefill =
-			kind === "other" ? state.customInput : state.noteRowKey === rowItem.key ? state.note : undefined;
+	#openEmbeddedPrompt(question: ExtensionAskDialogQuestion, state: QuestionState): void {
+		const prefix = "Custom answer: ";
+		const prefill = state.customInput;
+		const input = new Input();
+		if (prefill !== undefined) input.setValue(prefill);
+		input.onSubmit = value => this.#submitEmbeddedPrompt(value);
+		input.onEscape = () => this.#closeEmbeddedPrompt();
+		input.focused = this.#focused;
 		this.#promptActive = true;
 		this.#embeddedPrompt = {
-			kind,
 			title: boundPromptTitle(this.#theme, prefix, question.question).join("\n"),
-			value: prefill ?? "",
-			cursor: (prefill ?? "").length,
+			input,
 			prefill,
 			question,
 			state,
-			rowItem,
 		};
 		this.#requestRender();
 	}
 
 	#handleEmbeddedPromptInput(keyData: string): void {
-		const prompt = this.#embeddedPrompt;
-		if (!prompt) {
-			this.#promptActive = false;
-			return;
-		}
-		if (this.#keybindings.matches(keyData, "tui.select.cancel") || matchesKey(keyData, Key.escape)) {
-			this.#closeEmbeddedPrompt();
-			return;
-		}
-		const isEnter = this.#keybindings.matches(keyData, "tui.select.confirm") || keyData === "\n";
-		if (isEnter) {
-			this.#submitEmbeddedPrompt(prompt.value);
-			return;
-		}
-		if (matchesKey(keyData, Key.left)) {
-			prompt.cursor = Math.max(0, prompt.cursor - 1);
-			this.#requestRender();
-			return;
-		}
-		if (matchesKey(keyData, Key.right)) {
-			prompt.cursor = Math.min(prompt.value.length, prompt.cursor + 1);
-			this.#requestRender();
-			return;
-		}
-		if (matchesKey(keyData, Key.backspace) || keyData === "\x7f") {
-			if (prompt.cursor > 0) {
-				prompt.value = prompt.value.slice(0, prompt.cursor - 1) + prompt.value.slice(prompt.cursor);
-				prompt.cursor -= 1;
-			}
-			this.#requestRender();
-			return;
-		}
-		if (keyData === "\x15") {
-			// ctrl+u clears the line.
-			prompt.value = "";
-			prompt.cursor = 0;
-			this.#requestRender();
-			return;
-		}
-		if (keyData.length === 1 && keyData.charCodeAt(0) > 31 && keyData.charCodeAt(0) !== 127) {
-			prompt.value = prompt.value.slice(0, prompt.cursor) + keyData + prompt.value.slice(prompt.cursor);
-			prompt.cursor += 1;
-			this.#requestRender();
-		}
+		// The embedded pi-tui Input owns the full input semantics (grapheme
+		// edits, paste buffering, kitty CSI-u, undo, kill ring) and emits
+		// CURSOR_MARKER at the cursor for IME candidate-window positioning.
+		this.#embeddedPrompt?.input.handleInput(keyData);
 	}
 
 	#submitEmbeddedPrompt(input: string): void {
 		const prompt = this.#embeddedPrompt;
 		if (!prompt) return;
-		const { kind, question, state, rowItem } = prompt;
+		const { question, state } = prompt;
+		prompt.input.focused = false;
 		this.#promptActive = false;
 		this.#embeddedPrompt = undefined;
-		// omp ordering (#promptForCustomInput/#promptForNote): the input is
-		// applied to state first — and Enter may advance/submit — with the
-		// deferred timeout only running afterwards, so a countdown that
-		// expired mid-prompt sees the just-typed answer instead of
-		// discarding it and force-picking.
+		// omp ordering (#promptForCustomInput): the input is applied to state
+		// first — and Enter may advance/submit — with the deferred timeout only
+		// running afterwards, so a countdown that expired mid-prompt sees the
+		// just-typed answer instead of discarding it and force-picking.
 		try {
-			if (kind === "other") {
-				if (input.trim() === "") {
-					// Submitting an empty value unselects the custom answer.
-					state.customInput = undefined;
-					clearNoteIfRow(state, rowItem.key);
-					return;
-				}
-				state.customInput = input;
-				if (!question.multi) {
-					state.selectedOptions.clear();
-					clearNoteUnlessRow(state, rowItem.key);
-					this.#advanceAfterQuestion();
-				}
+			if (input.trim() === "") {
+				// Submitting an empty value unselects the custom answer.
+				state.customInput = undefined;
 				return;
 			}
-			state.note = input;
-			state.noteRowKey = rowItem.key;
+			state.customInput = input;
+			if (!question.multi) {
+				state.selectedOptions.clear();
+				this.#advanceAfterQuestion();
+			}
 		} finally {
 			this.#runDeferredTimeout();
 			this.#requestRender();
@@ -863,6 +841,7 @@ export class AskDialogComponent {
 	}
 
 	#closeEmbeddedPrompt(): void {
+		if (this.#embeddedPrompt) this.#embeddedPrompt.input.focused = false;
 		this.#promptActive = false;
 		this.#embeddedPrompt = undefined;
 		this.#runDeferredTimeout();
@@ -878,12 +857,12 @@ export class AskDialogComponent {
 			lines.push(theme.fg("text", titleLine));
 		}
 		lines.push("");
-		const before = prompt.value.slice(0, prompt.cursor);
-		const at = prompt.value.slice(prompt.cursor, prompt.cursor + 1);
-		const after = prompt.value.slice(prompt.cursor + 1);
-		const inputLine = `${theme.fg("accent", "❯ ")}${theme.fg("text", before)}${theme.fg("accent", at || " ")}${theme.fg("text", after)}`;
-		lines.push(inputLine);
-		if (prompt.kind === "other" && prompt.prefill !== undefined) {
+		// pi-tui Input renders the input line itself: "> " prompt, horizontal
+		// scrolling, reverse-video fake cursor, and CURSOR_MARKER at the input
+		// point (zero-width) so the TUI positions the hardware cursor there —
+		// that is what keeps the IME candidate window anchored.
+		lines.push(prompt.input.render(width)[0] ?? "");
+		if (prompt.prefill !== undefined) {
 			lines.push(theme.fg("dim", "Enter keeps the value above when unchanged; empty clears it"));
 		}
 		const window = windowLines(lines, 0, rows);
@@ -910,6 +889,8 @@ export class AskDialogComponent {
 	): RenderedList {
 		const allLines: string[] = [];
 		const lineStartByRow: number[] = [];
+		const split = this.#useSplitLayout(question, width);
+		const leftWidth = split ? this.#splitWidths(width).leftWidth : width;
 		for (let index = 0; index < rowItems.length; index++) {
 			lineStartByRow.push(allLines.length);
 			const rowItem = rowItems[index];
@@ -922,7 +903,8 @@ export class AskDialogComponent {
 					state,
 					index === state.cursorIndex,
 					this.#previewCache,
-					width,
+					leftWidth,
+					!split,
 				),
 			);
 		}
@@ -938,11 +920,60 @@ export class AskDialogComponent {
 			state.manualScroll,
 		);
 		const lines = windowLines(allLines, state.scrollOffset, rows);
+		if (!split) {
+			return {
+				lines,
+				scrollOffset: state.scrollOffset,
+				indicator: clipIndicator(state.scrollOffset, rows, allLines.length),
+			};
+		}
+		// Side-by-side: options on the left, the cursored option's preview on
+		// the right, sharing the body window and the cursor-following scroll.
+		const theme = this.#theme;
+		const { leftWidth: lw, rightWidth } = this.#splitWidths(width);
+		const divider = theme.fg("borderMuted", " │ ");
+		const rightLines = this.#previewLinesForRow(question, state, rowItems[state.cursorIndex], rightWidth);
+		const rightOffset = Math.min(state.scrollOffset, Math.max(0, rightLines.length - rows));
+		const rightWindow = windowLines(rightLines, rightOffset, rows);
+		const merged = lines.map((line, index) => `${fit(line, lw)}${divider}${rightWindow[index] ?? ""}`);
 		return {
-			lines,
+			lines: merged,
 			scrollOffset: state.scrollOffset,
 			indicator: clipIndicator(state.scrollOffset, rows, allLines.length),
 		};
+	}
+
+	/** Split layout: wide terminal + at least one option carries a preview. */
+	#useSplitLayout(question: ExtensionAskDialogQuestion, width: number): boolean {
+		return width >= SPLIT_MIN_WIDTH && question.options.some(option => option.preview?.trim());
+	}
+
+	#splitWidths(width: number): { leftWidth: number; rightWidth: number } {
+		const leftWidth = Math.max(24, Math.floor(width * 0.42));
+		return { leftWidth, rightWidth: Math.max(1, width - leftWidth - 3) };
+	}
+
+	/** Raw preview lines for the right pane (cursored option, or the custom
+	 *  answer preview under Other). */
+	#previewLinesForRow(
+		question: ExtensionAskDialogQuestion,
+		state: QuestionState,
+		rowItem: QuestionRow | undefined,
+		width: number,
+	): string[] {
+		if (!rowItem) return [];
+		if (rowItem.kind === "option") {
+			const option = question.options[rowItem.optionIndex ?? -1];
+			if (option?.preview?.trim()) {
+				return [...renderCachedPreview(this.#theme, this.#previewCache, option.preview, width)];
+			}
+			return [];
+		}
+		if (state.customInput !== undefined) {
+			const preview = replaceTabs(state.customInput).replace(/\s+/g, " ").trim();
+			return [this.#theme.fg("muted", truncateToWidth(preview, Math.max(1, width), ELLIPSIS))];
+		}
+		return [];
 	}
 
 	#renderSubmitBody(width: number, rows: number): RenderedList {
@@ -965,11 +996,6 @@ export class AskDialogComponent {
 			const label = questionTabLabel(question, index);
 			const answer = renderAnswerSummary(theme, question, state);
 			allLines.push(`${theme.fg("dim", `${index + 1}. ${label}:`)} ${answer}`);
-			const submittedNote = noteForSubmittedAnswer(question, state);
-			if (submittedNote?.trim()) {
-				const note = normalizedInlineInput(submittedNote);
-				allLines.push(theme.fg("muted", `   Note: ${truncateToWidth(note, Math.max(1, width - 9), ELLIPSIS)}`));
-			}
 		}
 		allLines.push("");
 		allLines.push(theme.fg("accent", `${SYMBOLS.nav.cursor} ${SUBMIT_OPTION}`));
@@ -1026,12 +1052,7 @@ export class AskDialogComponent {
 			const state = this.#states[index];
 			if (!question || !state) continue;
 			if (state.selectedOptions.size === 0 && state.customInput === undefined) {
-				const noteMatch = /^option:(\d+)$/.exec(state.noteRowKey ?? "");
-				const notedIndex = noteMatch ? Number.parseInt(noteMatch[1]!, 10) : Number.NaN;
-				const fallbackIndex =
-					Number.isInteger(notedIndex) && question.options[notedIndex]
-						? notedIndex
-						: clamp(question.recommended ?? 0, 0, Math.max(0, question.options.length - 1));
+				const fallbackIndex = clamp(question.recommended ?? 0, 0, Math.max(0, question.options.length - 1));
 				const fallback = question.options[fallbackIndex];
 				if (fallback) state.selectedOptions.add(fallback.label);
 				state.timedOut = true;
@@ -1086,7 +1107,6 @@ export class AskDialogComponent {
 				multi: question.multi ?? false,
 				selectedOptions,
 				customInput: state.customInput,
-				note: noteForSubmittedAnswer(question, state),
 				timedOut: state.timedOut || undefined,
 			});
 		}

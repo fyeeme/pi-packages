@@ -6,5 +6,5 @@
 		"skipLibCheck": true,
 		"types": ["node"]
 	},
-	"include": ["*.ts", "src/*.ts", "test/*.ts"]
+	"include": ["*.ts", "test/*.ts"]
 }

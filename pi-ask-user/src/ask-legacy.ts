@@ -324,7 +324,6 @@ export function formatCustomInputTitle(
 export interface SelectionResult {
 	selectedOptions: string[];
 	customInput?: string;
-	note?: string;
 	timedOut: boolean;
 	navigation?: "back" | "forward";
 	cancelled?: boolean;
@@ -340,7 +339,7 @@ export interface AskSingleQuestionOptions {
 	recommended?: number;
 	timeout?: number;
 	signal?: AbortSignal;
-	initialSelection?: Pick<SelectionResult, "selectedOptions" | "customInput" | "note">;
+	initialSelection?: Pick<SelectionResult, "selectedOptions" | "customInput">;
 	navigation?: NavigationControls;
 }
 
@@ -401,7 +400,6 @@ export async function askSingleQuestion(
 	const doneLabel = getDoneOptionLabel();
 	let selectedOptions = [...(initialSelection?.selectedOptions ?? [])];
 	let customInput = initialSelection?.customInput;
-	const note = initialSelection?.note;
 	let timedOut = false;
 
 	const selectOption = async (
@@ -527,14 +525,14 @@ export async function askSingleQuestion(
 			});
 
 			if (arrowNavigation) {
-				return { selectedOptions: Array.from(selected), customInput, note, timedOut, navigation: arrowNavigation };
+				return { selectedOptions: Array.from(selected), customInput, timedOut, navigation: arrowNavigation };
 			}
 			if (choice === undefined) {
 				if (selectTimedOut) {
 					timedOut = true;
 					break;
 				}
-				return { selectedOptions: Array.from(selected), customInput, note, timedOut, cancelled: true };
+				return { selectedOptions: Array.from(selected), customInput, timedOut, cancelled: true };
 			}
 			if (choice === doneLabel) break;
 
@@ -601,11 +599,11 @@ export async function askSingleQuestion(
 			timedOut = selectTimedOut;
 
 			if (arrowNavigation) {
-				return { selectedOptions, customInput, note, timedOut, navigation: arrowNavigation };
+				return { selectedOptions, customInput, timedOut, navigation: arrowNavigation };
 			}
 			if (choice === undefined) {
 				if (!timedOut) {
-					return { selectedOptions, customInput, note, timedOut, cancelled: true };
+					return { selectedOptions, customInput, timedOut, cancelled: true };
 				}
 				break;
 			}
@@ -632,7 +630,7 @@ export async function askSingleQuestion(
 			selectedOptions = getAutoSelectionOnTimeout(questionOptions, recommended);
 		}
 		if (navigation?.allowForward) {
-			return { selectedOptions, customInput, note, timedOut, navigation: "forward" };
+			return { selectedOptions, customInput, timedOut, navigation: "forward" };
 		}
 	}
 
@@ -640,5 +638,5 @@ export async function askSingleQuestion(
 		selectedOptions = getAutoSelectionOnTimeout(questionOptions, recommended);
 	}
 
-	return { selectedOptions, customInput, note, timedOut };
+	return { selectedOptions, customInput, timedOut };
 }

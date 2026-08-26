@@ -100,7 +100,6 @@ describe("AskDialogComponent (single question)", () => {
 					multi: false,
 					selectedOptions: ["Session"],
 					customInput: undefined,
-					note: undefined,
 					timedOut: undefined,
 				},
 			],
@@ -187,18 +186,89 @@ describe("AskDialogComponent embedded prompt", () => {
 		expect(result.results[0]?.selectedOptions).toEqual(["JWT"]);
 	});
 
-	it("attaches a note to the cursored option via n", async () => {
+	it("pressing n does nothing (note feature removed)", async () => {
 		const run = mount([SINGLE]);
-		run.component.handleInput("n"); // note for JWT (cursor default 0)
-		run.component.handleInput("p");
-		run.component.handleInput("r");
-		run.component.handleInput("o");
-		run.component.handleInput("d");
-		run.component.handleInput("\r");
+		run.component.handleInput("n"); // ignored, stays on the option list
 		run.component.handleInput("\r"); // select JWT, submit
 		const result = await run.result;
 		if (result?.kind !== "submit") throw new Error("expected submit");
-		expect(result.results[0]?.note).toBe("prod");
+		expect(result.results[0]?.selectedOptions).toEqual(["JWT"]);
+	});
+
+	it("accepts multi-char CJK IME commits in the embedded prompt", async () => {
+		const run = mount([SINGLE]);
+		run.component.handleInput("\x1b[B"); // Session
+		run.component.handleInput("\x1b[B"); // Other
+		run.component.handleInput("\r"); // open embedded prompt
+		run.component.handleInput("中文输入"); // single commit event
+		run.component.handleInput("\r"); // confirm
+		const result = await run.result;
+		if (result?.kind !== "submit") throw new Error("expected submit");
+		expect(result.results[0]?.customInput).toBe("中文输入");
+	});
+
+	it("accepts emoji and deletes them as one grapheme", async () => {
+		const run = mount([SINGLE]);
+		run.component.handleInput("\x1b[B");
+		run.component.handleInput("\x1b[B");
+		run.component.handleInput("\r");
+		run.component.handleInput("a\u{1F4A1}b");
+		run.component.handleInput("\x7f"); // backspace deletes the b
+		run.component.handleInput("\x7f"); // backspace deletes the whole emoji
+		run.component.handleInput("\r");
+		const result = await run.result;
+		if (result?.kind !== "submit") throw new Error("expected submit");
+		expect(result.results[0]?.customInput).toBe("a");
+	});
+
+	it("buffers bracketed paste into the embedded prompt", async () => {
+		const run = mount([SINGLE]);
+		run.component.handleInput("\x1b[B");
+		run.component.handleInput("\x1b[B");
+		run.component.handleInput("\r");
+		run.component.handleInput("\x1b[200~pa"); // paste starts mid-chunk
+		run.component.handleInput("sted text\x1b[201~x"); // terminator + trailing key
+		run.component.handleInput("\r");
+		const result = await run.result;
+		if (result?.kind !== "submit") throw new Error("expected submit");
+		expect(result.results[0]?.customInput).toBe("pasted textx");
+	});
+
+	it("rejects stray escape sequences in the embedded prompt", async () => {
+		const run = mount([SINGLE]);
+		run.component.handleInput("\x1b[B");
+		run.component.handleInput("\x1b[B");
+		run.component.handleInput("\r");
+		run.component.handleInput("\x1b[Z"); // shift-tab: unknown sequence
+		run.component.handleInput("\r"); // empty submit clears
+		// Re-open and check the value is still empty via a fresh input
+		run.component.handleInput("\x1b[B");
+		run.component.handleInput("\r");
+		run.component.handleInput("ok");
+		run.component.handleInput("\r");
+		const result = await run.result;
+		if (result?.kind !== "submit") throw new Error("expected submit");
+		expect(result.results[0]?.customInput).toBe("ok");
+	});
+
+	it("emits the hardware cursor marker at the input point when focused (IME)", () => {
+		const run = mount([SINGLE]);
+		// Simulate the TUI granting focus at mount (ui.custom → setFocus).
+		run.component.focused = true;
+		run.component.handleInput("\x1b[B");
+		run.component.handleInput("\x1b[B");
+		run.component.handleInput("\r"); // open embedded prompt
+		run.component.handleInput("ab");
+		run.component.handleInput("\x1b[D"); // cursor left, between a and b
+		const text = run.component.render(80).join("\n");
+		expect(text).toContain("\x1b_pi:c\x07");
+		// Marker sits between 'a' and the reversed 'b' (pi-tui Input contract).
+		expect(text).toContain(`a\x1b_pi:c\x07\x1b[7mb`);
+		// Losing focus (dialog closes the prompt) must clear the marker path:
+		// the Input instance stops emitting it once unfocused.
+		run.component.focused = false;
+		const unfocused = run.component.render(80).join("\n");
+		expect(unfocused).not.toContain("\x1b_pi:c\x07");
 	});
 });
 
@@ -259,6 +329,38 @@ describe("AskDialogComponent tabs", () => {
 		const result = await run.result;
 		if (result?.kind !== "submit") throw new Error("expected submit");
 		expect(result.results[0]?.selectedOptions).toEqual(["staging"]);
+	});
+
+	it("two single-select questions submit directly on the last Enter (no review tab)", async () => {
+		const second: ExtensionAskDialogQuestion = {
+			id: "env",
+			question: "Which environment?",
+			options: [
+				{ label: "dev" },
+				{ label: "test" },
+			],
+		};
+		const run = mount([SINGLE, second]);
+		const text = run.component.render(80).join("\n");
+		expect(text).not.toContain("Submit");
+		expect(text).not.toContain("Review answers");
+		// No review tab, but the tab bar stays for ←/→ navigation.
+		expect(text).toContain("auth");
+		expect(text).toContain("env");
+		run.component.handleInput("\r"); // q1: select JWT, advance
+		const q2Text = run.component.render(80).join("\n");
+		expect(q2Text).toContain("Which environment?");
+		run.component.handleInput("\x1b[D"); // ← back to q1
+		expect(run.component.render(80).join("\n")).toContain("Which auth method?");
+		run.component.handleInput("\x1b[C"); // → forward to q2
+		run.component.handleInput("\x1b[B"); // test
+		run.component.handleInput("\r"); // q2: select + submit (last question)
+		const result = await run.result;
+		if (result?.kind !== "submit") throw new Error("expected submit");
+		expect(result.results.map(r => [r.id, r.selectedOptions])).toEqual([
+			["auth", ["JWT"]],
+			["env", ["test"]],
+		]);
 	});
 });
 
@@ -336,6 +438,49 @@ describe("AskDialogComponent timeout", () => {
 // ---------------------------------------------------------------------------
 // Robustness (omp normalization)
 // ---------------------------------------------------------------------------
+
+describe("AskDialogComponent side-by-side preview", () => {
+	beforeEach(() => {
+		vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	const PREVIEW_Q: ExtensionAskDialogQuestion = {
+		id: "deploy",
+		question: "Where to deploy?",
+		options: [
+			{ label: "staging", preview: "alpha-preview-first\nsecond-line" },
+			{ label: "prod", preview: "beta-preview" },
+		],
+	};
+
+	it("renders options and the cursored preview side-by-side on wide terminals", () => {
+		const run = mount([PREVIEW_Q]);
+		const lines = run.component.render(110);
+		// First option row and its preview share a line behind the divider.
+		const combined = lines.find(line => line.includes("staging") && line.includes("alpha-preview-first"));
+		expect(combined).toBeDefined();
+		// Right pane swaps when the cursor moves to the second option. The pane
+		// anchors at the top of the body, like fzf's preview column.
+		run.component.handleInput("\x1b[B");
+		const after = run.component.render(110);
+		expect(after.some(line => line.includes("beta-preview"))).toBe(true);
+		expect(after.some(line => line.includes("alpha-preview-first"))).toBe(false);
+	});
+
+	it("falls back to the inline preview under the label on narrow terminals", () => {
+		const run = mount([PREVIEW_Q]);
+		const lines = run.component.render(60);
+		const text = lines.join("\n");
+		expect(text).toContain("staging");
+		expect(text).toContain("alpha-preview-first");
+		// No line carries both the option label and the preview content.
+		expect(lines.some(line => line.includes("staging") && line.includes("alpha-preview-first"))).toBe(false);
+	});
+});
 
 describe("AskDialogComponent robustness", () => {
 	it("tolerates malformed streamed questions", async () => {
