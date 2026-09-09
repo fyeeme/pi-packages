@@ -142,6 +142,7 @@ describe("A5 error category wiring", () => {
 	it("surfaces errorCategory=dispatch-error when the subprocess settles failed", async () => {
 		const dispatch = async (_registry: never, opts: AgentSpawnOptions): Promise<AgentSpawnResult> => ({
 			callId: opts.callId,
+			id: "TestAgent",
 			exitCode: 1,
 			messages: [],
 			stderr: "provider 503",
@@ -186,6 +187,7 @@ describe("A5 error category wiring", () => {
 			if (opts.callId.includes("#classify")) {
 				return {
 					callId: opts.callId,
+					id: "TestAgent",
 					exitCode: 0,
 					messages: [
 						{
@@ -232,6 +234,7 @@ describe("A3 retry and token budget (throw path)", () => {
 			if (attempts === 1) {
 				return {
 					callId: opts.callId,
+					id: "TestAgent",
 					exitCode: 1,
 					messages: [],
 					stderr: "",
@@ -244,6 +247,7 @@ describe("A3 retry and token budget (throw path)", () => {
 			}
 			return {
 				callId: opts.callId,
+				id: "TestAgent",
 				exitCode: 0,
 				messages: [
 					{
@@ -278,6 +282,7 @@ describe("A3 retry and token budget (throw path)", () => {
 			attempts++;
 			return {
 				callId: opts.callId,
+				id: "TestAgent",
 				exitCode: 1,
 				messages: [],
 				stderr: "",

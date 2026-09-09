@@ -54,6 +54,7 @@ export function makeFakeDispatch(opts: FakeDispatchOptions = {}): AgentDispatch 
 			registry.controllers.delete(callId);
 			return {
 				callId,
+				id: "TestAgent",
 				exitCode: 0,
 				messages: [],
 				stderr: "",
@@ -82,6 +83,7 @@ export function makeFakeDispatch(opts: FakeDispatchOptions = {}): AgentDispatch 
 
 		const result: AgentSpawnResult = {
 			callId,
+			id: "TestAgent",
 			exitCode: isError ? 1 : 0,
 			messages: [msg as unknown as Message],
 			stderr: "",
