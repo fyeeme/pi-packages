@@ -1,0 +1,61 @@
+{
+	"name": "@fyeeme/pi-todo",
+	"version": "1.0.0",
+	"description": "Phased todo list tool for pi — nine operations (init/start/done/rm/drop/block/unblock/append/view) over phase/task state persisted with the session, a /todo command, stop-time reminders for unfinished work, and a todo_updated event bus broadcast for other extensions.",
+	"type": "module",
+	"license": "MIT",
+	"author": "fyeeme",
+	"publishConfig": {
+		"access": "public"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/fyeeme/pi-packages.git"
+	},
+	"bugs": {
+		"url": "https://github.com/fyeeme/pi-packages/issues"
+	},
+	"homepage": "https://github.com/fyeeme/pi-packages#readme",
+	"engines": {
+		"node": ">=18"
+	},
+	"keywords": [
+		"pi-package",
+		"pi",
+		"extension",
+		"todo",
+		"tasks",
+		"phases",
+		"checklist",
+		"progress"
+	],
+	"files": [
+		"index.ts",
+		"src",
+		"test",
+		"README.md",
+		"LICENSE",
+		"CHANGELOG.md"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"scripts": {
+		"test": "vitest --run",
+		"typecheck": "tsc"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.84.1",
+		"@earendil-works/pi-tui": ">=0.84.1",
+		"typebox": ">=1.0.0"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "0.84.1",
+		"@earendil-works/pi-tui": "0.84.1",
+		"@types/node": "22.19.19",
+		"typescript": "5.9.3",
+		"vitest": "3.2.7"
+	}
+}
