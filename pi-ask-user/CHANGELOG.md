@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Terminal bell fires only in TUI mode (`ctx.mode === "tui"`) — RPC stdout is the JSON protocol channel.
+- Removed an unreachable empty-questions error branch (the schema's `minItems: 1` already rejects it).
+
 ## [2.0.1] - 2026-08-27
 
 Renamed to `@fyeeme/pi-ask-user` (formerly `@fyeeme/pi-omp-ask`, whose 2.0.0 release carried this codebase); the lightweight `ask_user` extension formerly published under this name now lives as `@fyeeme/pi-ask-user-lite`.

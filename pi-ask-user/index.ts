@@ -244,15 +244,9 @@ export default function ompAskExtension(pi: ExtensionAPI): void {
 
 			// omp ask.notify → terminal bell (pi extensions cannot send desktop
 			// notifications or read settings). omp's setting is opt-out-able, so
-			// the bell stays configurable via PI_OMK_ASK_NOTIFY=0.
-			if (process.env.PI_OMK_ASK_NOTIFY !== "0") process.stdout.write("\x07");
-
-			if (params.questions.length === 0) {
-				return {
-					content: [{ type: "text" as const, text: "Error: questions must not be empty" }],
-					details: {},
-				};
-			}
+			// the bell stays configurable via PI_OMK_ASK_NOTIFY=0. Terminal-direct:
+			// TUI only — RPC stdout is the JSON protocol channel (Mode Behavior).
+			if (ctx.mode === "tui" && process.env.PI_OMK_ASK_NOTIFY !== "0") process.stdout.write("\x07");
 
 			const richQuestions: ExtensionAskDialogQuestion[] = params.questions.map(q => ({
 				id: q.id,
