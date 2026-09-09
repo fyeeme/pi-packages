@@ -22,6 +22,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadWorkflowModule } from "./loader.ts";
+import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import type { WorkflowDefinition } from "./types.ts";
 
 /** This file lives at <pkg>/src/ → the bundled library is <pkg>/workflows. */
@@ -29,7 +30,7 @@ const PKG_ROOT = fs.realpathSync(path.resolve(path.dirname(fileURLToPath(import.
 const BUNDLED_LIB_DIR = path.join(PKG_ROOT, "workflows");
 
 /** Project-level library directory, relative to the project root. */
-const PROJECT_LIB_REL = path.join(".pi", "workflows", "lib");
+const PROJECT_LIB_REL = path.join(CONFIG_DIR_NAME, "workflows", "lib");
 
 /** One library entry, after loading the module. */
 export interface LibraryEntry {

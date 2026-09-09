@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `run_workflow` now throws on failed/aborted runs and parameter errors instead of returning a dead `isError: true` payload (a returned value never sets the error flag, so failures looked successful to the model).
+- Tool results report nested-agent `usage`, so workflow tokens/cost show up in pi's footer, `/session`, and RPC totals.
+- Tool output is capped at 50KB/2000 lines with a journal-file pointer when truncated.
+
+### Changed
+
+- String-enum parameters (`onBudgetExhaust`, `source`) use `StringEnum` for Google API compatibility.
+- Journal and project library paths use `CONFIG_DIR_NAME` instead of a hardcoded `.pi`.
+
 ### Added
 
 - `/implement-and-review` prompt preset (migrated from pi-subagents, rewritten for the post-chain tool): implement → review → fix as successive `subagent` calls you coordinate yourself. pi-subagents dropped its chain mode and prompt presets in 2.1.0; this is the surviving recipe.

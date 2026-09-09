@@ -55,6 +55,15 @@ export interface StepStats {
 	readonly durationMs: number;
 	readonly agents: number;
 	readonly failures: number;
+	/** Nested-LLM usage split, populated for agent-dispatch steps and surfaced
+	 *  as `usage` on the run_workflow tool result (pi usage accounting). Absent
+	 *  for zero-dispatch steps (code/log) and journals written before this field. */
+	readonly usage?: {
+		readonly input: number;
+		readonly output: number;
+		readonly cacheRead: number;
+		readonly cacheWrite: number;
+	};
 }
 
 export interface StepResult<T = unknown> {

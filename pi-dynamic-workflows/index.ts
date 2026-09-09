@@ -15,6 +15,8 @@
  * `/wf-inspect` command were removed in favor of that shared surface.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { truncateHead } from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import piSubagents from "@fyeeme/pi-subagents";
 import { defineWorkflow, runWorkflow } from "./src/index.ts";
@@ -27,7 +29,7 @@ import { discoverWorkflowLibrary, loadLibraryWorkflow } from "./src/library.ts";
 // ---------------------------------------------------------------------------
 
 const BudgetExhaustPolicy = Type.Optional(
-	Type.Union([Type.Literal("throw"), Type.Literal("null")], {
+	StringEnum(["throw", "null"] as const, {
 		description: "Budget-exhaustion policy for this step: \"throw\" (default) aborts the run; \"null\" degrades this step to a null result so siblings/downstream continue (the run result records degraded steps).",
 	}),
 );
@@ -106,7 +108,7 @@ const WorkflowSchema = Type.Object({
 
 const RunWorkflowParams = Type.Object({
 	source: Type.Optional(
-		Type.Union([Type.Literal("inline"), Type.Literal("library")], {
+		StringEnum(["inline", "library"] as const, {
 			description:
 				'Where the workflow comes from. "inline" (default): the `workflow` parameter (JSON subset). "library": a named workflow from the discovered library (bundled workflows/ + project .pi/workflows/lib/, project overrides bundled) — full step set incl. loop_until, loaded through the determinism guard.',
 			default: "inline",
@@ -340,11 +342,7 @@ export default function (pi: ExtensionAPI): void {
 			let workflowDef: WorkflowDefinition | undefined;
 			if (params.source === "library") {
 				if (!params.name)
-					return {
-						content: [{ type: "text" as const, text: 'run_workflow: source "library" requires a workflow `name`.' }],
-						details: { error: "missing name" },
-						isError: true,
-					};
+					throw new Error('run_workflow: source "library" requires a workflow `name`.');
 				try {
 					const entry = await loadLibraryWorkflow(params.name, params.cwd ?? ctx.cwd);
 					if (!entry) {
@@ -352,29 +350,17 @@ export default function (pi: ExtensionAPI): void {
 						const available = [...lib.values()]
 							.map((e) => `- ${e.name}${e.description ? ` — ${e.description}` : ""} (${e.filePath})`)
 							.join("\n");
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: `run_workflow: no library workflow named "${params.name}". Available:\n${available || "(none)"}`,
-								},
-							],
-							details: { error: `unknown workflow: ${params.name}` },
-							isError: true,
-						};
+						throw new Error(`run_workflow: no library workflow named "${params.name}". Available:\n${available || "(none)"}`);
 					}
 					workflowDef = entry.workflow;
 				} catch (e) {
+					if (e instanceof Error && e.message.startsWith("run_workflow:")) throw e;
 					const msg = e instanceof Error ? e.message : String(e);
-					return { content: [{ type: "text" as const, text: `run_workflow failed: ${msg}` }], details: { error: msg }, isError: true };
+					throw new Error(`run_workflow failed: ${msg}`);
 				}
 			} else {
 				if (!params.workflow)
-					return {
-						content: [{ type: "text" as const, text: 'run_workflow: provide either a `workflow` (inline) or `name` with source "library".' }],
-						details: { error: "missing workflow" },
-						isError: true,
-					};
+					throw new Error('run_workflow: provide either a `workflow` (inline) or `name` with source "library".');
 			}
 
 				try {
@@ -435,14 +421,34 @@ export default function (pi: ExtensionAPI): void {
 					`stats: ${result.stats.agents} agent(s), ${result.stats.tokens} tokens, $${result.stats.cost.toFixed(4)}`,
 				];
 				if (result.error) lines.push(`error: ${result.error}`);
+				if (result.journalFile) lines.push(`full run details: ${result.journalFile}`);
+
+				// Failed/aborted runs are tool errors: throw so pi sets isError and
+				// reports the summary to the model (returning a value never sets the
+				// error flag). Completed runs with degraded steps stay a normal result.
+				const text = truncateHead(lines.join("\n"), { maxLines: 2000, maxBytes: 50_000 }).content;
+				if (result.status !== "completed") {
+					throw new Error(text);
+				}
+				const u = result.stats.usage;
 				return {
-					content: [{ type: "text" as const, text: lines.join("\n") }],
+					content: [{ type: "text" as const, text }],
 					details: result,
-					isError: result.status !== "completed",
+					// Surface nested-agent usage so pi's footer //session totals include it.
+					usage: u
+						? {
+								input: u.input,
+								output: u.output,
+								cacheRead: u.cacheRead,
+								cacheWrite: u.cacheWrite,
+								totalTokens: result.stats.tokens,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: result.stats.cost },
+							}
+						: undefined,
 				};
 			} catch (e) {
 				const msg = e instanceof Error ? e.message : String(e);
-				return { content: [{ type: "text" as const, text: `run_workflow failed: ${msg}` }], details: { error: msg }, isError: true };
+				throw new Error(`run_workflow failed: ${msg}`);
 			}
 		},
 	});

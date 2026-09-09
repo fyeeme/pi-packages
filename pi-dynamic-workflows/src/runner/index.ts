@@ -14,6 +14,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { BudgetPool } from "../budget/index.ts";
 import { Journal, type RunManifest } from "../cache/index.ts";
 import type { AgentLifecycleListeners } from "../lifecycle.ts";
@@ -81,7 +82,7 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunResult> 
 	const budget = opts.budget ?? workflow.budget ?? {};
 	const journalDir =
 		opts.journalDir ??
-		path.join(cwd, ".pi", "workflows", sanitizeWorkflowName(workflow.name));
+		path.join(cwd, CONFIG_DIR_NAME, "workflows", sanitizeWorkflowName(workflow.name));
 
 	await fs.promises.mkdir(journalDir, { recursive: true });
 	const journal = new Journal({ dir: journalDir });

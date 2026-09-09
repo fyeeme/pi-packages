@@ -1018,6 +1018,12 @@ function usageStats(res: AgentSpawnResult, durationMs: number, ok: boolean): Ste
 		durationMs,
 		agents: 1,
 		failures: ok ? 0 : 1,
+		usage: {
+			input: res.usage.input,
+			output: res.usage.output,
+			cacheRead: res.usage.cacheRead,
+			cacheWrite: res.usage.cacheWrite,
+		},
 	};
 }
 
@@ -1028,6 +1034,20 @@ function addStats(a: StepStats, b: StepStats): StepStats {
 		durationMs: a.durationMs + b.durationMs,
 		agents: a.agents + b.agents,
 		failures: a.failures + b.failures,
+		usage: mergeUsage(a.usage, b.usage),
+	};
+}
+
+function mergeUsage(
+	a: StepStats["usage"],
+	b: StepStats["usage"],
+): StepStats["usage"] {
+	if (!a && !b) return undefined;
+	return {
+		input: (a?.input ?? 0) + (b?.input ?? 0),
+		output: (a?.output ?? 0) + (b?.output ?? 0),
+		cacheRead: (a?.cacheRead ?? 0) + (b?.cacheRead ?? 0),
+		cacheWrite: (a?.cacheWrite ?? 0) + (b?.cacheWrite ?? 0),
 	};
 }
 
@@ -1038,14 +1058,16 @@ export function aggregateStats(stats: readonly StepStats[], durationMs: number):
 	let agents = 0;
 	let failures = 0;
 	let dur = 0;
+	let usage: StepStats["usage"];
 	for (const s of stats) {
 		tokens += s.tokens;
 		cost += s.cost;
 		agents += s.agents;
 		failures += s.failures;
 		dur += s.durationMs;
+		usage = mergeUsage(usage, s.usage);
 	}
-	return { tokens, cost, durationMs: durationMs > 0 ? durationMs : dur, agents, failures };
+	return { tokens, cost, durationMs: durationMs > 0 ? durationMs : dur, agents, failures, usage };
 }
 
 function withDuration(stats: StepStats, start: number): StepStats {
