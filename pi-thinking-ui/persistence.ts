@@ -1,6 +1,6 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { parseThinkingMode } from "./parse.ts";
 import type { PersistedThinkingUIPreferenceScope, ThinkingUIMode } from "./types.ts";
 
@@ -8,11 +8,12 @@ const PREFERENCE_FILE_NAME = "thinking-ui.json";
 
 function getPreferencePath(scope: PersistedThinkingUIPreferenceScope, cwd: string): string {
 	if (scope === "global") {
-		const homePath = process.env.HOME?.trim() || homedir();
-		return join(homePath, ".pi", "agent", "state", PREFERENCE_FILE_NAME);
+		// getAgentDir() honors PI_CODING_AGENT_DIR and rebranded config dirs;
+		// hand-rolling ~/.pi/agent would bypass both.
+		return join(getAgentDir(), "state", PREFERENCE_FILE_NAME);
 	}
 
-	return join(cwd, ".pi", PREFERENCE_FILE_NAME);
+	return join(cwd, CONFIG_DIR_NAME, PREFERENCE_FILE_NAME);
 }
 
 function errorMessage(error: unknown): string {

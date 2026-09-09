@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+// Block the real pi-coding-agent dist (unhydrated pi-ai/compat subpath in this
+// submodule breaks the import graph). index.ts → persistence.ts only needs
+// these two values; nothing here exercises persistence paths.
+vi.mock("@earendil-works/pi-coding-agent", () => ({
+	CONFIG_DIR_NAME: ".pi",
+	getAgentDir: () => "/tmp/mock-agent-dir",
+}));
+
 import thinkingUIExtension from "../index.ts";
 
 // Loads the extension factory against a minimal mock `pi` and captures the
