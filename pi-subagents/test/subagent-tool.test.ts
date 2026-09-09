@@ -78,30 +78,93 @@ beforeEach(() => {
 });
 
 describe("subagent tool parameter validation", () => {
-	it("rejects maxTurns: 0 with a range message", async () => {
-		const result = await subagentTool.execute!(
-			"call-1",
-			{ agent: "scout", task: "t", maxTurns: 0 } as never,
-			new AbortController().signal,
-			undefined,
-			fakeCtx() as never,
-		);
-		const text = result.content[0];
-		expect(text.type === "text" && text.text).toContain("Invalid maxTurns: 0");
-	});
-
-	it("rejects negative and non-integer maxTurns", async () => {
-		for (const bad of [-3, 2.5]) {
-			const result = await subagentTool.execute!(
+	it("rejects maxTurns: 0 with a range message (throws: returning never sets isError)", async () => {
+		await expect(
+			subagentTool.execute!(
 				"call-1",
-				{ agent: "scout", task: "t", maxTurns: bad } as never,
+				{ agent: "scout", task: "t", maxTurns: 0 } as never,
 				new AbortController().signal,
 				undefined,
 				fakeCtx() as never,
-			);
-			const text = result.content[0];
-			expect(text.type === "text" && text.text).toContain(`Invalid maxTurns: ${bad}`);
+			),
+		).rejects.toThrow("Invalid maxTurns: 0");
+	});
+
+	it("rejects negative and non-integer maxTurns (throws)", async () => {
+		for (const bad of [-3, 2.5]) {
+			await expect(
+				subagentTool.execute!(
+					"call-1",
+					{ agent: "scout", task: "t", maxTurns: bad } as never,
+					new AbortController().signal,
+					undefined,
+					fakeCtx() as never,
+				),
+			).rejects.toThrow(`Invalid maxTurns: ${bad}`);
 		}
+	});
+
+	// pi passes args through unvalidated, so a task entry missing required
+	// fields used to slip through as a wasted dispatch wave returning N
+	// "Unknown agent: undefined" results — it must be rejected up front.
+	it("rejects a parallel task entry missing the agent field, with the wire format hint", async () => {
+		await expect(
+			subagentTool.execute!(
+				"call-1",
+				{ tasks: [{ task: "Angle A — diff scan" }] } as never,
+				new AbortController().signal,
+				undefined,
+				fakeCtx() as never,
+			),
+		).rejects.toThrow('Invalid tasks[0]');
+	});
+
+	it("rejects empty-string and missing task fields, naming the entry index", async () => {
+		await expect(
+			subagentTool.execute!(
+				"call-1",
+				{ tasks: [{ agent: "scout", task: "" }] } as never,
+				new AbortController().signal,
+				undefined,
+				fakeCtx() as never,
+			),
+		).rejects.toThrow("Invalid tasks[0]");
+
+		// Index naming must point at the offending entry, not the first.
+		await expect(
+			subagentTool.execute!(
+				"call-1",
+				{ tasks: [{ agent: "scout", task: "ok" }, { agent: "scout" }] } as never,
+				new AbortController().signal,
+				undefined,
+				fakeCtx() as never,
+			),
+		).rejects.toThrow("Invalid tasks[1]");
+	});
+});
+
+describe("renderCall malformed-args fallback", () => {
+	const identityTheme = { fg: (_color: unknown, text: string) => text, bold: (text: string) => text };
+
+	it("renders a missing task agent as ? instead of undefined", () => {
+		const component = subagentTool.renderCall!(
+			{ tasks: [{ task: "Angle A — diff scan" }] } as never,
+			identityTheme as never,
+			{} as never,
+		);
+		const text = component.render(500).join("\n");
+		expect(text).toContain("? Angle A — diff scan");
+		expect(text).not.toContain("undefined");
+	});
+
+	it("a missing task text renders as ... instead of crashing", () => {
+		const component = subagentTool.renderCall!(
+			{ tasks: [{ agent: "scout" }] } as never,
+			identityTheme as never,
+			{} as never,
+		);
+		const text = component.render(500).join("\n");
+		expect(text).toContain("scout ...");
 	});
 });
 
@@ -166,10 +229,95 @@ describe("parallel output truncation and artifacts", () => {
 		);
 		const text = result.content[0];
 		expect(text.type === "text" && text.text).toContain("Output truncated:");
+		// The aggregate cap keeps the artifact pointer visible.
+		expect(text.type === "text" && /pi-subagents\//.test(text.text)).toBe(true);
+		const details = result.details as { results: Array<{ outputPath?: string }> };
+		expect(details.results[0]?.outputPath).toBeTruthy();
+	});
+
+	it("a truncated SINGLE-agent delivery carries the per-task artifact pointer", async () => {
+		// The single-agent path has no aggregate cap around it, so the
+		// per-task suffix (`Full output: <path>`) must survive verbatim — this
+		// is the coverage the old parallel assertion used to provide before
+		// the aggregate cap started cutting the suffix out of that scenario.
+		spawnMock.mockImplementation(() => procWithFinalText("Y".repeat(60 * 1024)));
+		const result = await subagentTool.execute!(
+			"call-1",
+			{ agent: "scout", task: "big-single" } as never,
+			new AbortController().signal,
+			undefined,
+			fakeCtx() as never,
+		);
+		const text = result.content[0];
+		expect(text.type === "text" && text.text).toContain("Output truncated:");
 		expect(text.type === "text" && text.text).toContain("Full output: ");
 		expect(text.type === "text" && /pi-subagents\//.test(text.text)).toBe(true);
 		const details = result.details as { results: Array<{ outputPath?: string }> };
 		expect(details.results[0]?.outputPath).toBeTruthy();
+	});
+
+	it("running partials keep the -1 running sentinel (parallel progress stays truthful)", async () => {
+		// The subprocess emits one assistant message, then stays open until we
+		// release it. While it runs, the tool's streaming updates must report
+		// the task as RUNNING (-1) — not done (0) — so "X/N done, Y running"
+		// stays truthful for tasks that have output but no exit yet.
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		spawnMock.mockImplementation(((_command: string) => {
+			const stdout = new EventEmitter();
+			const stderr = new EventEmitter();
+			const bus = new EventEmitter();
+			const proc = Object.assign(bus, {
+				stdout,
+				stderr,
+				exitCode: null as number | null,
+				signalCode: null as string | null,
+				kill: vi.fn(),
+			}) as unknown as ChildProcess;
+			queueMicrotask(() => {
+				stdout.emit(
+					"data",
+					Buffer.from(
+						`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "PARTIAL" }] } })}\n`,
+					),
+				);
+			});
+			void gate.then(() => {
+				stdout.emit(
+					"data",
+					Buffer.from(
+						`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "FINAL" }] } })}\n`,
+					),
+				);
+				bus.emit("close", 0);
+			});
+			return proc;
+		}) as never);
+		const exitCodes: number[] = [];
+		const p = subagentTool.execute!(
+			"call-1",
+			{ agent: "scout", task: "sentinel" } as never,
+			new AbortController().signal,
+			(partial: unknown) => {
+				const details = (partial as { details?: { results?: Array<{ exitCode?: number }> } }).details;
+				const first = details?.results?.[0];
+				if (first) exitCodes.push(first.exitCode ?? -999);
+			},
+			fakeCtx() as never,
+		);
+		// Wait for the partial to land while the subprocess is "open". Polling
+		// instead of a fixed sleep: reaching this point involves real async
+		// temp-file writes, and a fixed 10ms is not reliable under load.
+		for (let i = 0; i < 200 && exitCodes.length === 0; i++) {
+			await new Promise((r) => setTimeout(r, 5));
+		}
+		expect(exitCodes.length).toBeGreaterThan(0);
+		expect(exitCodes.every((code) => code === -1)).toBe(true); // running, never miscounted as done
+		release();
+		const result = await p;
+		expect(exitCodes.at(-1)).toBe(0); // the final update carries the real exit code
+		const details = result.details as { results: Array<{ exitCode?: number }> };
+		expect(details.results[0]?.exitCode).toBe(0);
 	});
 
 	it("an under-cap output passes through without a truncation marker", async () => {
@@ -233,23 +381,24 @@ describe("result contract", () => {
 describe("structured output (outputSchema / schemaMode)", () => {
 	it("strict mode rejects a payload that violates the schema, with error details", async () => {
 		spawnMock.mockImplementation(() => procWithFinalText("<result>{\"name\": 123}</result>"));
-		const result = await subagentTool.execute!(
-			"call-1",
-			{
-				agent: "scout",
-				task: "strict-task",
-				outputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
-				schemaMode: "strict",
-			} as never,
-			new AbortController().signal,
-			undefined,
-			fakeCtx() as never,
-		);
-		const text = result.content[0];
-		expect(text.type === "text" && text.text).toContain("failed JSON Schema validation");
-		const details = result.details as { results: Array<{ schemaValid?: boolean; errorMessage?: string }> };
-		expect(details.results[0]?.schemaValid).toBeUndefined();
-		expect(details.results[0]?.errorMessage).toContain("failed JSON Schema validation");
+		// Strict rejection is a tool error: it throws (pi sets isError on the
+		// thrown message; a returned value never sets the error flag). The
+		// child's success stopReason ("stop") must NOT label the failure — the
+		// message reads "Agent failed: ..." instead.
+		await expect(
+			subagentTool.execute!(
+				"call-1",
+				{
+					agent: "scout",
+					task: "strict-task",
+					outputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+					schemaMode: "strict",
+				} as never,
+				new AbortController().signal,
+				undefined,
+				fakeCtx() as never,
+			),
+		).rejects.toThrow(/^Agent failed: output failed JSON Schema validation/);
 	});
 
 	it("permissive mode (default) passes the original text through with a warning", async () => {

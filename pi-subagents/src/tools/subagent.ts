@@ -15,18 +15,18 @@
  * a tool set without the fan-out tool (and env-capped recursion), so they
  * physically cannot recurse.
  */
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool, getMarkdownTheme, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import * as os from "node:os";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { type AgentConfig, discoverAgents } from "../../agents.ts";
 import { loadCoreSettings } from "../concurrency.ts";
 import {
 	createSpawnRegistry,
+	type AgentProgressSnapshot,
 	type AgentSpawnRegistry,
 	getMaxConcurrency,
 	mapWithConcurrencyLimit,
@@ -35,7 +35,7 @@ import {
 	classifyFailure,
 	spawnAgent,
 } from "../dispatch.ts";
-import { extractResult, lastAssistantText, type ResultExtractMethod } from "../text.ts";
+import { extractResult, lastMessageText, type ExtractedResult, type ResultExtractMethod } from "../text.ts";
 import { Compile } from "typebox/compile";
 
 /**
@@ -61,6 +61,9 @@ const RESULT_CONTRACT_PROMPT = [
 const MAX_PARALLEL_TASKS = 16;
 const COLLAPSED_ITEM_COUNT = 10;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
+/** Per-task line ceiling — the tool-output contract is 50KB AND 2000 lines;
+ *  both dimensions are enforced here, not just on the parallel aggregate. */
+const PER_TASK_MAX_LINES = 2000;
 
 /**
  * Default turn budget for a subagent when the agent definition omits one. A
@@ -212,6 +215,12 @@ interface SingleResult {
 	failureClass?: AgentFailureClass;
 	/** First line of the ORIGINAL task (context stripped) — replay targeting. */
 	taskSummary?: string;
+	/** Render-side memo for extractResult, keyed by messages.length — messages
+	 *  are append-only, so equal length ⇒ identical content. With onProgress
+	 *  wired, every assistant message end triggers a tool-result re-render;
+	 *  without the memo each render re-runs the full join+regex extraction
+	 *  over the growing message list (O(messages × text) per render). */
+	_extractCache?: { len: number; extracted: ExtractedResult };
 }
 
 interface SubagentDetails {
@@ -220,20 +229,37 @@ interface SubagentDetails {
 	results: SingleResult[];
 }
 
+/** -1 is the RUNNING sentinel (parallel placeholders and streaming partials);
+ *  it is never a failure — renderers and progress counts branch on it before
+ *  consulting this predicate. */
 function isFailedResult(result: SingleResult): boolean {
 	return (
-		result.exitCode !== 0 ||
+		(result.exitCode !== 0 && result.exitCode !== -1) ||
 		result.stopReason === "error" ||
 		result.stopReason === "aborted" ||
 		result.aborted === true
 	);
 }
 
+/**
+ * extractResult with a per-result memo keyed by messages.length (messages are
+ * append-only, so length is a valid content key). Shared by the delivered
+ * output path and both renderers: a streaming render hits the memo instead of
+ * re-running the join+regex extraction over the whole message list.
+ */
+function extractResultCached(result: SingleResult): ExtractedResult {
+	const cache = result._extractCache;
+	if (cache && cache.len === result.messages.length) return cache.extracted;
+	const extracted = extractResult(result.messages);
+	result._extractCache = { len: result.messages.length, extracted };
+	return extracted;
+}
+
 /** Delivered output text for one result plus how it was extracted. Failures
  *  report the error/stderr first; the extractor's placeholder guarantees the
  *  text is never empty. */
 function getResultOutput(result: SingleResult): { text: string; method: ResultExtractMethod } {
-	const extracted = extractResult(result.messages);
+	const extracted = extractResultCached(result);
 	result.extractMethod = extracted.method;
 	if (isFailedResult(result)) {
 		const reason = result.errorMessage || result.stderr;
@@ -252,27 +278,38 @@ function taskFirstLine(task: string, max = 80): string {
 	return "(no task text)";
 }
 
-/** Per-task output text with the 50KB cap applied. A truncated output points
+/** Per-task output text with the 50KB/2000-line cap applied — the same
+ *  contract the parallel aggregate enforces, now on every task (and on the
+ *  single agent's delivered output). Truncation goes through the shared
+ *  truncateHead; its one blind spot — a single line longer than the byte cap
+ *  is dropped entirely — falls back to the byte-safe head slice so the
+ *  artifact pointer always has payload to point at. A truncated output points
  *  at the full-output artifact; a failed artifact write degrades to a warning
  *  line instead of an error. */
-function truncateParallelOutput(result: SingleResult): string {
+function truncateOutput(result: SingleResult): string {
 	const output = getResultOutput(result).text;
 	const byteLength = Buffer.byteLength(output, "utf8");
-	if (byteLength > PER_TASK_OUTPUT_CAP) {
-		let truncated = output.slice(0, PER_TASK_OUTPUT_CAP);
-		while (Buffer.byteLength(truncated, "utf8") > PER_TASK_OUTPUT_CAP) {
-			truncated = truncated.slice(0, -1);
-		}
-		const omitted = byteLength - Buffer.byteLength(truncated, "utf8");
-		const suffix = result.outputPath
-			? `Full output: ${result.outputPath}`
-			: result.artifactWarning || "full output in tool details";
-		return `${truncated}\n\n[Output truncated: ${omitted} bytes omitted. ${suffix}]`;
+	const totalLines = output.split("\n").length;
+	if (byteLength <= PER_TASK_OUTPUT_CAP && totalLines <= PER_TASK_MAX_LINES) {
+		const notes: string[] = [];
+		if (result.schemaWarning) notes.push(result.schemaWarning);
+		if (result.artifactWarning) notes.push(result.artifactWarning);
+		return notes.length > 0 ? `${output}\n\n[${notes.join("; ")}]` : output;
 	}
-	const notes: string[] = [];
-	if (result.schemaWarning) notes.push(result.schemaWarning);
-	if (result.artifactWarning) notes.push(result.artifactWarning);
-	return notes.length > 0 ? `${output}\n\n[${notes.join("; ")}]` : output;
+	const capped = truncateHead(output, { maxLines: PER_TASK_MAX_LINES, maxBytes: PER_TASK_OUTPUT_CAP });
+	let body = capped.content;
+	let omittedBytes = byteLength - Buffer.byteLength(capped.content, "utf8");
+	if (capped.firstLineExceedsLimit) {
+		body = output.slice(0, PER_TASK_OUTPUT_CAP);
+		while (Buffer.byteLength(body, "utf8") > PER_TASK_OUTPUT_CAP) {
+			body = body.slice(0, -1);
+		}
+		omittedBytes = byteLength - Buffer.byteLength(body, "utf8");
+	}
+	const suffix = result.outputPath
+		? `Full output: ${result.outputPath}`
+		: result.artifactWarning || "full output in tool details";
+	return `${body}\n\n[Output truncated: ${omittedBytes} bytes omitted. ${suffix}]`;
 }
 
 type DisplayItem = { type: "text"; text: string } | { type: "toolCall"; name: string; args: Record<string, any> };
@@ -291,6 +328,47 @@ function getDisplayItems(messages: Message[]): DisplayItem[] {
 }
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
+
+/** Dispatch-level defaults inherited by agents that do not pin their own
+ *  `model` in frontmatter (parity with the reference example): the parent
+ *  session's model and thinking level flow down to the subprocess, so a
+ *  fan-out inherits the model the caller is paying attention to instead of
+ *  silently falling back to pi's default model. */
+interface DispatchDefaults {
+	model?: string;
+	thinkingLevel?: ThinkingLevel;
+}
+
+/** Map one agent's usage into pi's Usage shape so the tool result participates
+ *  in footer / /session / RPC totals (doc: nested LLM calls MUST be reported). */
+function toPiUsage(u: {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cost: number;
+}): AgentToolResult<SubagentDetails>["usage"] {
+	return {
+		input: u.input,
+		output: u.output,
+		cacheRead: u.cacheRead,
+		cacheWrite: u.cacheWrite,
+		totalTokens: u.input + u.output + u.cacheRead + u.cacheWrite,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: u.cost },
+	};
+}
+
+function sumUsage(results: SingleResult[]): AgentToolResult<SubagentDetails>["usage"] {
+	const total = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+	for (const r of results) {
+		total.input += r.usage.input;
+		total.output += r.usage.output;
+		total.cacheRead += r.usage.cacheRead;
+		total.cacheWrite += r.usage.cacheWrite;
+		total.cost += r.usage.cost;
+	}
+	return toPiUsage(total);
+}
 
 
 // ---------------------------------------------------------------------------
@@ -377,6 +455,7 @@ function validateStructuredOutput(
  *  result into the tool's SingleResult shape. */
 async function runSingleAgent(
 	defaultCwd: string,
+	dispatchDefaults: DispatchDefaults,
 	agents: AgentConfig[],
 	agentName: string,
 	task: string,
@@ -403,18 +482,56 @@ async function runSingleAgent(
 	}
 
 	const callId = `subagent-${agentName}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+	// Model inheritance (parity with the reference example): an agent without
+	// its own frontmatter `model` inherits the dispatching session's model and
+	// thinking level; an explicit frontmatter model pins the subprocess and
+	// skips the thinking inheritance (the model may not support the level).
+	const inheritsDispatchConfig = !agent.model;
+	const model = agent.model ?? dispatchDefaults.model;
+	const thinking = inheritsDispatchConfig ? dispatchDefaults.thinkingLevel : undefined;
 	// Whitelist-by-default recursion opt-in (the dispatch core's documented
 	// contract): a child whose tool whitelist lists the fan-out tool is
 	// explicitly allowed to fan out itself; any other child loads without the
 	// tool and physically cannot recurse.
 	const allowChildRecursion = agent.tools?.includes("subagent") ?? false;
+	// Streaming partial updates (parity with the reference example): every
+	// assistant message end re-emits the in-flight result so the tool result
+	// and parallel rows show live output while the subprocess runs. Running
+	// partials carry the -1 RUNNING sentinel (shared with the parallel
+	// placeholder): emitParallelUpdate and the renderers count -1 as "in
+	// flight", so a task that has produced output but not exited is never
+	// misreported as done. The partial preview is the LAST assistant message's
+	// text (example getFinalOutput semantics), NOT the joined final run —
+	// earlier turns' chatter stays out of the preview.
+	const onProgress: ((snapshot: AgentProgressSnapshot) => void) | undefined = onUpdate
+		? (snapshot) => {
+				const partial: SingleResult = {
+					agent: agentName,
+					agentSource: agent.source,
+					task,
+					exitCode: -1,
+					messages: snapshot.messages,
+					stderr: "",
+					usage: snapshot.usage,
+					model: snapshot.model,
+					stopReason: snapshot.stopReason,
+					errorMessage: snapshot.errorMessage,
+				};
+				onUpdate({
+					content: [{ type: "text", text: lastMessageText(snapshot.messages) || "(running...)" }],
+					details: makeDetails([partial]),
+				});
+			}
+		: undefined;
 	// Prompt-layer result contract (see RESULT_CONTRACT_PROMPT): appended after
 	// the agent's own system prompt, never replacing it.
 	const r = await spawnAgent(registry, {
 		callId,
 		task,
+		promptPrefix: "Task: ",
 		cwd: cwd ?? defaultCwd,
-		model: agent.model,
+		model,
+		thinking,
 		tools: agent.tools,
 		systemPrompt: [agent.systemPrompt, RESULT_CONTRACT_PROMPT, policy.schema ? schemaInstruction(policy.schema) : ""]
 			.filter(Boolean)
@@ -423,6 +540,7 @@ async function runSingleAgent(
 		allowChildRecursion,
 		displayName: agentName,
 		signal,
+		onProgress,
 	});
 	const result: SingleResult = {
 		agent: agentName,
@@ -456,23 +574,27 @@ async function runSingleAgent(
 		if (outcome.ok) {
 			result.schemaValid = true;
 		} else if (outcome.error && policy.mode === "strict") {
-			// Strict rejection: the item fails with the validation details.
+			// Strict rejection: the item fails with the validation details. The
+			// child's stopReason is a SUCCESS reason ("stop") — carrying it into
+			// the throw would label the failure "Agent stop: ..."; clear it so
+			// the message reads "Agent failed: <validation errors>".
 			result.exitCode = 1;
 			result.errorMessage = outcome.error;
+			result.stopReason = undefined;
 		} else if (outcome.warning) {
 			result.schemaWarning = outcome.warning;
 		}
 	}
 	if (onUpdate) {
 		onUpdate({
-			content: [{ type: "text", text: lastAssistantText(r.messages) || "(running...)" }],
+			content: [{ type: "text", text: lastMessageText(r.messages) || "(running...)" }],
 			details: makeDetails([result]),
 		});
 	}
 	return result;
 }
 
-const SchemaMode = Type.Union([Type.Literal("permissive"), Type.Literal("strict")], {
+const SchemaMode = StringEnum(["permissive", "strict"] as const, {
 	description: "How a resolved output schema treats violations. permissive (default): attach a warning, pass the original text through. strict: the task fails with the validation errors.",
 });
 
@@ -530,19 +652,36 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 
 	async execute(_toolCallId, params, signal, onUpdate, ctx) {
 		if (params.maxTurns !== undefined && (!Number.isInteger(params.maxTurns) || params.maxTurns <= 0)) {
-			return {
-				content: [
-					{
-						type: "text",
-						text: `Invalid maxTurns: ${params.maxTurns}. Must be a positive integer (the per-agent assistant-turn budget).`,
-					},
-				],
-				details: { mode: "single", projectAgentsDir: null, results: [] },
-			};
+			// Parameter errors are tool errors: throw so pi sets isError (a
+			// returned value never sets the error flag).
+			throw new Error(
+				`Invalid maxTurns: ${params.maxTurns}. Must be a positive integer (the per-agent assistant-turn budget).`,
+			);
+		}
+
+		// pi passes model args through unvalidated (the TypeBox schema is wire
+		// documentation only), so the required task fields are enforced here:
+		// a thrown shape error reaches the model in the same turn, instead of
+		// one wasted dispatch wave returning N "Unknown agent: undefined".
+		const tasks = params.tasks ?? [];
+		for (let i = 0; i < tasks.length; i++) {
+			const t = tasks[i];
+			if (!t?.agent || !t?.task) {
+				throw new Error(
+					`Invalid tasks[${i}]: every entry needs non-empty \`agent\` and \`task\` strings, e.g. tasks: [{ agent: "scout", task: "..." }].`,
+				);
+			}
 		}
 
 		const discovery = discoverAgents(ctx.cwd, "both");
 		const agents = discovery.agents;
+
+		// Dispatch defaults inherited by agents without their own frontmatter
+		// `model` (parity with the reference example's DispatchDefaults).
+		const dispatchDefaults: DispatchDefaults = {
+			model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
+			thinkingLevel: ctx.thinkingLevel,
+		};
 
 		const hasTasks = (params.tasks?.length ?? 0) > 0;
 		const hasSingle = Boolean(params.agent && params.task);
@@ -583,28 +722,14 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 		}
 
 		if (hasTasks && hasSingle) {
-			return {
-				content: [
-					{
-						type: "text",
-						text: "Invalid parameters. Provide exactly one mode: either `agent` + `task` (single) or `tasks` (parallel).",
-					},
-				],
-				details: makeDetails("single")([]),
-			};
+			throw new Error(
+				"Invalid parameters. Provide exactly one mode: either `agent` + `task` (single) or `tasks` (parallel).",
+			);
 		}
 
 		if (params.tasks && params.tasks.length > 0) {
 			if (params.tasks.length > MAX_PARALLEL_TASKS)
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`,
-						},
-					],
-					details: makeDetails("parallel")([]),
-				};
+				throw new Error(`Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`);
 
 			// Track all results for streaming updates.
 			const allResults: SingleResult[] = new Array(params.tasks.length);
@@ -641,6 +766,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 				const agentDef = agents.find((a) => a.name === t.agent);
 				const result = await runSingleAgent(
 					ctx.cwd,
+					dispatchDefaults,
 					agents,
 					t.agent,
 					taskWithContext,
@@ -668,7 +794,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 			// none is annotated so downstream can tell them apart.
 			const renderSection = (r: SingleResult): string => {
 				const { method } = getResultOutput(r);
-				const capped = truncateParallelOutput(r);
+				const capped = truncateOutput(r);
 				if (isFailedResult(r)) {
 					const stopNote = r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : "";
 					const cls = r.failureClass ? ` · class: ${r.failureClass}` : "";
@@ -689,14 +815,22 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 			if (failed.length > 0) {
 				sections.push(`## Failed (${failed.length}) — replay these if their class is transient\n\n${failed.map(renderSection).join("\n\n---\n\n")}`);
 			}
+			// Overall cap: 16 tasks x 50KB each is up to 800KB in one tool
+			// result — cap the aggregate too (doc: 50KB/2000 lines).
+			const joined = `Parallel: ${successCount}/${results.length} succeeded\n\n${sections.join("\n\n")}`;
+			const capped = truncateHead(joined, { maxLines: 2000, maxBytes: 50_000 });
+			let text = capped.content;
+			if (capped.truncated) {
+				// Keep artifact pointers visible even when the aggregate cap cut
+				// the per-task sections — the model needs them to recover output.
+				const paths = results.map((r) => r.outputPath).filter((x): x is string => Boolean(x));
+				const pointer = paths.length > 0 ? ` Full outputs: ${paths.join(", ")}.` : "";
+				text += `\n\n[Output truncated: ${capped.outputLines}/${capped.totalLines} lines shown.${pointer}]`;
+			}
 			return {
-				content: [
-					{
-						type: "text",
-						text: `Parallel: ${successCount}/${results.length} succeeded\n\n${sections.join("\n\n")}`,
-					},
-				],
+				content: [{ type: "text", text }],
 				details: makeDetails("parallel")(results),
+				usage: sumUsage(results),
 			};
 		}
 
@@ -705,6 +839,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 			const agentDef = agents.find((a) => a.name === params.agent);
 			const result = await runSingleAgent(
 				ctx.cwd,
+				dispatchDefaults,
 				agents,
 				params.agent,
 				taskWithContext,
@@ -717,28 +852,26 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 			);
 			if (isFailedResult(result)) {
 				const errorMsg = getResultOutput(result).text;
-				return {
-					content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${errorMsg}` }],
-					details: makeDetails("single")([result]),
-					isError: true,
-				};
+				// Failed agents are tool errors: throw so pi sets isError and the
+				// model sees the failure as such (returning never sets the flag).
+				throw new Error(`Agent ${result.stopReason || "failed"}: ${errorMsg}`);
 			}
 			return {
 				content: [
 					{
 						type: "text",
-						text: getResultOutput(result).text,
+						text: truncateOutput(result),
 					},
 				],
 				details: makeDetails("single")([result]),
+				usage: toPiUsage(result.usage),
 			};
 		}
 
 		const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
-		return {
-			content: [{ type: "text", text: `Invalid parameters. Available agents: ${available}` }],
-			details: makeDetails("single")([]),
-		};
+		throw new Error(
+			`Invalid parameters. Provide \`agent\` + \`task\` (single mode) or \`tasks\` (parallel). Available agents: ${available}`,
+		);
 		},
 
 	renderCall(args, theme, _context) {
@@ -747,8 +880,9 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 				theme.fg("toolTitle", theme.bold("subagent ")) +
 				theme.fg("accent", `parallel (${args.tasks.length} tasks)`);
 			for (const t of args.tasks.slice(0, 3)) {
-				const preview = t.task.length > 40 ? `${t.task.slice(0, 40)}...` : t.task;
-				text += `\n  ${theme.fg("accent", t.agent)}${theme.fg("dim", ` ${preview}`)}`;
+				const agent = t?.agent || "?";
+				const preview = t?.task ? (t.task.length > 40 ? `${t.task.slice(0, 40)}...` : t.task) : "...";
+				text += `\n  ${theme.fg("accent", agent)}${theme.fg("dim", ` ${preview}`)}`;
 			}
 			if (args.tasks.length > 3) text += `\n  ${theme.fg("muted", `... +${args.tasks.length - 3} more`)}`;
 			return new Text(text, 0, 0);
@@ -792,7 +926,12 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 			const isError = isFailedResult(r);
 			const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
 			const displayItems = getDisplayItems(r.messages);
-			const finalOutput = extractResult(r.messages).text;
+			// `method: "none"` means no usable output — the placeholder must not
+			// count as output here, or the empty-expanded layout drifts from the
+			// reference renderer (parity: `!finalOutput` semantics).
+			const extracted = extractResultCached(r);
+			const hasOutput = extracted.method !== "none";
+			const finalOutput = extracted.text;
 
 			if (expanded) {
 				const container = new Container();
@@ -806,7 +945,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 				container.addChild(new Text(theme.fg("dim", r.task), 0, 0));
 				container.addChild(new Spacer(1));
 				container.addChild(new Text(theme.fg("muted", "─── Output ───"), 0, 0));
-				if (displayItems.length === 0 && !finalOutput) {
+				if (displayItems.length === 0 && !hasOutput) {
 					container.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
 				} else {
 					for (const item of displayItems) {
@@ -819,7 +958,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 								),
 							);
 					}
-					if (finalOutput) {
+					if (hasOutput) {
 						container.addChild(new Spacer(1));
 						container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
 					}
@@ -886,7 +1025,9 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 				for (const r of details.results) {
 					const rIcon = isFailedResult(r) ? theme.fg("error", "✗") : theme.fg("success", "✓");
 					const displayItems = getDisplayItems(r.messages);
-					const finalOutput = extractResult(r.messages).text;
+					const extracted = extractResultCached(r);
+					const hasOutput = extracted.method !== "none";
+					const finalOutput = extracted.text;
 
 					container.addChild(new Spacer(1));
 					container.addChild(
@@ -907,8 +1048,9 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 						}
 					}
 
-					// Show final output as markdown
-					if (finalOutput) {
+					// Show final output as markdown (parity: the "none" placeholder
+					// is not output — no markdown block for a message-less result)
+					if (hasOutput) {
 						container.addChild(new Spacer(1));
 						container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
 					}
