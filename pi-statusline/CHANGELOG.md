@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Footer subscribes to `ui_prompt_start`/`ui_prompt_end`: the elapsed timer freezes while a blocking dialog (ask_user, permission gates, ...) is open and the footer shows "waiting for user" instead of running time.
+
+### Changed
+
+- Peer/dev dependencies bumped to pi 0.84.4 (the `ui_prompt` events require >= 0.84.4).
+
 ## [1.2.2] - 2026-08-23
 
 ### Changed

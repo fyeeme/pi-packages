@@ -46,6 +46,11 @@ let lastModel: ExtensionContext["model"] = undefined;
 let agentRunning = false;
 let lastElapsedSec = 0;
 let lastTps = 0;
+/** True while a blocking ctx.ui dialog (select/confirm/input/editor/custom)
+ *  span is open (ui_prompt_start → ui_prompt_end). Elapsed time freezes and
+ *  the footer says "waiting for user" instead of showing a running timer —
+ *  the doc-intended status-integration use of the ui_prompt events. */
+let waitingForUser = false;
 
 const tokenCalculator = new SessionTokenUsageCalculator(() => deepSeekPricing.getCurrencyOverride());
 
@@ -88,6 +93,25 @@ export default function (pi: ExtensionAPI) {
 		if (lastCtx && lastModel) {
 			void refreshUsage(providers, lastCtx.modelRegistry, lastModel);
 		}
+	});
+
+	// ---- Blocking-dialog spans: freeze the elapsed timer + surface the wait ----
+	pi.on("ui_prompt_start", () => {
+		// Nested/overlapping prompts coalesce into one span (doc), so these are
+		// balanced set/reset pairs. Freeze first so user think-time never counts
+		// as agent work; resume on the matching end.
+		if (agentRunning && agentStartMs !== null) {
+			lastElapsedSec += (Date.now() - agentStartMs) / 1000;
+			agentStartMs = null;
+		}
+		waitingForUser = true;
+	});
+
+	pi.on("ui_prompt_end", () => {
+		if (agentRunning && agentStartMs === null) {
+			agentStartMs = Date.now();
+		}
+		waitingForUser = false;
 	});
 
 	// ---- /status-debug ----
@@ -237,8 +261,10 @@ export default function (pi: ExtensionAPI) {
 					}
 
 					// Line 1: tokens + cost + provider usage + context + elapsed + tps + mcp
+					let statLine = dim(buildStatLine(stats, cu, providerResult, providers, getElapsedSec, lastTps));
+					if (waitingForUser) statLine += theme.fg("warning", " · waiting for user");
 					lines.push(truncateToWidth(
-						dim(buildStatLine(stats, cu, providerResult, providers, getElapsedSec, lastTps)),
+						statLine,
 						width,
 						dim("..."),
 					));
