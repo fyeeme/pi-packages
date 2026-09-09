@@ -30,7 +30,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, parseFrontmatter, CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -139,19 +139,30 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 			continue;
 		}
 
-		if (!frontmatter.name || !frontmatter.description) {
+		// Strict string types, matching the reference implementation: a numeric
+		// name (legal YAML) must not masquerade as an agent named "123".
+		if (typeof frontmatter.name !== "string" || typeof frontmatter.description !== "string") {
 			console.warn(
 				`[pi-subagents] Skipping agent file missing required frontmatter fields (name, description): ${filePath}`,
 			);
 			continue;
 		}
-		const tools =
-			typeof frontmatter.tools === "string"
-				? frontmatter.tools
-						.split(",")
-						.map((t: string) => t.trim())
-						.filter(Boolean)
-				: undefined;
+
+		// Both spellings are valid YAML and both are in use (parity with the
+		// example's parseToolList):
+		//     tools: read, bash        # string
+		//     tools: [read, bash]      # array
+		// Anything else yields no tools rather than throwing: agent discovery
+		// must not let one bad file take down the other agents in the dir.
+		const rawTools = Array.isArray(frontmatter.tools)
+			? frontmatter.tools
+			: typeof frontmatter.tools === "string"
+				? frontmatter.tools.split(",")
+				: [];
+		const tools = rawTools
+			.filter((t): t is string => typeof t === "string")
+			.map((t) => t.trim())
+			.filter(Boolean);
 
 		// `output:` must be a YAML mapping; anything else is ignored (warned) so
 		// a typo cannot silently disable validation.
@@ -165,8 +176,8 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 		}
 
 		agents.push({
-			name: frontmatter.name as string,
-			description: frontmatter.description as string,
+			name: frontmatter.name,
+			description: frontmatter.description,
 			tools: tools && tools.length > 0 ? tools : undefined,
 			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
 			output,
@@ -190,7 +201,7 @@ function isDirectory(p: string): boolean {
 function findNearestProjectAgentsDir(cwd: string): string | null {
 	let currentDir = cwd;
 	while (true) {
-		const candidate = path.join(currentDir, ".pi", "agents");
+		const candidate = path.join(currentDir, CONFIG_DIR_NAME, "agents");
 		if (isDirectory(candidate)) return candidate;
 
 		const parentDir = path.dirname(currentDir);

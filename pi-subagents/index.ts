@@ -22,11 +22,12 @@
  *
  * Configuration is file-based only (src/concurrency.ts), read from
  * `<agentDir>/pi-subagent.json` (global defaults) with
- * `<cwd>/.pi/pi-subagent.json` (project) overriding — there is no interactive
- * settings UI. Keys: `fleet` (boolean, default true, read once at startup),
- * `maxConcurrency` (any positive integer, default 5 — consumed by the
- * dispatch core at call time), `confirmProjectAgents` (boolean, default
- * true), `stallMs` (default 60000), and `wallClockMs` (default disabled).
+ * `<cwd>/<CONFIG_DIR_NAME>/pi-subagent.json` (project) overriding — there is
+ * no interactive settings UI. Keys: `fleet` (boolean, default true, read once
+ * at startup), `maxConcurrency` (any positive integer, default 5 — consumed
+ * by the dispatch core at call time), `confirmProjectAgents` (boolean,
+ * default true), `stallMs` (default 60000), and `wallClockMs` (default
+ * disabled).
  *
  * Session lifecycle: on session_shutdown (quit, /new, /resume, /fork, reload)
  * both surfaces are torn down immediately — widgets unregistered, spinner and
@@ -71,6 +72,7 @@ export {
 export type {
 	AgentAbortMap,
 	AgentCallId,
+	AgentProgressSnapshot,
 	AgentSpawnOptions,
 	AgentSpawnRegistry,
 	AgentSpawnResult,
@@ -91,7 +93,7 @@ export { loadCoreSettings } from "./src/concurrency.ts";
 export type { SubagentCoreSettings } from "./src/concurrency.ts";
 
 // text extraction
-export { contentText, contentTextBlocks, lastAssistantText } from "./src/text.ts";
+export { contentText, contentTextBlocks, lastAssistantText, lastMessageText } from "./src/text.ts";
 
 // three-source agent discovery (+ extension-registered extra dirs)
 export { addAgentDir, discoverAgents } from "./agents.ts";
@@ -248,6 +250,31 @@ export default function subagentsUiExtension(pi: ExtensionAPI): void {
 	pi.on("tool_execution_start", (_event, ctx) => {
 		if (!ctx.hasUI || ctx.mode !== "tui") return;
 		rebindUi(ctx.ui);
+	});
+
+	// ---- Blocking-dialog spans (ui_prompt events) ----
+	// pi fires these around every blocking ctx.ui dialog (select/confirm/
+	// input/editor/custom — the project-agent confirm gate above, ask_user,
+	// permission gates, any extension's dialogs). The fleet surface uses them
+	// to (a) show "waiting for user" instead of implying active work and
+	// (b) deterministically stay out of the dialog's keys. Nested/overlapping
+	// prompts coalesce into one span (doc), so these are balanced pairs.
+	pi.on("ui_prompt_start", (_event, ctx) => {
+		if (!ctx.hasUI || ctx.mode !== "tui") return;
+		try {
+			fleet.setWaitingForUser(true);
+		} catch {
+			/* ignore */
+		}
+	});
+
+	pi.on("ui_prompt_end", (_event, ctx) => {
+		if (!ctx.hasUI || ctx.mode !== "tui") return;
+		try {
+			fleet.setWaitingForUser(false);
+		} catch {
+			/* ignore */
+		}
 	});
 
 	pi.on("session_shutdown", () => {

@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `subagent` failures (failed/aborted agents, strict schema rejections, parameter errors) now throw instead of returning a dead `isError: true` payload (a returned value never sets the error flag, so failures looked successful to the model).
+- Single-mode output is capped at 50KB with the full-output artifact pointer; parallel aggregate output is capped at 50KB/2000 lines and keeps artifact paths visible after truncation.
+- Tool results report nested-agent `usage`, so subagent tokens/cost show up in pi's footer, `/session`, and RPC totals.
+- `schemaMode` uses `StringEnum` for Google API compatibility.
+- Project settings/agents discovery paths use `CONFIG_DIR_NAME` instead of a hardcoded `.pi`.
+- Agent frontmatter `name`/`description` must be YAML strings: a numeric name (e.g. `name: 2024`) is now skipped with a warning instead of being coerced into a string agent (parity with the reference example). Update such files by quoting the value (`name: "2024"`).
+- Streaming partials carry the `-1` running sentinel instead of `exitCode: 0`, so a parallel task that has produced output but not exited is no longer counted as done in `X/N done, Y running` progress and fleet rows.
+- Strict schema rejections clear the child's success `stopReason`, so the thrown failure reads `Agent failed: <validation errors>` instead of `Agent stop: ...`.
+- Per-task output (and the single agent's delivered output) enforces the full 50KB/2000-line contract; previously only the byte cap applied per task.
+
+### Added
+
+- The fleet surface subscribes to `ui_prompt_start`/`ui_prompt_end`: it shows "waiting for user" while a blocking dialog is open and deterministically stays out of the dialog's keys (primary signal; the editor-focus heuristic remains a fallback).
+
 ## [2.1.0] - 2026-08-25
 
 **omp-parity release** — deletes the over-engineered surfaces, moves policy out of the tool wire into settings, and ports the reliability mechanisms proven by the omp harness (watchdogs, stable ids, explicit result contract, structured output, failure classification). The dispatch-core export surface and signatures are unchanged; consumers need no code changes.

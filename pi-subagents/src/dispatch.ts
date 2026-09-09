@@ -44,7 +44,7 @@ export type {
 } from "./monitor.ts";
 export { loadCoreSettings } from "./concurrency.ts";
 export type { SubagentCoreSettings } from "./concurrency.ts";
-export { contentText, contentTextBlocks, extractResult, lastAssistantText } from "./text.ts";
+export { contentText, contentTextBlocks, extractResult, lastAssistantText, lastMessageText } from "./text.ts";
 export { NO_OUTPUT_PLACEHOLDER } from "./text.ts";
 export type { ExtractedResult, ResultExtractMethod } from "./text.ts";
 
@@ -404,6 +404,17 @@ export interface AgentUsage {
 	turns: number;
 }
 
+/** Stable point-in-time view of a running call, handed to
+ *  {@link AgentSpawnOptions.onProgress} after every assistant message end.
+ *  `messages` is the live array reference (append-only); usage is a copy. */
+export interface AgentProgressSnapshot {
+	readonly messages: Message[];
+	readonly usage: AgentUsage;
+	readonly model?: string;
+	readonly stopReason?: string;
+	readonly errorMessage?: string;
+}
+
 export interface AgentSpawnOptions {
 	/** Stable id for this call; the registry key for per-call abort. */
 	readonly callId: AgentCallId;
@@ -439,6 +450,20 @@ export interface AgentSpawnOptions {
 	 *  event). Omit to keep the current behavior of discarding intermediate
 	 *  events; final `message_end` results are always collected regardless. */
 	readonly onUpdate?: (delta: string) => void;
+	/** Prefix prepended to the prompt positional arg (`"Task: "` for the
+	 *  subagent tool — parity with the reference example's spawn shape). The
+	 *  prefix also rides the @file temp-file prompt for oversized tasks, so
+	 *  the subprocess sees one consistent prompt either way. Omit to send the
+	 *  task verbatim: library consumers (workflow engines) own their prompt
+	 *  shape and get no invisible prefix. */
+	readonly promptPrefix?: string;
+	/** Optional callback invoked after EVERY assistant `message_end` is folded
+	 *  into the result, with a stable snapshot (messages/usage/model/stopReason/
+	 *  errorMessage) of the call so far. This is the streaming seam for tool
+	 *  layers that update a partial tool result while the subprocess runs
+	 *  (parity with the reference example's per-message emitUpdate). Omit for
+	 *  fire-and-forget spawns. Callback errors are swallowed. */
+	readonly onProgress?: (snapshot: AgentProgressSnapshot) => void;
 	/** UI display name for this call (widget / FleetView rows). Purely
 	 *  observational metadata consumed by the monitor + UI layer; defaults to
 	 *  "Agent". No effect on the spawned process or the returned result. */
@@ -642,17 +667,22 @@ export async function spawnAgent(
 			args.push("--append-system-prompt", tmp.filePath);
 		}
 
-		// The prompt is the final positional arg consumed by `-p`. An oversized
-		// task would exceed the kernel's per-argument limit (Linux
-		// MAX_ARG_STRLEN = 128 KiB → E2BIG at spawn), so it rides a temp file
-		// instead: the `@file` positional arg makes pi expand the file's
-		// contents into the prompt text.
-		if (Buffer.byteLength(task, "utf8") > TASK_ARG_MAX_BYTES) {
-			const tmp = await writePromptToTempFile(callId, task);
+		// The prompt is the final positional arg consumed by `-p`, with the
+		// caller-owned prefix applied (the subagent tool passes "Task: " to
+		// mirror the reference example's spawn shape; library consumers omit it
+		// and send the task verbatim). An oversized task would exceed the
+		// kernel's per-argument limit (Linux MAX_ARG_STRLEN = 128 KiB → E2BIG
+		// at spawn), so it rides a temp file instead: the `@file` positional
+		// arg makes pi expand the file's contents into the prompt text. The
+		// size check runs on the FULL prompt so the prefix cannot push a
+		// borderline task over the kernel limit at spawn time.
+		const prompt = options.promptPrefix ? `${options.promptPrefix}${task}` : task;
+		if (Buffer.byteLength(prompt, "utf8") > TASK_ARG_MAX_BYTES) {
+			const tmp = await writePromptToTempFile(callId, prompt);
 			tmpPromptFiles.push(tmp);
 			args.push(`@${tmp.filePath}`);
 		} else {
-			args.push(task);
+			args.push(prompt);
 		}
 
 		const exitCode = await new Promise<number>((resolve) => {
@@ -727,6 +757,23 @@ export async function spawnAgent(
 						if (msg.errorMessage) result.errorMessage = msg.errorMessage;
 						// Observability: fold the assistant turn into the live state.
 						notifyMonitor(() => monitor.messageEnd(callId, msg));
+						// Streaming seam for tool layers (parity with the reference
+						// example's per-message emitUpdate): hand out a stable
+						// snapshot after the turn is folded in. Callback errors must
+						// not break event parsing (same contract as onUpdate above).
+						if (options.onProgress) {
+							try {
+								options.onProgress({
+									messages: result.messages,
+									usage: { ...result.usage },
+									model: result.model,
+									stopReason: result.stopReason,
+									errorMessage: result.errorMessage,
+								});
+							} catch {
+								/* ignore consumer callback errors */
+							}
+						}
 					}
 				}
 

@@ -19,7 +19,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 
 /** Settings file name (both layers). */
 const SETTINGS_FILE = "pi-subagent.json";
@@ -109,6 +109,6 @@ function readSettingsFile(path: string): SubagentCoreSettings {
 /** Load merged settings: global provides defaults, project overrides. */
 export function loadCoreSettings(cwd: string = process.cwd()): SubagentCoreSettings {
 	const globalSettings = readSettingsFile(join(getAgentDir(), SETTINGS_FILE));
-	const projectSettings = readSettingsFile(join(cwd, ".pi", SETTINGS_FILE));
+	const projectSettings = readSettingsFile(join(cwd, CONFIG_DIR_NAME, SETTINGS_FILE));
 	return { ...globalSettings, ...projectSettings };
 }

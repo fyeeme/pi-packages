@@ -90,6 +90,11 @@ export class FleetList {
 
 	/** Whether arrow keys currently navigate the list (vs. flow to the editor). */
 	private active = false;
+	/** True while a blocking ctx.ui dialog span is open (ui_prompt_start →
+	 *  ui_prompt_end). pi reports these spans so the fleet can deterministically
+	 *  stay out of the dialog's keys and show "waiting for user" instead of
+	 *  implying active work. */
+	private waitingForUser = false;
 	/** 0 = `main`, 1..N = subagents. */
 	private selectedIndex = 0;
 	/** Set while a conversation overlay is open; calling it closes the overlay. */
@@ -121,6 +126,16 @@ export class FleetList {
 		if (enabled === this.enabled) return;
 		this.enabled = enabled;
 		if (!enabled) this.active = false;
+		this.renderNow();
+	}
+
+	/** Track blocking-dialog spans (extension wiring: ui_prompt_start/end).
+	 *  Nested/overlapping prompts coalesce into one span (pi doc), so these
+	 *  are balanced set/reset calls. */
+	setWaitingForUser(waiting: boolean): void {
+		if (waiting === this.waitingForUser) return;
+		this.waitingForUser = waiting;
+		if (waiting && this.active) this.deactivate();
 		this.renderNow();
 	}
 
@@ -309,10 +324,16 @@ export class FleetList {
 		if (isKeyRelease(data)) return undefined;
 		// While an overlay is open, let it own all input.
 		if (this.viewerClose) return undefined;
-		// Input listeners fire BEFORE the focused component, and dialogs swap
-		// the prompt editor out while getEditorText() still reads the detached —
-		// empty — editor. When anything but the editor owns the keyboard, stay
-		// out of its keys.
+		// A blocking dialog (ui_prompt span) deterministically owns the keyboard:
+		// stay out of its keys entirely.
+		if (this.waitingForUser) {
+			if (this.active) this.deactivate();
+			return undefined;
+		}
+		// Fallback for components that don't go through ctx.ui dialogs (and so
+		// produce no ui_prompt span): input listeners fire BEFORE the focused
+		// component, so bail when something other than the prompt editor holds
+		// focus.
 		if (!this.editorHasFocus()) {
 			if (this.active) this.deactivate();
 			return undefined;
@@ -473,9 +494,12 @@ export class FleetList {
 		// renderNow() never loses the selection marker.
 		const sel = Math.min(this.selectedIndex, agents.length);
 
-		const hint = this.active
-			? "↑↓ select · enter view · esc back"
-			: "esc to interrupt · ↓ agents · enter view";
+		// While pi waits on a blocking dialog, say so instead of implying work.
+		const hint = this.waitingForUser
+			? "waiting for user · ↓ agents · enter view"
+			: this.active
+				? "↑↓ select · enter view · esc back"
+				: "esc to interrupt · ↓ agents · enter view";
 		const lines: string[] = [];
 		lines.push(truncateToWidth(`  ${theme.fg("dim", hint)}`, width));
 		lines.push("");

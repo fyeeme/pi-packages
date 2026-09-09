@@ -46,6 +46,21 @@ export function lastAssistantText(messages: Message[]): string {
 	return parts.join("\n").trim();
 }
 
+/**
+ * The text of the LAST assistant message — the newest message only, not the
+ * joined final run. This is the running-partial preview semantics (the
+ * reference example's getFinalOutput): interim chatter stays out of the
+ * preview, and a finished call's final message is exactly what a partial
+ * should show. Returns "" when no assistant message exists.
+ */
+export function lastMessageText(messages: Message[]): string {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i] as { role?: unknown; content?: unknown } | undefined;
+		if (msg?.role === "assistant") return contentText(msg.content);
+	}
+	return "";
+}
+
 // ---------------------------------------------------------------------------
 // Explicit result contract (omp parity)
 // ---------------------------------------------------------------------------

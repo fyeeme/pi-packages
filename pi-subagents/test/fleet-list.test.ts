@@ -180,6 +180,52 @@ describe("FleetList lifecycle (event-driven rendering)", () => {
 	});
 });
 
+describe("FleetList waiting-for-user spans (ui_prompt_start/end wiring)", () => {
+	function seedOne(list: FleetList, monitor: AgentMonitor): void {
+		startAgent(monitor, "w1");
+		list.setUICtx(fakeUi().ui);
+		flushRender();
+	}
+
+	it("setWaitingForUser(true) shows the waiting hint and blocks activation; end restores", () => {
+		const monitor = new AgentMonitor();
+		const list = new FleetList(monitor);
+		const { ui, setWidget } = fakeUi();
+		startAgent(monitor, "w1");
+		list.setUICtx(ui);
+		flushRender();
+
+		list.setWaitingForUser(true);
+		const renderArg = setWidget.mock.calls.at(-1)![1] as (tui: unknown, theme: Theme) => { render(w: number): string[] };
+		const lines = renderArg(fakeTui(vi.fn()), theme).render(100);
+		expect(lines.join("\n")).toContain("waiting for user");
+
+		// Keys must not reach the list while a dialog owns the keyboard.
+		expect(list.handleKey("\x1b[B")).toBeUndefined(); // down arrow passes through
+
+		list.setWaitingForUser(false);
+		const renderArg2 = setWidget.mock.calls.at(-1)![1] as (tui: unknown, theme: Theme) => { render(w: number): string[] };
+		const lines2 = renderArg2(fakeTui(vi.fn()), theme).render(100);
+		expect(lines2.join("\n")).not.toContain("waiting for user");
+	});
+
+	it("opening a span deactivates an active selection", () => {
+		const monitor = new AgentMonitor();
+		const list = new FleetList(monitor);
+		const { ui } = fakeUi();
+		startAgent(monitor, "w1");
+		list.setUICtx(ui);
+		list.refresh(); // sync the roster snapshot (no monitor event after attach)
+
+		// Activate via the ↓ gesture (empty prompt).
+		expect(list.handleKey("\x1b[B")).toMatchObject({ consume: true });
+		list.setWaitingForUser(true);
+		// After the span ends, the list must be inactive again (no residual selection).
+		list.setWaitingForUser(false);
+		expect(list.handleKey("\x1b[B")).toMatchObject({ consume: true }); // re-activates from scratch
+	});
+});
+
 describe("FleetList gestures (editor-gesture equivalence)", () => {
 	function armedList(monitor: AgentMonitor) {
 		const list = new FleetList(monitor);

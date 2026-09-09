@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { Message } from "@earendil-works/pi-ai";
-import { contentTextBlocks, extractResult, lastAssistantText, NO_OUTPUT_PLACEHOLDER } from "../src/text.ts";
+import { contentTextBlocks, extractResult, lastAssistantText, lastMessageText, NO_OUTPUT_PLACEHOLDER } from "../src/text.ts";
 
 function assistant(content: string | unknown[]): Message {
 	return { role: "assistant", content } as unknown as Message;
@@ -47,6 +47,27 @@ describe("lastAssistantText (pre-contract heuristic)", () => {
 			assistant([{ type: "toolCall", name: "bash" }]),
 		];
 		expect(lastAssistantText(messages)).toBe("");
+	});
+});
+
+describe("lastMessageText (running-partial preview)", () => {
+	it("returns the LAST assistant message only, not the joined run", () => {
+		const messages: Message[] = [assistant("PARTIAL-ONE"), assistant("PARTIAL-TWO")];
+		expect(lastMessageText(messages)).toBe("PARTIAL-TWO");
+	});
+
+	it("skips trailing non-assistant messages and joins text blocks within the message", () => {
+		const messages: Message[] = [
+			assistant("first"),
+			assistant([{ type: "text", text: "a" }, { type: "text", text: "b" }]),
+			{ role: "user", content: "tool result" } as unknown as Message,
+		];
+		expect(lastMessageText(messages)).toBe("a\nb");
+	});
+
+	it("returns '' when no assistant message exists", () => {
+		expect(lastMessageText([{ role: "user", content: "hi" } as unknown as Message])).toBe("");
+		expect(lastMessageText([])).toBe("");
 	});
 });
 

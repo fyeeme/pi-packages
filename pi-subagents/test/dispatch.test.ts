@@ -21,7 +21,7 @@ vi.mock("node:fs", async (importOriginal) => {
 	};
 });
 
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -382,6 +382,104 @@ describe("spawnAgent", () => {
 		expect(r.maxTurnsReached).toBe(true);
 		expect(r.aborted).toBe(true);
 		expect(r.usage.turns).toBe(1);
+	});
+
+	it("sends the task verbatim by default — no invisible prefix for library consumers", async () => {
+		const proc = fakeProc();
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const p = spawnAgent(registry, { callId: "c-pfx", task: "do-thing" });
+		proc.emit("close", 0);
+		await p;
+		const argv = spawnMock.mock.calls[0]![1] as string[];
+		expect(argv.at(-1)).toBe("do-thing");
+	});
+
+	it("promptPrefix rides the positional arg (the subagent tool's 'Task: ' parity shape)", async () => {
+		const proc = fakeProc();
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const p = spawnAgent(registry, { callId: "c-pfx", task: "do-thing", promptPrefix: "Task: " });
+		proc.emit("close", 0);
+		await p;
+		const argv = spawnMock.mock.calls[0]![1] as string[];
+		expect(argv.at(-1)).toBe("Task: do-thing");
+	});
+
+	it("writes oversized tasks to the @file prompt WITH the caller's promptPrefix", async () => {
+		const proc = fakeProc();
+		const registry = createSpawnRegistry();
+		const big = "X".repeat(101 * 1024); // > TASK_ARG_MAX_BYTES (100 KiB)
+		// The @file path awaits a temp-file write BEFORE spawning, so the close
+		// signal must fire asynchronously. The file is READ synchronously at
+		// spawn time — the finally block unlinks it once the promise settles.
+		let promptFileContent: string | undefined;
+		spawnMock.mockImplementation((...callArgs: unknown[]) => {
+			// Only the real spawn call carries (command, argv, opts); anything
+			// else (e.g. vitest teardown touching the mock) passes through.
+			const args = callArgs[1] as string[] | undefined;
+			if (!Array.isArray(args)) return proc;
+			const fileArg = args.find((a) => a.startsWith("@"));
+			if (fileArg) promptFileContent = readFileSync(fileArg.slice(1), "utf-8");
+			queueMicrotask(() => proc.emit("close", 0));
+			return proc;
+		});
+		const p = spawnAgent(registry, { callId: "c-big", task: big, promptPrefix: "Task: " });
+		await p;
+		const argv = spawnMock.mock.calls[0]![1] as string[];
+		expect(argv.find((a) => a.startsWith("@"))).toBeDefined();
+		expect(promptFileContent).toBeDefined();
+		expect(promptFileContent!.startsWith("Task: ")).toBe(true);
+		expect(promptFileContent).toContain(big); // full task body preserved
+	});
+
+	it("onProgress fires after every assistant message_end with a stable snapshot", async () => {
+		const proc = fakeProc();
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const snapshots: Array<{ turns: number[]; texts: string[] }> = [];
+		const p = spawnAgent(registry, {
+			callId: "c-prog",
+			task: "x",
+			onProgress: (snap) => {
+				snapshots.push({
+					turns: [snap.usage.turns],
+					texts: snap.messages.map((m) => (m as { content?: unknown }).content as string),
+				});
+			},
+		});
+		proc.stdout!.emit("data", Buffer.from(`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: "first" } })}\n`));
+		proc.stdout!.emit("data", Buffer.from(`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: "second" } })}\n`));
+		// A non-assistant message_end must NOT trigger onProgress.
+		proc.stdout!.emit("data", Buffer.from(`${JSON.stringify({ type: "message_end", message: { role: "user", content: "hi" } })}\n`));
+		proc.emit("close", 0);
+		const r = await p;
+		expect(snapshots).toHaveLength(2); // one per assistant turn only
+		expect(snapshots[0]!.turns).toEqual([1]);
+		expect(snapshots[1]!.turns).toEqual([2]);
+		expect(r.messages).toHaveLength(3); // all messages still collected
+		// The snapshot usage is a copy: later mutation of result.usage cannot
+		// retroactively change an earlier snapshot.
+		expect(snapshots[0]!.turns).toEqual([1]);
+	});
+
+	it("a throwing onProgress callback never breaks event parsing", async () => {
+		const proc = fakeProc();
+		spawnMock.mockReturnValue(proc);
+		const registry = createSpawnRegistry();
+		const p = spawnAgent(registry, {
+			callId: "c-prog-throw",
+			task: "x",
+			onProgress: () => {
+				throw new Error("consumer bug");
+			},
+		});
+		proc.stdout!.emit("data", Buffer.from(`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: "one" } })}\n`));
+		proc.stdout!.emit("data", Buffer.from(`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: "two" } })}\n`));
+		proc.emit("close", 0);
+		const r = await p; // must resolve, not hang / reject
+		expect(r.exitCode).toBe(0);
+		expect(r.messages).toHaveLength(2);
 	});
 });
 
