@@ -1,0 +1,65 @@
+{
+	"name": "@fyeeme/pi-goal",
+	"version": "1.0.0",
+	"description": "Goal mode for pi \u2014 one persistent autonomous objective looped until verified success: goal tool (create/get/complete/resume/drop), token/time budget accounting with budget-limit steering, automatic continuation turns, /goal and /guided-goal commands, and a goal_updated event bus for other extensions.",
+	"type": "module",
+	"license": "MIT",
+	"author": "fyeeme",
+	"publishConfig": {
+		"access": "public"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/fyeeme/pi-packages.git"
+	},
+	"bugs": {
+		"url": "https://github.com/fyeeme/pi-packages/issues"
+	},
+	"homepage": "https://github.com/fyeeme/pi-packages#readme",
+	"engines": {
+		"node": ">=18"
+	},
+	"keywords": [
+		"pi-package",
+		"pi",
+		"extension",
+		"goal",
+		"goal-mode",
+		"autonomous",
+		"agent-loop",
+		"budget"
+	],
+	"files": [
+		"index.ts",
+		"src",
+		"test",
+		"README.md",
+		"LICENSE",
+		"CHANGELOG.md"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"scripts": {
+		"test": "vitest --run",
+		"typecheck": "tsc"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": ">=0.84.4",
+		"@earendil-works/pi-coding-agent": ">=0.84.4",
+		"@earendil-works/pi-tui": ">=0.84.4",
+		"typebox": ">=1.0.0",
+		"@earendil-works/pi-agent-core": "0.84.4"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-agent-core": "0.84.4",
+		"@earendil-works/pi-ai": "0.84.4",
+		"@earendil-works/pi-coding-agent": "0.84.4",
+		"@earendil-works/pi-tui": "0.84.4",
+		"@types/node": "22.19.19",
+		"typescript": "5.9.3",
+		"vitest": "3.2.7"
+	}
+}
