@@ -1,6 +1,6 @@
 {
 	"name": "@fyeeme/pi-ask-user-lite",
-	"version": "2.0.1",
+	"version": "2.0.2",
 	"description": "Structured ask_user tool for pi — lets the LLM surface clarifying questions with options, multi-select, recommended defaults, and free-form Other input.",
 	"type": "module",
 	"license": "MIT",

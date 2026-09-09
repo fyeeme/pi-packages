@@ -2,7 +2,7 @@
 
 **2.0.0 — major release** (from 1.1.0 on npm), part of the 2.0 extensions family wave:
 
-- **Composed sub-agent stack** — the extension factory composes [`@fyeeme/pi-subagents`](https://www.npmjs.com/package/@fyeeme/pi-subagents) 2.0.0 from its npm dependency: the live agent fleet surface and the `subagent` tool work out of the box; no manifest path wiring, no separate install.
+- **Composed sub-agent stack** — the extension factory composes [`@fyeeme/pi-subagents`](https://www.npmjs.com/package/@fyeeme/pi-subagents) 2.1.1 from its npm dependency: the live agent fleet surface and the `subagent` tool work out of the box; no manifest path wiring, no separate install.
 - **Run persistence** — journaled runs under `.pi/workflows/` (journal + manifest): a re-run resumes cached agent calls keyed by `sha256(workflow + prompt + signature)` with zero re-dispatch, and the manifest tracks live state for inspection.
 - **Per-call budget override** — `run_workflow` accepts a `budget` object that merges over the workflow definition's own `maxAgents`/`maxTokens`, making "halve the fan-out for large diffs" an actual parameter.
 - **Authoring aids shipped** — `workflow-author` skill, `/wf-*` prompts, and seed workflows (`review-local-diff`, `review-extension`) using `import type` for load determinism.
@@ -40,7 +40,7 @@ of the box. A standalone pi-subagents install is optional and coexists
 pi install npm:@fyeeme/pi-dynamic-workflows
 ```
 
-This resolves [`@fyeeme/pi-subagents`](https://www.npmjs.com/package/@fyeeme/pi-subagents) 2.0.0 from the npm registry (the composed sub-agent stack lights up with no separate install).
+This resolves [`@fyeeme/pi-subagents`](https://www.npmjs.com/package/@fyeeme/pi-subagents) 2.1.1 from the npm registry (the composed sub-agent stack lights up with no separate install).
 
 Then import the public API from the package root module (a TypeScript barrel; the package ships `.ts` source):
 

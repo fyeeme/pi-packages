@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-09-09
+
 ### Changed
 
 - Project config path uses `CONFIG_DIR_NAME` instead of a hardcoded `.pi`.

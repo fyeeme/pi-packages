@@ -1,6 +1,6 @@
 {
 	"name": "@fyeeme/pi-ask-user",
-	"version": "2.0.1",
+	"version": "2.0.2",
 	"description": "oh-my-pi's `ask` tool migrated to a pi extension — tabbed multi-question dialog with a Submit review page, inactivity countdown, RPC degradation, and headless hiding.",
 	"type": "module",
 	"license": "MIT",

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-09-09
+
 ### Fixed
 
 - peon.sh discovery (including the up-to-3s `brew --prefix` probe) no longer runs at extension load time; it is deferred to the first session event per the extensions doc's factory rule.

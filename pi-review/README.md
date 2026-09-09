@@ -4,7 +4,7 @@
 
 - **Sandwich architecture** — skills carry the methodology, `prompts/` carries the orchestration strategy as data (parallel-when guards in frontmatter, phases in the body), `agents/` carries the 12 review roles (finder A–E, cleaner-reuse/simplification/efficiency, altitude, conventions, verifier, gap-hunter), and a thin plugin entry composes the stack.
 
-- **Batteries-included fan-out** — the entry composes [`@fyeeme/pi-subagents`](https://www.npmjs.com/package/@fyeeme/pi-subagents) 2.0.0 from its npm dependency: the `subagent` tool, real `pi` subprocess spawning, and the live agent UI (widget / FleetView / `/agents`) work out of the box.
+- **Batteries-included fan-out** — the entry composes [`@fyeeme/pi-subagents`](https://www.npmjs.com/package/@fyeeme/pi-subagents) 2.1.1 from its npm dependency: the `subagent` tool, real `pi` subprocess spawning, and the live agent UI (widget / FleetView / `/agents`) work out of the box.
 
 - **`review_report` structured findings sink** — Chinese Markdown rendered back to the conversation plus machine-readable JSON under `<cwd>/.pi/review/` for CI, `--fix` re-reports, and `--comment`.
 
@@ -87,7 +87,7 @@ and the skills defer to it over their built-in defaults.
 
 ## Requirements
 
-None beyond this package. `@fyeeme/pi-subagents` 2.0.0 is a regular npm dependency (exact-pinned) whose extension factory this entry composes (tool + UI). The four cleaner agents and the finder/verifier/gap-hunter definitions ship with this package, registered via `addAgentDir` at extension load.
+None beyond this package. `@fyeeme/pi-subagents` 2.1.1 is a regular npm dependency (exact-pinned) whose extension factory this entry composes (tool + UI). The four cleaner agents and the finder/verifier/gap-hunter definitions ship with this package, registered via `addAgentDir` at extension load.
 
 ## Development
 

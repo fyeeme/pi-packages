@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-09-09
+
 ### Added
 
 - Footer subscribes to `ui_prompt_start`/`ui_prompt_end`: the elapsed timer freezes while a blocking dialog (ask_user, permission gates, ...) is open and the footer shows "waiting for user" instead of running time.

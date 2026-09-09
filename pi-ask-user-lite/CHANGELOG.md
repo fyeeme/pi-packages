@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-09-09
+
 ### Fixed
 
 - `ask_user` no longer crashes in RPC mode: `ctx.ui.custom()` is TUI-only (it resolves to `undefined` under RPC), so RPC hosts now degrade to native `select`/`input` dialogs — multi-select via a "Done selecting" pick loop, "Other" via `input`, and timeout auto-selecting the recommended options.

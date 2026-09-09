@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [1.1.1] - 2026-09-09
+
 ### Changed
 
 - Preference paths use `CONFIG_DIR_NAME` (project scope) and `getAgentDir()` (global scope, honors `PI_CODING_AGENT_DIR`) instead of hardcoded `~/.pi` paths.

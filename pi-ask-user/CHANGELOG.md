@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-09-09
+
 ### Fixed
 
 - Terminal bell fires only in TUI mode (`ctx.mode === "tui"`) — RPC stdout is the JSON protocol channel.
