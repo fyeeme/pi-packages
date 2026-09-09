@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { parseGuards, selectVariant } from "../src/strategy.ts";
-import { parseReviewArgs, resolveEffort } from "../src/dispatch.ts";
+import { parseReviewArgs, render, resolveEffort } from "../src/dispatch.ts";
 
 const PKG_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const template = (rel: string) =>
@@ -136,7 +136,9 @@ describe("prompt template assets", () => {
 		expect(body).toContain("Phase 2");
 		expect(body).toContain("{{git-command}}");
 		expect(body).toContain("change-intent summary");
-		expect(body).toContain("maxTurns: 15");
+		// Turn budgets are config-injected placeholders (src/config.ts), not literals.
+		expect(body).toContain("maxTurns: {{simplify-max-turns}}");
+		expect(body).not.toContain("maxTurns: 15");
 		expect(body).toContain("fanned_out: true");
 	});
 
@@ -147,13 +149,59 @@ describe("prompt template assets", () => {
 		expect(body).toContain("{{git-command}}");
 	});
 
-	it("both simplify variants carry the verify guidance", () => {
+	it("both simplify variants and the review trigger carry the verify guidance", () => {
 		expect(template("simplify.parallel.md").body).toContain("{{verify}}");
 		expect(template("simplify.single.md").body).toContain("{{verify}}");
+		expect(template("review.md").body).toContain("{{verify}}");
 	});
 });
 
-describe("bundled agents directory", () => {
+	describe("turn-budget injection", () => {
+		const reviewVars = (finder: string, verifier: string, gapHunt: string) => ({
+			effort: "low",
+			"effort-source": "default",
+			"extra-args": "",
+			skill: "/skills/review/SKILL.md",
+			"finder-max-turns": finder,
+			"verifier-max-turns": verifier,
+			"gap-hunt-max-turns": gapHunt,
+			verify: "",
+		});
+
+		it("defaults render the pre-config literals byte-for-byte", () => {
+			const out = render(template("review.md").body, reviewVars("20", "15", "15"));
+			expect(out).toContain("with `maxTurns: 20` per finder batch");
+			expect(out).toContain("`maxTurns: 15` per verifier");
+			expect(out).toContain("`maxTurns: 15`\nfor the gap-hunt as the skill instructs");
+		});
+
+		it("configured budgets replace the defaults in the rendered message", () => {
+			const out = render(template("review.md").body, reviewVars("30", "25", "50"));
+			expect(out).toContain("with `maxTurns: 30` per finder batch");
+			expect(out).toContain("`maxTurns: 25` per verifier");
+			expect(out).toContain("`maxTurns: 50`\nfor the gap-hunt as the skill instructs");
+			expect(out).not.toContain("{{finder-max-turns}}");
+			expect(out).not.toContain("{{verifier-max-turns}}");
+			expect(out).not.toContain("{{gap-hunt-max-turns}}");
+		});
+
+		it("renders the simplify cleaner budget from the var", () => {
+			const out = render(template("simplify.parallel.md").body, {
+				target: "src/",
+				"scope-label": "unpushed+uncommitted",
+				pct: "3%",
+				"git-command": "git diff",
+				"context-package": "(diff)",
+				skill: "/skills/simplify/SKILL.md",
+				verify: "",
+				"simplify-max-turns": "15",
+			});
+			expect(out).toContain("Set `maxTurns: 15` on the call");
+			expect(out).not.toContain("{{simplify-max-turns}}");
+		});
+	});
+
+	describe("bundled agents directory", () => {
 	it("ships the full review agent set", () => {
 		const names = readdirSync(join(PKG_ROOT, "agents"))
 			.filter((f) => f.endsWith(".md"))

@@ -1,6 +1,6 @@
 ---
 name: cleaner-simplification
-description: Flags unnecessary complexity the diff adds (simplify Simplification angle / code-review Simplification finder)
+description: Flags unnecessary complexity the diff adds (simplify Simplification angle / review Simplification finder)
 tools: read, grep, find, ls, bash
 ---
 You are a simplification reviewer. Review the changed code given to you for

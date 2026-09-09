@@ -19,6 +19,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadTurnBudgets } from "./config.ts";
 import { DIFF_SCOPES, buildContextPackage, getRepoDiff, verifyLine } from "./diff.ts";
 import { bundledSkillPath } from "./skills.ts";
 import { parseGuards, selectVariant } from "./strategy.ts";
@@ -41,8 +42,9 @@ function loadTemplate(rel: string): { frontmatter: Record<string, unknown>; body
 
 /** Substitute {{var}} placeholders. An unknown placeholder is an error at
  *  load time in dev, but rendering must never crash a command — unfilled
- *  placeholders are left visible (they self-report in the rendered message). */
-function render(body: string, vars: Record<string, string>): string {
+ *  placeholders are left visible (they self-report in the rendered message).
+ *  Pure — unit-testable. */
+export function render(body: string, vars: Record<string, string>): string {
 	return body.replace(/\{\{([a-z-]+)\}\}/g, (whole, name: string) =>
 		name in vars ? vars[name]! : whole,
 	);
@@ -128,24 +130,30 @@ const DIFF_TOO_LARGE_CHARS = 400_000;
 export function registerDispatcher(pi: ExtensionAPI): void {
 	pi.registerCommand("review", {
 		description:
-			"Review the current diff using the code-review skill. Usage: /review [low|medium|high|xhigh|max] [--fix] [--comment] [--share] [<pr#>|<branch>|<path>]",
+			"Review the current diff using the review skill. Usage: /review [low|medium|high|xhigh|max] [--fix] [--comment] [--share] [<pr#>|<branch>|<path>]",
 		getArgumentCompletions(prefix) {
 			const tokens = ["low", "medium", "high", "xhigh", "max", "--fix", "--comment", "--share"];
 			return tokens.filter((t) => t.startsWith(prefix)).map((t) => ({ label: t, value: t }));
 		},
-		async handler(args) {
+		async handler(args, ctx) {
 			const { level: explicit, rest } = parseReviewArgs(args ?? "");
 			// Skip the read when we just wrote it — resolveEffort returns `explicit` unchanged.
 			const lastUsed = explicit ? undefined : readLastEffort();
 			if (explicit) writeLastEffort(explicit); // remember the explicit level
 			const { level, source } = resolveEffort(explicit, lastUsed);
 			const { body } = loadTemplate("review.md");
+			const budgets = loadTurnBudgets();
 			pi.sendUserMessage(
 				render(body, {
 					effort: level,
 					"effort-source": source,
 					"extra-args": rest ? `; extra args: ${rest}` : "",
-					skill: bundledSkillPath("code-review/SKILL.md"),
+					skill: bundledSkillPath("review/SKILL.md"),
+					"finder-max-turns": String(budgets.subagent),
+					"verifier-max-turns": String(budgets.verifier),
+					"gap-hunt-max-turns": String(budgets.gapHunt),
+					// Consumed by the skill's --fix flow (apply → verify → re-report).
+					verify: verifyLine(ctx.cwd),
 				}),
 			);
 		},
@@ -156,7 +164,8 @@ export function registerDispatcher(pi: ExtensionAPI): void {
 			"Clean up the changed code (reuse/simplification/efficiency/altitude) using the simplify skill. Mode (parallel 4-agent vs single-pass) is decided from the strategy declared in prompts/simplify.*.md (context usage, diff size, fan-out availability); PARALLEL opens with a visible Phase 0 before the subagent tool launches the agents. Usage: /simplify [<target>]",
 		async handler(args, ctx) {
 			try {
-				const outcome = await getRepoDiff(ctx.cwd, args?.trim() || undefined);
+				// ctx.signal (undefined while idle) lets Esc abort an in-flight diff.
+			const outcome = await getRepoDiff(ctx.cwd, args?.trim() || undefined, undefined, ctx.signal);
 				if (outcome.kind === "no-repo") {
 					ctx.ui.notify(`/simplify: ${ctx.cwd} is not inside a git repo — nothing to clean up.`, "warning");
 					return;
@@ -174,6 +183,7 @@ export function registerDispatcher(pi: ExtensionAPI): void {
 				}
 
 				const usage = ctx.getContextUsage();
+				const budgets = loadTurnBudgets(ctx.cwd);
 				const parallelTemplate = loadTemplate("simplify.parallel.md");
 				const { variant, reasons } = selectVariant(parseGuards(parallelTemplate.frontmatter), {
 					tokens: usage?.tokens ?? null,
@@ -217,6 +227,7 @@ export function registerDispatcher(pi: ExtensionAPI): void {
 						"context-package": contextPackage,
 						skill,
 						verify,
+						"simplify-max-turns": String(budgets.simplify),
 					}),
 				);
 			} catch (err) {

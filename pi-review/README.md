@@ -17,7 +17,7 @@
 Review & cleanup assets for [pi](https://github.com/earendil-works/pi-mono), in the sandwich shape (skills + prompts + agents on top of a thin plugin entry):
 
 ```
-skills/    methodology (code-review, simplify) — registered natively via the `pi` manifest
+skills/    methodology (review, simplify) — registered natively via the `pi` manifest
 prompts/   orchestration strategy as data — parallel-when guards in frontmatter,
            CC-parity phase structure in the body; rendered by the generic dispatcher
 agents/    the review roles as subagent definitions (finder-*, cleaner-*, verifier,
@@ -39,7 +39,7 @@ composition is idempotent.
 
 ## Commands
 
-- `/review [low|medium|high|xhigh|max] [--fix] [--comment] [--share] [<pr#>|<branch>|<path>]` — effort-level code review via the code-review skill. Effort is sticky: an explicit level is remembered; the next bare `/review` reuses it.
+- `/review [low|medium|high|xhigh|max] [--fix] [--comment] [--share] [<pr#>|<branch>|<path>]` — effort-level code review via the review skill. Effort is sticky: an explicit level is remembered; the next bare `/review` reuses it.
 - `/simplify [<target>]` — cleanup of the changed code (reuse/simplification/efficiency/altitude). The dispatcher resolves the diff (upstream merge-base → HEAD worktree → staged → unstaged; submodule-aware), evaluates the strategy declared in `prompts/simplify.parallel.md` frontmatter (context usage < 80%, diff < 400k chars, fan-out available), and renders either the PARALLEL template (Phase 0 visible diff read → `subagent` parallel dispatch of the 4 cleaner agents with `maxTurns: 15` → Phase 2 apply/verify/report) or the SINGLE-PASS template (angles worked inline).
 
 Reports land via the `review_report` tool: Chinese Markdown back to the conversation plus machine-readable JSON under `<cwd>/.pi/review/`.
@@ -56,6 +56,34 @@ parallel-when:
 ```
 
 Edit the file, the strategy changes. The dispatcher only executes what the templates declare (the unmeasurable-context and recursion-guard fallbacks stay as code invariants). See `test/dispatch.test.ts` for the anchored semantics.
+
+## Configuration
+
+Turn budgets are configurable via a JSON file, following the same two-layer
+pattern as pi-subagents' `pi-subagent.json` (project overrides global):
+
+- Global: `<agentDir>/pi-review.json`
+- Project: `<cwd>/.pi/pi-review.json`
+
+```jsonc
+// <any layer>/pi-review.json — all keys optional
+{
+  "maxTurns": {
+    "subagent": 20,   // each /review finder-batch subagent call
+    "verifier": 15,   // each /review Phase 2 verifier call
+    "gapHunt": 15,   // the /review Phase 3 gap-hunter
+    "simplify": 15    // each /simplify PARALLEL cleaner agent
+  }
+}
+```
+
+Values must be positive integers; anything else (or an absent file) falls back
+to the built-in defaults — `20` / `15` / `15` / `15`, the numbers the bundled
+prompts and skills were written with — so with no configuration the rendered
+instructions are byte-identical to the pre-config behavior. Files are read at
+command time: an edit takes effect on the next `/review` or `/simplify`
+without a restart. When a budget is configured, the trigger message states it
+and the skills defer to it over their built-in defaults.
 
 ## Requirements
 

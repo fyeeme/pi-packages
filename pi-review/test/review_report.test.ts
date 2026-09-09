@@ -11,6 +11,9 @@ import { Value } from "typebox/value";
 // object, so `execute` is the real function under test.
 vi.mock("@earendil-works/pi-coding-agent", () => ({
 	defineTool: <T>(def: T): T => def,
+	// review_report.ts builds the JSON sink dir from the project config dir;
+	// the real module exports ".pi" (non-rebranded installs).
+	CONFIG_DIR_NAME: ".pi",
 }));
 
 import { reviewReportTool } from "../src/tools/review_report.ts";

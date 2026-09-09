@@ -3,7 +3,7 @@ description: "/simplify trigger — PARALLEL mode (4-agent fan-out via the subag
 parallel-when:
   context-below: 0.8
   diff-chars-below: 400000
-vars: [target, scope-label, pct, git-command, context-package, skill, verify]
+vars: [target, scope-label, pct, git-command, context-package, skill, verify, simplify-max-turns]
 ---
 Clean up the changed code now. Target: {{target}}.
 
@@ -29,7 +29,7 @@ Call the `subagent` tool in parallel mode with 4 tasks, one per agent —
 cleaner-reuse, cleaner-simplification, cleaner-efficiency, cleaner-altitude —
 each task being: "Review the changed code of {{target}} for <angle> findings.
 Run this first to see the diff: {{git-command}}. Report file:line — one-line
-summary — the concrete cost." Set `maxTurns: 15` on the call (the slowest
+summary — the concrete cost." Set `maxTurns: {{simplify-max-turns}}` on the call (the slowest
 agent pins the wave's wall time; a capped agent still owes partial output).
 The agents' angle guidance rides their own definitions — do not write the
 agent prompts yourself or inline the diff anywhere. The tool's result carries

@@ -7,7 +7,8 @@
  * no host finding-renderer, so this tool does double duty: it renders a tidy
  * Chinese Markdown report (table + details) back to the conversation AND writes
  * a machine-readable JSON (findings + level + outcome) to
- * `<cwd>/.pi/review/<id>.json` so CI / --fix / --comment can consume it.
+ * `<cwd>/<CONFIG_DIR_NAME>/review/<id>.json` so CI / --fix / --comment can
+ * consume it.
  *
  * `verdict` (CONFIRMED/PLAUSIBLE) and `outcome` (fixed/skipped/no_change_needed)
  * enums follow the CC ReportFindings shape — values verified against the CC
@@ -16,8 +17,9 @@
  * normalizes stray invalid values (drop the finding / coerce to skipped) rather
  * than failing the whole call.
  */
-import { defineTool, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { defineTool, getMarkdownTheme, CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { Markdown } from "@earendil-works/pi-tui";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -27,25 +29,25 @@ import * as path from "node:path";
 // verdict 两值与 outcome 三档在 2.1.223/226/227 三版本中一致。
 
 const VERDICT_VALUES = ["CONFIRMED", "PLAUSIBLE"] as const;
-const Verdict = Type.Union(VERDICT_VALUES.map((v) => Type.Literal(v)));
+const Verdict = StringEnum(VERDICT_VALUES);
 
 const OUTCOME_VALUES = ["fixed", "skipped", "no_change_needed"] as const;
 /** CC ReportFindings `outcome` 三档（2.1.227 二进制实证）。fixed-later 再上报时更新。 */
-const Outcome = Type.Union(OUTCOME_VALUES.map((v) => Type.Literal(v)));
+const Outcome = StringEnum(OUTCOME_VALUES);
 
 // 供 SKILL-schema 同步测试引用（防漂移：SKILL 流程契约不得与常量脱节）。
 export { OUTCOME_VALUES, VERDICT_VALUES };
 
-const Level = Type.Union([
-	Type.Literal("low"),
-	Type.Literal("medium"),
-	Type.Literal("high"),
-	Type.Literal("xhigh"),
-	Type.Literal("max"),
+const Level = StringEnum([
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
 	// simplify reuses this tool for structured apply-outcome reporting
 	// (harden-code-simplify). Not a review effort level — carries no verdict.
-	Type.Literal("simplify"),
-]);
+	"simplify",
+] as const);
 
 // --- schema -----------------------------------------------------------------
 
@@ -223,12 +225,12 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 	name: "review_report",
 	label: "Report review findings",
 	description:
-		"Report code-review findings as a typed list — Pi's counterpart to CC's ReportFindings. Use this only when the active code-review instructions tell you to report findings with this tool. Call it once with the verified findings ranked most-severe first (empty array if nothing survived verification) and do not also print the findings as text — the tool renders a tidy Chinese Markdown report back to the conversation AND writes a machine-readable JSON to <cwd>/.pi/review/ for CI / --fix / --comment. When re-reporting after applying fixes, set `outcome` on each finding. 上报结构化 code-review 发现（CC ReportFindings 的 Pi 对等物）。",
+		"Report code-review findings as a typed list — Pi's counterpart to CC's ReportFindings. Use this only when the active code-review instructions tell you to report findings with this tool. Call it once with the verified findings ranked most-severe first (empty array if nothing survived verification) and do not also print the findings as text — the tool renders a tidy Chinese Markdown report back to the conversation AND writes a machine-readable JSON to the project's pi config dir (CONFIG_DIR_NAME, typically `.pi`) under review/ for CI / --fix / --comment. When re-reporting after applying fixes, set `outcome` on each finding. 上报结构化 code-review 发现（CC ReportFindings 的 Pi 对等物）。",
 	promptSnippet: "review_report — report structured code-review findings (renders Markdown + writes JSON for CI)",
 	promptGuidelines: [
 		"After verify + dedup, call `review_report` once with { level, findings } (most-severe first; empty array if none survived). Do not also hand-write the Markdown table — this tool renders it.",
 		"On re-report after --fix, set each finding's `outcome` (fixed / skipped / no_change_needed).",
-		"Use this tool only when the code-review skill instructs reporting findings; otherwise follow the active output format.",
+		"Use `review_report` only when the code-review skill instructs reporting findings; otherwise follow the active output format.",
 	],
 	parameters: ReviewReportParams,
 
@@ -267,7 +269,7 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 		let writeError: string | null = null;
 		const now = new Date();
 		try {
-			const dir = path.join(ctx.cwd, ".pi", "review");
+			const dir = path.join(ctx.cwd, CONFIG_DIR_NAME, "review");
 			await fs.promises.mkdir(dir, { recursive: true });
 			const safeId = toolCallId.replace(/[^\w.-]+/g, "_");
 			const ts = now.toISOString().replace(/[:.]/g, "-");

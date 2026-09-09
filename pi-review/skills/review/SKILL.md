@@ -1,6 +1,6 @@
 ---
-name: code-review
-description: "Review the current diff for correctness bugs and reuse/simplification/efficiency cleanups at the given effort level. Fresh reverse of CC `/review` (CLI v2.1.223). Effort semantics: medium = precision, high+ = recall. Pass --fix to apply, --comment to post inline PR comments, --share to publish a review page."
+name: review
+description: "Review the current diff, or a PR number/branch/path target, for correctness bugs and reuse/simplification/efficiency cleanups at the given effort level (low/medium: fewer, high-confidence findings; high→max: broader coverage, may include uncertain findings). Fresh reverse of CC `/review` (its own name there is `code-review`), re-verified against CLI v2.1.261 (2026-09-05; originally reversed from v2.1.223). Effort semantics: medium = precision, high+ = recall. Pass --fix to apply, --comment to post findings (GitHub inline / GitLab MR note), --share to publish a review page."
 ---
 
 <!--
@@ -10,7 +10,36 @@ description: "Review the current diff for correctness bugs and reuse/simplificat
   earlier v2.1.220 reconstruction. Every section below was located in the
   extracted strings (cc_strings_223.txt) and verified.
 
-  What CC 2.1.227 actually contains (verified against the binary):
+  ── RE-VERIFIED against CLI v2.1.261 (bin/claude.exe raw bytes, 2026-09-05) ──
+    - The 2.1.217-era background Workflow (phases Scope/Find/Verify/Sweep/
+      Synthesize) is GONE — the phase prompts now live inline in the skill
+      and dispatch via the Agent tool; per the bundled changelog, high/
+      xhigh/max now run inside a background agent (a CC host capability Pi
+      has no counterpart for — Pi runs inline in the session).
+    - 2.1.261 ships flag-gated effort variants (e.g. an inline, dedup-only
+      xhigh WITHOUT verify, alongside the fan-out + 1-vote-verify shape).
+      This skill keeps the uniform linearization: medium+ = fan-out +
+      grouped verify; sweep at xhigh/max.
+    - Angle bodies A–E and Reuse/Simplification/Efficiency/Conventions are
+      byte-identical to what we carried; **Altitude** gained CC's
+      root-cause phrasing + "name that change" (synced below).
+    - NEW sweep focus list ("what the first pass tends to miss") — synced
+      into Phase 3 and agents/gap-hunter.md.
+    - --comment gained GitLab: ONE general MR note via `glab mr note`
+      (glab has no single verb for line-anchored comments); GitHub inline
+      falls back to `gh api repos/{owner}/{repo}/pulls/{pr}/comments`,
+      suggestion block only when it fully fixes the issue — synced below.
+    - Output contract unchanged: {level, findings} with file/line/summary/
+      short_summary(≤60)/failure_scenario/category/verdict; outcome 三档
+      fixed / skipped / no_change_needed on re-report — all still match.
+      NEW: CC forbids creating/publishing an artifact of the review ("the
+      tool call is the report"); Pi keeps --share as the explicit opt-in
+      and forbids UNSOLICITED artifacts instead.
+    - `ultra` (deep multi-agent cloud review) still exists upstream; still
+      omitted here (requires claude.ai cloud access, which Pi lacks).
+      Sticky last-effort (codeReviewLastEffort) unchanged.
+
+  What CC 2.1.227 contained (historical basis, verified 2026-08-11):
     - Effort quad tuple {correctnessAngles, perAngle, maxFindings, sweep}:
       medium {3,6,8,false} / high {3,6,10,false} / xhigh {5,8,15,true} / max
       same structure as xhigh. medium = precision; high+ = recall
@@ -55,14 +84,21 @@ description: "Review the current diff for correctness bugs and reuse/simplificat
                   (mode: parallel), or runs angles sequentially if unavailable.
     3. Verify   — CC uses the Agent tool; Pi uses `subagent` for the
                   independent verify agent (fallback: self-check).
-    4. Workflow — CC routes high/xhigh/max to a background Workflow (phases
-                  Scope/Find/Verify/Sweep/Synthesize) when workflows are
-                  enabled; Pi has no such tool, so this skill runs INLINE and
-                  linearizes those phases into the flow below.
+    4. Workflow — CC 2.1.217 routed high/xhigh/max to a background Workflow
+                  (phases Scope/Find/Verify/Sweep/Synthesize); 2.1.261 removed
+                  it and runs the phases inline via its Agent tool, with high+
+                  inside a background agent. Pi has neither host capability, so
+                  this skill runs INLINE and linearizes those phases into the
+                  flow below; the Phase 0.5 scope block is our absorption of
+                  the old workflow's Scope phase (kept: it still turns N
+                  repeated subagent discoveries into one).
     5. ultra    — dropped (cloud-only).
-    6. --share  — CC uses the Artifact tool; Pi uses lavish-axi.
-    7. --comment— CC uses mcp__github_inline_comment; Pi falls back to gh api
-                  or printing.
+    6. --share  — CC uses the Artifact tool; Pi uses lavish-axi. CC 2.1.261
+                  forbids UNSOLICITED review artifacts; --share stays the
+                  explicit opt-in.
+    7. --comment— CC uses mcp__github_inline_comment (fallback `gh api`) and
+                  posts GitLab MRs as one general note via `glab mr note`; Pi
+                  mirrors both fallbacks (see the --comment section).
 
   Prerequisite: the `subagent` tool (@fyeeme/pi-subagents; parallel mode) for
                 medium and above, and for the xhigh/max gap-hunter. lavish-axi
@@ -206,6 +242,8 @@ every finder batch:
 1. **Set `maxTurns: 20` on the `subagent` call** — the slowest finder pins
    the wave's wall time; 20 turns covers the highest-risk hunks of any
    single angle, and a capped finder still owes partial output (next item).
+   (20 is the built-in default — if the trigger message states a different
+   finder budget, use that instead.)
 2. **Declare the budget inside each finder prompt** — e.g. "You have ~15
    tool calls. Spend them on the highest-risk hunks first; when half are
    spent, stop opening new files."
@@ -301,10 +339,11 @@ alternative.
 
 ### Altitude
 
-Check that each change is implemented at the right depth, not as a fragile
-bandaid. Special cases layered on shared infrastructure are a sign the fix
-isn't deep enough — prefer generalizing the underlying mechanism over adding
-special cases.
+Check that each change fixes the root cause at the right depth rather than
+patching a symptom with a fragile bandaid. Special cases layered on shared
+infrastructure are a sign the fix isn't deep enough — prefer the simpler,
+more general change to the underlying mechanism over adding special cases,
+and name that change.
 ### Conventions (CLAUDE.md)
 Find the CLAUDE.md files that govern the changed code: the user-level
 ~/.claude/CLAUDE.md, the repo-root CLAUDE.md, plus any CLAUDE.md or
@@ -332,7 +371,9 @@ Then verify each candidate **grouped by location**. If the `subagent` tool is
 available: group the deduplicated candidates by `(file, line)`; dispatch ONE
 independent verify agent per group (mode: parallel, one prompt per group),
 giving it the scope block, the diff, the relevant file(s), and the full
-candidate list for that location with each candidate's index. The verifier
+candidate list for that location with each candidate's index. Set
+`maxTurns: 15` on each verifier call (15 is the built-in default — a
+different verifier budget stated in the trigger message wins). The verifier
 returns a verdict per candidate:
 
 ```
@@ -373,7 +414,8 @@ lost an anchor. These are PLAUSIBLE.
 keeps the candidate: do NOT drop it on uncertainty ("speculative", "depends
 on runtime state"). That is the recall contract of high+. Medium is the
 precision level: there, additionally weigh whether a maintainer would act on
-the finding before keeping it.
+the finding before keeping it. At xhigh/max a missed bug ships — err on the
+side of surfacing hardest there.
 
 **REFUTED** only when constructible from the code: factually wrong (quote the
 actual line); provably impossible (type/constant/invariant — show it); already
@@ -383,8 +425,13 @@ handled in this diff (cite the guard); or pure style with no observable effect.
 
 At **xhigh and max**, after Phase 2 dedup, dispatch ONE fresh finder agent (the
 `subagent` tool) that has never seen the candidates and hunts only for gaps not
-already listed — **at most 8 new candidates**. Feed anything it finds back
-through Phase 2 verify before keeping it.
+already listed — **at most 8 new candidates**. Focus the hunt on what the first
+pass tends to miss (CC 2.1.261 sweep list): moved/extracted code that dropped a
+guard or anchor; second-tier footguns (dataclass default evaluated once,
+`hash()` non-determinism, lock-scope shrink, predicate methods with side
+effects); setup/teardown asymmetry in tests; config defaults flipped. If
+nothing new turns up, return an empty sweep — do not pad. Feed anything it
+finds back through Phase 2 verify before keeping it.
 
 Constrain it so exploration can't run away (Pi adaptation — CC's workflow bounds
 this differently):
@@ -394,7 +441,9 @@ this differently):
    results: the diff, the enclosing functions, the deduplicated finding list,
    and any search results. The gap-hunt agent **analyzes**, it does not
    **discover**.
-2. **Set `maxTurns: 15`** on the `subagent` call — caps it at 15 assistant turns.
+2. **Set `maxTurns: 15`** on the `subagent` call — caps it at 15 assistant turns
+   (built-in default — a different gap-hunt budget stated in the trigger
+   message wins).
 3. **Declare a tool-call budget in the prompt** — e.g. "You have ONLY 3 tool
    calls to read files. Read them now, then analyze from this message's
    context."
@@ -413,7 +462,11 @@ to CC's `ReportFindings`) — call it **once** with
 ranked most-severe first (empty array if nothing survived verification). The
 tool renders the Chinese Markdown report (table + details) back to the
 conversation AND writes a machine-readable JSON to `<cwd>/.pi/review/` for CI /
-`--fix` / `--comment`. Do **not** also hand-write the Markdown table.
+`--fix` / `--comment`. Do **not** also hand-write the Markdown table. Also do
+**not** spontaneously produce a review page/artifact when `--share` was not
+passed — the `review_report` call IS the report (CC 2.1.261: "do not create
+or publish an artifact of the review — the tool call is the report");
+`--share` is the only explicit exception.
 
 Each finding in the array carries: `file`, `line` (optional), `category`
 (`correctness` / `reuse` / `simplification` / `efficiency` / `altitude` /
@@ -460,21 +513,40 @@ findings to the working tree instead of stopping at the report: fix each one
 directly — correctness bugs and reuse/simplification/efficiency cleanups alike.
 Skip any finding whose fix would change intended behavior, require changes well
 outside the reviewed diff, or that you judge to be a false positive — note the
-skip rather than arguing with it. Then call `review_report` once more to
+skip rather than arguing with it. If a verification command was detected (see
+the trigger message's verification line), run it BEFORE re-reporting: a finding
+whose fix breaks verification is reverted and re-reported as `skipped`
+(verification is opportunistic — with no detected command, re-report directly
+and say verification was not run). Then call `review_report` once more to
 re-report (same `report_id`), setting `outcome` on each finding (`fixed` =
 applied and verified / `skipped` = real but not applied, incl. reverted /
 `no_change_needed` = not applicable or already handled). This structured
 re-report replaces the hand-written summary and makes the fix result
-machine-consumable.
+machine-consumable. Make that call immediately after the fixes land, before
+any prose summary (CC 2.1.261: the host UI's per-finding status updates only
+from it).
 If `review_report` is unavailable, fall back to a brief text summary of what was
 fixed and what was skipped.
 
 ## Posting comments (--comment)
 
-The `--comment` flag was passed. Post the findings as inline PR comments on the
-corresponding `file`/`line`. If no GitHub commenting tool is available on Pi,
-fall back to printing the findings as text and note that inline posting was
-unavailable.
+The `--comment` flag was passed. After producing the findings list:
+
+- **GitHub PR target** — post each finding as an inline PR comment on the
+  corresponding `file`/`line`, one call per finding; include a suggestion
+  block only when it fully fixes the issue (CC 2.1.261 rule). If no
+  inline-comment tool is available on Pi, fall back to `gh api
+  repos/{owner}/{repo}/pulls/{pr}/comments`; if `gh` is unavailable too,
+  print the findings as text and note that inline posting was unavailable.
+- **GitLab MR target** — post the findings as ONE general MR note via
+  `glab mr note -m "<body>"` from inside the project's checkout — every
+  finding with its file:line, the issue, and the suggested fix (CC 2.1.261;
+  glab has no single verb for line-anchored comments, so post the general
+  note unless the user explicitly asks for inline threads — those need
+  `glab api projects/:id/merge_requests/:iid/discussions`). If `glab` is
+  unavailable, print the findings instead.
+- **Not a PR/MR target** — print the findings to the terminal and note that
+  `--comment` was ignored.
 
 ## Publishing a shareable review (--share)
 

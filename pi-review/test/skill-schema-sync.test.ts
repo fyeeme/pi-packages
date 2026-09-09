@@ -17,7 +17,7 @@ import { OUTCOME_VALUES, VERDICT_VALUES } from "../src/tools/review_report.ts";
  * 归并脚本）会读到契约外值。沿用 angle-sync.test.ts 的文本断言模式。
  */
 const SKILLS_DIR = join(__dirname, "..", "skills");
-const REVIEW = readFileSync(join(SKILLS_DIR, "code-review", "SKILL.md"), "utf8");
+const REVIEW = readFileSync(join(SKILLS_DIR, "review", "SKILL.md"), "utf8");
 const SIMPLIFY = readFileSync(join(SKILLS_DIR, "simplify", "SKILL.md"), "utf8");
 
 /** 旧五档（1.0.x）——必须从两份 SKILL 中彻底消失。 */
@@ -33,14 +33,14 @@ describe("SKILL 输出契约与 review_report schema 同步", () => {
 	it("outcome 三档值出现在两份 SKILL 的输出契约中", () => {
 		expect(OUTCOME_VALUES).toEqual(["fixed", "skipped", "no_change_needed"]);
 		for (const v of OUTCOME_VALUES) {
-			expect(REVIEW, `code-review 必须包含 outcome ${v}`).toContain(`\`${v}\``);
+			expect(REVIEW, `review 必须包含 outcome ${v}`).toContain(`\`${v}\``);
 			expect(SIMPLIFY, `simplify 必须包含 outcome ${v}`).toContain(`\`${v}\``);
 		}
 	});
 
 	it("旧五档 outcome 值不再出现在任何 SKILL 中", () => {
 		for (const v of OLD_OUTCOMES) {
-			expect(REVIEW, `code-review 不得残留 ${v}`).not.toContain(v);
+			expect(REVIEW, `review 不得残留 ${v}`).not.toContain(v);
 			expect(SIMPLIFY, `simplify 不得残留 ${v}`).not.toContain(v);
 		}
 	});

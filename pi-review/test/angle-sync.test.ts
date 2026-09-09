@@ -6,7 +6,7 @@
  * files under agents/; the anchors become:
  *
  *   1. skill-to-skill: the angle bodies stay identical between the
- *      code-review and simplify skills (unchanged from v1);
+ *      review and simplify skills (unchanged from v1);
  *   2. agents-to-skills: each cleaner-* agent's guidance matches the
  *      canonical skill body for its angle (whitespace-normalized);
  *   3. templates-to-agents: every agent name referenced by a prompt template
@@ -21,7 +21,7 @@ import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 
 const PKG_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SKILLS_DIR = join(PKG_ROOT, "skills");
-const REVIEW = readFileSync(join(SKILLS_DIR, "code-review", "SKILL.md"), "utf8");
+const REVIEW = readFileSync(join(SKILLS_DIR, "review", "SKILL.md"), "utf8");
 const SIMPLIFY = readFileSync(join(SKILLS_DIR, "simplify", "SKILL.md"), "utf8");
 
 const ANGLES = ["Reuse", "Simplification", "Efficiency", "Altitude"] as const;
@@ -41,12 +41,12 @@ function angleBodies(md: string, angle: string): string[] {
 	return out;
 }
 
-describe("shared angle bodies stay in sync across code-review and simplify", () => {
+describe("shared angle bodies stay in sync across review and simplify", () => {
 	for (const angle of ANGLES) {
 		it(`"${angle}" body is identical in both skills`, () => {
 			const reviewBodies = angleBodies(REVIEW, angle);
 			const simplifyBodies = angleBodies(SIMPLIFY, angle);
-			expect(reviewBodies.length, `code-review must define ### ${angle}`).toBeGreaterThan(0);
+			expect(reviewBodies.length, `review must define ### ${angle}`).toBeGreaterThan(0);
 			expect(simplifyBodies.length, `simplify must define ### ${angle}`).toBeGreaterThan(0);
 			const canonical = reviewBodies[0]!;
 			for (const body of simplifyBodies) expect(body).toBe(canonical);

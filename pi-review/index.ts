@@ -3,7 +3,7 @@
  *
  * Sandwich architecture (see openspec change subagent-sandwich-refactor):
  *
- *   Skills  skills/code-review, skills/simplify — review methodology,
+ *   Skills  skills/review, skills/simplify — review methodology,
  *           registered natively via the pi manifest (`pi.skills`); they
  *           reference capabilities by stable tool/agent names only.
  *   Prompts prompts/ — the orchestration strategy as data: parallel-when

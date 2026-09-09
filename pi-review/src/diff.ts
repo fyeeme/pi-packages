@@ -81,8 +81,9 @@ export function resolveDiffScope(
 
 /** Injectably run `git` (defaults to promisified execFile — array argv, no
  *  shell, and non-blocking: the caller is async, so git runs on the event
- *  loop instead of freezing the TUI for the whole diff duration). */
-export type GitRunner = (args: string[], opts: { cwd: string }) => Promise<string>;
+ *  loop instead of freezing the TUI for the whole diff duration). `signal`
+ *  (optional) lets the caller abort an in-flight diff via ctx.signal. */
+export type GitRunner = (args: string[], opts: { cwd: string; signal?: AbortSignal }) => Promise<string>;
 
 const execFileAsync = promisify(execFile);
 
@@ -91,6 +92,7 @@ const defaultGitRunner: GitRunner = async (args, opts) =>
 		cwd: opts.cwd,
 		encoding: "utf8",
 		maxBuffer: 10 * 1024 * 1024,
+		signal: opts.signal,
 	})).stdout;
 
 /** Which diff range produced the diff (drives scope reporting in prompts/messages). */
@@ -138,6 +140,7 @@ export async function getRepoDiff(
 	cwd: string,
 	target: string | undefined,
 	run: GitRunner = defaultGitRunner,
+	signal?: AbortSignal,
 ): Promise<DiffOutcome> {
 	const scope = resolveDiffScope(cwd, target);
 	if (!scope) return { kind: "no-repo" };
@@ -176,7 +179,7 @@ export async function getRepoDiff(
 	 *  instead of empty. */
 	const diffAttempt = async (range: string[], recordError = true): Promise<string | null> => {
 		try {
-			const out = (await run(diffArgs(range), { cwd: gitRoot })).trim();
+			const out = (await run(diffArgs(range), { cwd: gitRoot, signal })).trim();
 			return out || null;
 		} catch (err) {
 			if (recordError) lastError = err instanceof Error ? err.message : String(err);
@@ -185,7 +188,7 @@ export async function getRepoDiff(
 	};
 	const mergeBaseWithUpstream = async (): Promise<string | null> => {
 		try {
-			return (await run(["merge-base", "@{upstream}", "HEAD"], { cwd: gitRoot })).trim() || null;
+			return (await run(["merge-base", "@{upstream}", "HEAD"], { cwd: gitRoot, signal })).trim() || null;
 		} catch {
 			return null;
 		}

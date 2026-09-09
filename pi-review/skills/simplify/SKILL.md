@@ -1,6 +1,6 @@
 ---
 name: simplify
-description: "Review the changed code for reuse, simplification, efficiency, and altitude cleanups, then apply the fixes. Quality only — it does not hunt for bugs; use /review for that. v3 (from Claude Code CLI v2.1.227, symbol-level verified) — 4 cleanup agents fan out in parallel when context allows, else a single-pass inline cleanup; either way the fixes are applied, verified against the project's check command, and auto-reverted on failure, then reported as structured outcomes via review_report."
+description: "Review the changed code for reuse, simplification, efficiency, and altitude cleanups, then apply the fixes. Quality only — it does not hunt for bugs; use /review for that. v3 (from Claude Code CLI v2.1.227, symbol-level verified; re-verified against v2.1.261 on 2026-09-05 — bodies unchanged except Altitude) — 4 cleanup agents fan out in parallel when context allows, else a single-pass inline cleanup; either way the fixes are applied, verified against the project's check command, and auto-reverted on failure, then reported as structured outcomes via review_report."
 ---
 
 <!--
@@ -18,6 +18,16 @@ description: "Review the changed code for reuse, simplification, efficiency, and
                VBv/KBv (with interpolated c$e / m7t / u$e / d$e / p$e) are
                unchanged; the mode guard is Dii (see below); fan-out defaults
                nJu=20 / lKs=50 are now mirrored in the subagent tool.
+    v2.1.261 → re-verified 2026-09-05 from raw bytes: the two mode bodies,
+               the 4-angle set, and the Phase 2 apply rules are unchanged;
+               the Altitude angle gained CC's root-cause phrasing + "name
+               that change" (synced here and in the review skill). The command
+               description ("Clean up the changed code without changing
+               behavior"; "Quality only — it does not hunt for bugs; use
+               /code-review for that") and the Agent-tool fan-out ("all in a
+               single message so they run concurrently") are unchanged.
+               The /code-review↔/simplify division of labor is now stated
+               explicitly in both skills upstream — same as here.
 
   CC 2.1.227 empirical evidence (symbol-level, extracted from bin/claude.exe):
     - $u({name: "simplify", ..., getPromptForCommand(args, ctx)}) registers the
@@ -84,7 +94,7 @@ description: "Review the changed code for reuse, simplification, efficiency, and
 
 You are improving the quality of the changed code, not hunting for bugs. Review
 it for reuse, simplification, efficiency, and altitude issues, then fix what you
-find. Do not look for correctness bugs — that is what `/code-review` is for.
+find. Do not look for correctness bugs — that is what `/review` is for.
 
 The `/simplify` handler has already chosen the mode (PARALLEL or
 SINGLE-PASS) from real context usage and announced it in the trigger message.
@@ -122,7 +132,8 @@ review that target instead. Treat this diff as the review scope.)
 After your Phase 0 summary, call the `subagent` tool exactly as the trigger
 message instructs: parallel mode, 4 tasks, one per bundled agent —
 cleaner-reuse, cleaner-simplification, cleaner-efficiency, cleaner-altitude —
-each with `maxTurns: 15` (set it on the call). The agents' angle guidance
+each with `maxTurns: 15` (set it on the call; 15 is the built-in default — a
+different budget stated in the trigger message wins). The agents' angle guidance
 rides their own definitions (read-only tool whitelist read/grep/find/ls/bash);
 each returns its findings with `file`, `line`, a one-line `summary`, and the
 concrete cost (what is duplicated, wasted, or harder to maintain). The agent
@@ -160,10 +171,11 @@ alternative.
 
 ### Altitude
 
-Check that each change is implemented at the right depth, not as a fragile
-bandaid. Special cases layered on shared infrastructure are a sign the fix
-isn't deep enough — prefer generalizing the underlying mechanism over adding
-special cases.
+Check that each change fixes the root cause at the right depth rather than
+patching a symptom with a fragile bandaid. Special cases layered on shared
+infrastructure are a sign the fix isn't deep enough — prefer the simpler,
+more general change to the underlying mechanism over adding special cases,
+and name that change.
 ## Phase 2 — Apply, verify, and report
 
 Follow the shared **Phase 2** procedure at the end of this skill (snapshot → apply → verify → auto-revert on failure → report via `review_report`). The parallel fan-out only changes how findings are gathered (Phase 1 — done by the handler); applying, verifying, and reporting are identical across modes. Set `fanned_out: true` in the report since the 4-agent fan-out actually ran.
@@ -211,10 +223,11 @@ alternative.
 
 ### Altitude
 
-Check that each change is implemented at the right depth, not as a fragile
-bandaid. Special cases layered on shared infrastructure are a sign the fix
-isn't deep enough — prefer generalizing the underlying mechanism over adding
-special cases.
+Check that each change fixes the root cause at the right depth rather than
+patching a symptom with a fragile bandaid. Special cases layered on shared
+infrastructure are a sign the fix isn't deep enough — prefer the simpler,
+more general change to the underlying mechanism over adding special cases,
+and name that change.
 ## Phase 2 — Apply, verify, and report
 
 Follow the shared **Phase 2** procedure at the end of this skill (snapshot → apply → verify → auto-revert on failure → report via `review_report`). Single-pass vs parallel only changes how findings are gathered (Phase 1); applying, verifying, and reporting are identical across modes. Set `fanned_out: false` in the report so a reader is not misled into thinking the 4-agent fan-out ran.

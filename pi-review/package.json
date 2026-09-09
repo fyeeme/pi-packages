@@ -30,7 +30,7 @@
       "./index.ts"
     ],
     "skills": [
-      "skills/code-review",
+      "skills/review",
       "skills/simplify"
     ]
   },
