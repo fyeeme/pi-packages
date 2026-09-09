@@ -563,3 +563,109 @@ describe("ask-demo command", () => {
 		expect(notify).toHaveBeenCalledWith("ask-demo requires an interactive session", "warning");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// RPC fallback: native select/input dialogs (ctx.mode !== "tui")
+// ---------------------------------------------------------------------------
+
+describe("ask_user RPC fallback", () => {
+	function makeRpcUi(script: Array<{ select?: string; input?: string }>) {
+		const picks: Array<{ kind: "select" | "input"; title: string; options?: string[]; opts?: unknown }> = [];
+		let step = 0;
+		return {
+			picks,
+			ui: {
+				select: vi.fn(async (title: string, options: string[], opts?: unknown) => {
+					picks.push({ kind: "select", title, options, opts });
+					const next = script[step++] ?? {};
+					if (next.select === undefined) return undefined;
+					return next.select;
+				}),
+				input: vi.fn(async (title: string, _placeholder?: string, opts?: unknown) => {
+					picks.push({ kind: "input", title, opts });
+					const next = script[step++] ?? {};
+					return next.input;
+				}),
+			},
+		};
+	}
+
+	function rpcCtx(ui: unknown) {
+		return { hasUI: true, mode: "rpc", cwd: "/tmp", ui };
+	}
+
+	const SINGLE_Q = [
+		{
+			id: "auth",
+			question: "Auth method?",
+			options: [{ label: "JWT" }, { label: "OAuth2" }],
+			recommended: 0,
+		},
+	];
+
+	it("answers a single question via native select", async () => {
+		const { ui, picks } = makeRpcUi([{ select: "JWT (Recommended)" }]);
+		const res = await loadTool().execute("rpc-1", { questions: SINGLE_Q }, undefined, undefined, rpcCtx(ui));
+		expect(res.details.results?.[0]).toMatchObject({ id: "auth", selectedOptions: ["JWT"] });
+		expect(res.details.results?.[0]?.customInput).toBeUndefined();
+		expect(picks[0]!.kind).toBe("select");
+		expect(picks[0]!.options).toContain("Other (type your own)");
+	});
+
+	it("supports multi-select through the pick loop + Done selecting", async () => {
+		const { ui } = makeRpcUi([{ select: "Telemetry" }, { select: "Auto-update" }, { select: "Done selecting" }]);
+		const res = await loadTool().execute(
+			"rpc-2",
+			{
+				questions: [
+					{ id: "feat", question: "Features?", options: [{ label: "Telemetry" }, { label: "Auto-update" }, { label: "Cache" }], multi: true },
+				],
+			},
+			undefined,
+			undefined,
+			rpcCtx(ui),
+		);
+		expect(res.details.results?.[0]?.selectedOptions).toEqual(["Telemetry", "Auto-update"]);
+	});
+
+	it("routes Other through input and stores customInput", async () => {
+		const { ui } = makeRpcUi([{ select: "Other (type your own)" }, { input: "magic links" }]);
+		const res = await loadTool().execute("rpc-3", { questions: SINGLE_Q }, undefined, undefined, rpcCtx(ui));
+		expect(res.details.results?.[0]).toMatchObject({ selectedOptions: [], customInput: "magic links" });
+	});
+
+	it("returns cancelled details when the user dismisses a native dialog", async () => {
+		const { ui } = makeRpcUi([{}]);
+		const res = await loadTool().execute("rpc-4", { questions: SINGLE_Q }, undefined, undefined, rpcCtx(ui));
+		expect(res.details.cancelled).toBe(true);
+	});
+
+	it("auto-selects recommended options when the deadline expires mid-dialog", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+			const { ui } = makeRpcUi([
+				// The deadline is captured as now+1000ms; jump past it before the
+				// pick resolves so `undefined` reads as timeout, not cancel.
+				{ select: "__advance__" },
+			]);
+			(ui.select as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+				vi.setSystemTime(new Date("2026-01-01T00:00:02Z"));
+				return undefined;
+			});
+			const res = await loadTool().execute(
+				"rpc-5",
+				{ questions: SINGLE_Q, timeoutSeconds: 1 },
+				undefined,
+				undefined,
+				rpcCtx(ui),
+			);
+			expect(res.details.cancelled).toBeUndefined();
+			// Unanswered question auto-picks the recommended option.
+			expect(res.details.results?.[0]).toMatchObject({ id: "auth", selectedOptions: ["JWT"], timedOut: true });
+			expect(res.content[0]?.text).toContain("auto-selected after timeout");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});

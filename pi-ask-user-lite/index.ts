@@ -658,6 +658,80 @@ async function runAskDialog(
 	return { kind: action.kind, timedOut: action.timedOut === true, state };
 }
 
+// ---------------------------------------------------------------------------
+// RPC fallback: native select/input dialogs (no ctx.ui.custom — RPC hosts
+// resolve custom() to undefined; Mode Behavior doc requires a ctx.mode ===
+// "tui" guard around custom()). Mirrors omp's legacy per-question selector:
+// single-select per pick, a "Done selecting" terminal option for multi
+// questions, free-text Other via input, and timeout auto-selection of the
+// recommended options for every unanswered question.
+// ---------------------------------------------------------------------------
+
+type RpcAskUi = Pick<ExtensionUIContext, "select" | "input">;
+
+const RPC_DONE_LABEL = "Done selecting";
+/** Window after the deadline within which an `undefined` pick is attributed
+ *  to the UI-enforced timeout rather than a user Escape (omp heuristic). */
+const RPC_TIMEOUT_TOLERANCE_MS = 500;
+
+async function runAskDialogRpc(
+	ui: RpcAskUi,
+	questions: AskQuestion[],
+	options_: { deadline?: number; signal?: AbortSignal },
+): Promise<DialogOutcome> {
+	const answers: Array<{ selectedOptions: string[]; customInput?: string } | undefined> = questions.map(() => undefined);
+	const notes: Array<string | undefined> = questions.map(() => undefined);
+	const state: DialogState = { index: 0, cursors: [], checked: [], answers, notes };
+	const remainingMs = () => (options_.deadline === undefined ? undefined : Math.max(0, options_.deadline - Date.now()));
+	const timedOutAt = () => options_.deadline !== undefined && Date.now() >= options_.deadline - RPC_TIMEOUT_TOLERANCE_MS;
+	const dialogOpts = () => ({ timeout: remainingMs(), signal: options_.signal });
+
+	for (const [index, q] of questions.entries()) {
+		state.index = index;
+		const labels = addRecommendedSuffix(q.options, q.multi ? undefined : q.recommended);
+		const tail = q.multi ? [RPC_DONE_LABEL, OTHER_OPTION, CHAT_OPTION] : [OTHER_OPTION, CHAT_OPTION];
+		const selected = new Set<string>();
+
+		for (;;) {
+			const choice = await ui.select(q.question, [...labels, ...tail], dialogOpts());
+			if (choice === undefined) {
+				if (timedOutAt()) {
+					return { kind: "submit", timedOut: true, state };
+				}
+				return { kind: "cancel", timedOut: false, state };
+			}
+			if (choice === CHAT_OPTION) {
+				return { kind: "chat", timedOut: false, state };
+			}
+			if (choice === OTHER_OPTION) {
+				const custom = await ui.input(`Your answer for "${q.header ?? q.question}":`, undefined, dialogOpts());
+				if (custom === undefined) {
+					if (timedOutAt()) return { kind: "submit", timedOut: true, state };
+					return { kind: "cancel", timedOut: false, state };
+				}
+				if (custom.length > 0) {
+					answers[index] = { selectedOptions: [], customInput: custom }; // omp: re-selecting replaces
+					break;
+				}
+				continue; // empty submit declines the custom input — back to the rows
+			}
+			if (q.multi) {
+				if (choice === RPC_DONE_LABEL) {
+					answers[index] = { selectedOptions: [...selected] };
+					break;
+				}
+				const label = stripRecommendedSuffix(choice);
+				if (selected.has(label)) selected.delete(label);
+				else selected.add(label);
+				continue; // keep picking until Done
+			}
+			answers[index] = { selectedOptions: [stripRecommendedSuffix(choice)] };
+			break;
+		}
+	}
+	return { kind: "submit", timedOut: false, state };
+}
+
 function buildResults(questions: AskQuestion[], state: DialogState, timedOut: boolean): QuestionResult[] {
 	return questions.map((q, i) => {
 		const answer = state.answers[i];
@@ -725,7 +799,12 @@ const askUserTool: ToolDefinition<typeof AskParamsSchema, AskUserDetails> = {
 			const deadline =
 				typeof params.timeoutSeconds === "number" && params.timeoutSeconds > 0 ? Date.now() + params.timeoutSeconds * 1000 : undefined;
 
-			const outcome = await runAskDialog(ctx.ui, questions, { deadline, signal });
+			// ctx.ui.custom() is TUI-only (Mode Behavior): RPC hosts resolve it to
+			// undefined, so degrade to native select/input dialogs there.
+			const outcome =
+				ctx.mode === "tui"
+					? await runAskDialog(ctx.ui, questions, { deadline, signal })
+					: await runAskDialogRpc(ctx.ui, questions, { deadline, signal });
 
 			if (outcome.kind === "chat") {
 				const questionTexts = questions.map((q) => q.question).join("\n");

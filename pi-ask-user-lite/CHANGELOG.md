@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `ask_user` no longer crashes in RPC mode: `ctx.ui.custom()` is TUI-only (it resolves to `undefined` under RPC), so RPC hosts now degrade to native `select`/`input` dialogs — multi-select via a "Done selecting" pick loop, "Other" via `input`, and timeout auto-selecting the recommended options.
+
 ## [2.0.1] - 2026-08-27
 
 First release under the `@fyeeme/pi-ask-user-lite` name; the entries below describe the 2.0.0 feature set published under the old `@fyeeme/pi-ask-user` name (code is identical apart from the rename).
