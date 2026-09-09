@@ -3,7 +3,15 @@
  *
  * Claude Code-compatible hooks runner for pi.
  *
- * Reads `.pi/hooks.json` (or `PI_HOOKS_CONFIG` env) and maps:
+ * Reads hooks config with the following priority (first file that defines at
+ * least one hook wins; a valid-but-hookless file falls through to the next
+ * candidate instead of silently disabling everything below it):
+ *   1. PI_HOOKS_CONFIG env (exclusive single source when set)
+ *   2. ~/.pi/agent/hooks.json   (user-global, via getAgentDir())
+ *   3. <cwd>/.pi/hooks.json     (project-local)
+ *   4. ~/.pi/hooks.json         (legacy home location)
+ *
+ * and maps:
  *   SessionStart  → session_start        (source = mapped reason)
  *   PreToolUse    → tool_call            (can block via {block:true})
  *   Stop          → session_shutdown     (cleanup only; cannot block exit)
@@ -31,7 +39,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { CONFIG_DIR_NAME, formatSize } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, formatSize, getAgentDir, truncateHead, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 // ============================================================================
@@ -137,13 +145,30 @@ export function matchTool(pattern: string, value: string): boolean {
 // Config loader (failure is cached, not re-read every event)
 // ============================================================================
 
+/** True when the normalized config defines at least one runnable hook. */
+function hasAnyHook(cfg: HooksConfig): boolean {
+	return (Object.values(cfg.hooks) as HookGroup[][]).some((groups) => groups.length > 0);
+}
+
 export function loadConfig(cwd: string): HooksConfig | null {
 	const envPath = process.env.PI_HOOKS_CONFIG;
 	// os.homedir() is cross-platform (HOME on POSIX, USERPROFILE on Windows).
+	// getAgentDir() additionally honors PI_CODING_AGENT_DIR.
 	const candidates = envPath
 		? [envPath]
-		: [join(cwd, CONFIG_DIR_NAME, "hooks.json"), join(homedir(), CONFIG_DIR_NAME, "hooks.json")];
+		: [
+				join(getAgentDir(), "hooks.json"), // ~/.pi/agent/hooks.json — user-global, top priority
+			join(cwd, CONFIG_DIR_NAME, "hooks.json"), // project-local
+			join(homedir(), CONFIG_DIR_NAME, "hooks.json"), // legacy home
+			];
 
+	// First valid config that defines hooks wins. A candidate that parses but
+	// normalizes to zero hooks (e.g. `{}`, or a file in an older/unrelated
+	// schema) is remembered as a fallback and the chain continues — otherwise a
+	// stale higher-priority file would silently disable a usable config below
+	// it. PI_HOOKS_CONFIG is an explicit pointer: whatever it yields (even
+	// empty) is the answer; no fall-through applies.
+	let hookless: HooksConfig | null = null;
 	for (const p of candidates) {
 		if (!existsSync(p)) continue;
 		let parsed: unknown;
@@ -154,13 +179,17 @@ export function loadConfig(cwd: string): HooksConfig | null {
 			continue;
 		}
 		const cfg = normalizeConfig(parsed);
-		if (cfg) return cfg;
-		// Valid JSON but wrong shape (e.g. copied from CC with events as objects):
-		// warn and fall through to the next candidate instead of silently
-		// returning null while a usable home config exists.
-		console.error(`[hooks] invalid hooks shape in ${p} (expected { "hooks": { ... } })`);
+		if (!cfg) {
+			// Valid JSON but wrong shape (e.g. copied from CC with events as
+			// objects): warn and fall through to the next candidate instead of
+			// silently returning null while a usable config exists.
+			console.error(`[hooks] invalid hooks shape in ${p} (expected { "hooks": { ... } })`);
+			continue;
+		}
+		if (envPath || hasAnyHook(cfg)) return cfg;
+		hookless ??= cfg;
 	}
-	return null;
+	return hookless;
 }
 
 // ============================================================================
@@ -253,8 +282,15 @@ async function runCommand(
 	cwd: string,
 	stdinText: string,
 	timeoutMs: number,
+	signal?: AbortSignal,
 ): Promise<HookResult> {
 	return new Promise((resolve) => {
+		// Already-aborted caller signal (Esc before the hook started): skip the
+		// spawn entirely — a dead turn must not launch new work.
+		if (signal?.aborted) {
+			resolve(emptyResult());
+			return;
+		}
 		const isWin = process.platform === "win32";
 		const proc = spawn(command, [], {
 			shell: true,
@@ -275,6 +311,7 @@ async function runCommand(
 			settled = true;
 			clearTimeout(sigtermTimer);
 			clearTimeout(sigkillTimer);
+			signal?.removeEventListener("abort", onAbort);
 			resolve(result);
 		};
 
@@ -310,6 +347,11 @@ async function runCommand(
 				finish(emptyResult());
 			}, KILL_GRACE_MS);
 		};
+
+		// Esc during the turn aborts ctx.signal: kill the hook tree through the
+		// same SIGTERM→SIGKILL escalation as the timeout path.
+		const onAbort = () => killAndFinish();
+		signal?.addEventListener("abort", onAbort, { once: true });
 
 		// Accumulate raw buffers; decode once at the end to avoid splitting
 		// multi-byte UTF-8 characters across chunks (silent mojibake).
@@ -361,6 +403,7 @@ async function runGroups(
 	toolName: string,
 	cwd: string,
 	stdinText: string,
+	signal?: AbortSignal,
 ): Promise<{ contexts: string[]; block: string | null }> {
 	if (!groups) return { contexts: [], block: null };
 
@@ -382,7 +425,7 @@ async function runGroups(
 	const results: HookResult[] = [];
 	for (let i = 0; i < commands.length; i += MAX_CONCURRENT) {
 		const batch = commands.slice(i, i + MAX_CONCURRENT);
-		results.push(...(await Promise.all(batch.map((c) => runCommand(c.command, cwd, stdinText, c.timeoutMs)))));
+		results.push(...(await Promise.all(batch.map((c) => runCommand(c.command, cwd, stdinText, c.timeoutMs, signal)))));
 	}
 
 	const contexts: string[] = [];
@@ -478,7 +521,14 @@ export default function (pi: ExtensionAPI): void {
 
 		if (toInject.length === 0) return;
 
-		const text = toInject.join("\n\n");
+		// Cap injected context (doc output-truncation rationale: unbounded text
+		// overflows the model context and breaks compaction). The hook's stdout
+		// kill switch is 10MB; the model only ever sees the first 50KB/2000 lines.
+		const joined = toInject.join("\n\n");
+		const capped = truncateHead(joined, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
+		const text = capped.truncated
+			? `${capped.content}\n\n[hooks: additionalContext truncated to ${capped.outputLines}/${capped.totalLines} lines]`
+			: capped.content;
 		const messages = [...event.messages];
 		const lastUserIdx = messages.findLastIndex((m) => (m as { role: string }).role === "user");
 
@@ -522,7 +572,9 @@ export default function (pi: ExtensionAPI): void {
 			tool_input: event.input ?? {},
 		});
 
-		const { contexts, block } = await runGroups(cfg.hooks.PreToolUse, event.toolName, ctx.cwd, JSON.stringify(stdin));
+		// ctx.signal: Esc mid-turn kills running hook processes (same escalation
+		// as the timeout path); undefined outside an active turn is harmless.
+		const { contexts, block } = await runGroups(cfg.hooks.PreToolUse, event.toolName, ctx.cwd, JSON.stringify(stdin), ctx.signal);
 		// A block + terminate skips this round's follow-up LLM call, so queued
 		// context would leak into the next user prompt — drop it on block.
 		if (block) return { block: true, reason: block, terminate: true };

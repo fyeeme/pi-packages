@@ -171,12 +171,17 @@ describe("loadConfig", () => {
 	let homeDir: string;
 	let originalHome: string | undefined;
 	let originalHooksConfig: string | undefined;
+	let originalAgentDir: string | undefined;
 
 	beforeEach(async () => {
 		workDir = await mkdtemp(join(tmpdir(), "pi-hooks-work-"));
 		homeDir = await mkdtemp(join(tmpdir(), "pi-hooks-home-"));
 		originalHome = process.env.HOME;
 		originalHooksConfig = process.env.PI_HOOKS_CONFIG;
+		// getAgentDir() honors PI_CODING_AGENT_DIR — clear it so the agent-dir
+		// candidate resolves under the temp HOME, not the developer's real one.
+		originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+		delete process.env.PI_CODING_AGENT_DIR;
 		process.env.HOME = homeDir;
 		delete process.env.PI_HOOKS_CONFIG;
 	});
@@ -187,6 +192,11 @@ describe("loadConfig", () => {
 			delete process.env.PI_HOOKS_CONFIG;
 		} else {
 			process.env.PI_HOOKS_CONFIG = originalHooksConfig;
+		}
+		if (originalAgentDir === undefined) {
+			delete process.env.PI_CODING_AGENT_DIR;
+		} else {
+			process.env.PI_CODING_AGENT_DIR = originalAgentDir;
 		}
 		await rm(workDir, { recursive: true, force: true });
 		await rm(homeDir, { recursive: true, force: true });
@@ -223,6 +233,66 @@ describe("loadConfig", () => {
 		expect(config?.hooks.PreToolUse?.[0]?.matcher).toBe("Bash");
 	});
 
+	it("reads ~/.pi/agent/hooks.json with priority over the project config", async () => {
+		await mkdir(join(homeDir, ".pi", "agent"), { recursive: true });
+		await writeFile(
+			join(homeDir, ".pi", "agent", "hooks.json"),
+			JSON.stringify({ hooks: { SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "echo global" }] }] } }),
+			"utf8",
+		);
+		await mkdir(join(workDir, ".pi"), { recursive: true });
+		await writeFile(
+			join(workDir, ".pi", "hooks.json"),
+			JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo pre" }] }] } }),
+			"utf8",
+		);
+
+		const config = loadConfig(workDir);
+		expect(config?.hooks.SessionStart).toHaveLength(1);
+		expect(config?.hooks.PreToolUse).toBeUndefined(); // project config not merged — global wins outright
+	});
+
+	it("falls through an agent-dir config that defines no hooks (e.g. old schema)", async () => {
+		// Old pi-native schema: no `hooks` wrapper → normalizes to zero hooks.
+		// It must not shadow a usable project config.
+		await mkdir(join(homeDir, ".pi", "agent"), { recursive: true });
+		await writeFile(
+			join(homeDir, ".pi", "agent", "hooks.json"),
+			JSON.stringify({ session_start: [{ command: "serena-hooks activate" }] }),
+			"utf8",
+		);
+		await mkdir(join(workDir, ".pi"), { recursive: true });
+		await writeFile(
+			join(workDir, ".pi", "hooks.json"),
+			JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo pre" }] }] } }),
+			"utf8",
+		);
+
+		const config = loadConfig(workDir);
+		expect(config?.hooks.PreToolUse?.[0]?.matcher).toBe("Bash");
+	});
+
+	it("falls back to the legacy ~/.pi/hooks.json when no higher-priority config defines hooks", async () => {
+		await mkdir(join(homeDir, ".pi"), { recursive: true });
+		await writeFile(
+			join(homeDir, ".pi", "hooks.json"),
+			JSON.stringify({ hooks: { Stop: [{ matcher: "", hooks: [{ type: "command", command: "echo stop" }] }] } }),
+			"utf8",
+		);
+
+		const config = loadConfig(workDir);
+		expect(config?.hooks.Stop).toHaveLength(1);
+	});
+
+	it("returns the hookless-but-valid config when no candidate defines hooks", async () => {
+		await mkdir(join(workDir, ".pi"), { recursive: true });
+		await writeFile(join(workDir, ".pi", "hooks.json"), JSON.stringify({}), "utf8");
+
+		const config = loadConfig(workDir);
+		expect(config).not.toBeNull();
+		expect(config?.hooks).toEqual({});
+	});
+
 	it("returns a usable (empty) config instead of crashing on a malformed shape", async () => {
 		// `{}` used to cause `config.hooks.SessionStart` TypeError downstream;
 		// now it normalizes to an empty hooks config.
@@ -247,5 +317,118 @@ describe("loadConfig", () => {
 		// A directory passed as PI_HOOKS_CONFIG cannot be parsed as JSON.
 		process.env.PI_HOOKS_CONFIG = workDir;
 		expect(loadConfig(workDir)).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Extension wiring: ctx.signal aborts in-flight PreToolUse hooks
+// ---------------------------------------------------------------------------
+
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import defaultExport from "../index.ts";
+
+interface HooksFakeHost {
+	pi: ExtensionAPI;
+	handlers: Map<string, Array<(event: unknown, ctx: unknown) => unknown>>;
+}
+
+function hooksFakeHost(): HooksFakeHost {
+	const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
+	const pi = {
+		on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+			const list = handlers.get(event) ?? [];
+			list.push(handler);
+			handlers.set(event, list);
+		},
+	} as unknown as ExtensionAPI;
+	return { pi, handlers };
+}
+
+function hooksCtx(cwd: string, signal?: AbortSignal) {
+	return {
+		cwd,
+		signal,
+		sessionManager: {
+			getSessionId: () => "test-session-id",
+			getSessionFile: () => "/tmp/test-session.jsonl",
+		},
+	};
+}
+
+describe("hooks extension wiring: ctx.signal", () => {
+	let originalHooksConfig: string | undefined;
+	let workDir = "";
+
+	beforeEach(async () => {
+		originalHooksConfig = process.env.PI_HOOKS_CONFIG;
+		workDir = await mkdtemp(join(tmpdir(), "pi-hooks-wiring-"));
+	});
+
+	afterEach(async () => {
+		if (originalHooksConfig === undefined) delete process.env.PI_HOOKS_CONFIG;
+		else process.env.PI_HOOKS_CONFIG = originalHooksConfig;
+		await rm(workDir, { recursive: true, force: true });
+	});
+
+	async function writeConfig(hookCommand: string): Promise<void> {
+		const cfgPath = join(workDir, "hooks.json");
+		await writeFile(
+			cfgPath,
+			JSON.stringify({ hooks: { PreToolUse: [{ matcher: "bash", hooks: [{ type: "command", command: hookCommand, timeout: 10 }] }] } }),
+			"utf8",
+		);
+		process.env.PI_HOOKS_CONFIG = cfgPath;
+	}
+
+	function makeContextReader(handlers: Map<string, Array<(event: unknown, ctx: unknown) => unknown>>): () => string | null {
+		const contextHandlers = handlers.get("context") ?? [];
+		return () => {
+			for (const handler of contextHandlers) {
+				const messages: Array<{ role: string; content: unknown }> = [
+					{ role: "user", content: [{ type: "text", text: "hello" }] },
+				];
+				const res = handler({ messages }, {}) as { messages: Array<{ content: unknown }> } | undefined;
+				const last = res?.messages.at(-1);
+				if (Array.isArray(last?.content)) {
+					const extra = (last!.content as Array<{ type: string; text?: string }>).filter((c) => c.type === "text");
+					if (extra.length > 1) return (extra.at(-1)?.text ?? null);
+				}
+			}
+			return null;
+		};
+	}
+
+	it("runs the hook and injects additionalContext when no signal is active", async () => {
+		await writeConfig(`echo '{"hookSpecificOutput":{"additionalContext":"HOOK-SAYS-HELLO"}}'`);
+		const { pi, handlers } = hooksFakeHost();
+		defaultExport(pi);
+		const toolCall = (handlers.get("tool_call") ?? [])[0]!;
+		await toolCall({ toolName: "bash", input: { command: "ls" } }, hooksCtx(workDir));
+		expect(makeContextReader(handlers)()).toContain("HOOK-SAYS-HELLO");
+	});
+
+	it("skips hooks entirely when the caller signal is already aborted", async () => {
+		await writeConfig(`echo '{"hookSpecificOutput":{"additionalContext":"SHOULD-NOT-RUN"}}'`);
+		const { pi, handlers } = hooksFakeHost();
+		defaultExport(pi);
+		const toolCall = (handlers.get("tool_call") ?? [])[0]!;
+		const controller = new AbortController();
+		controller.abort();
+		await toolCall({ toolName: "bash", input: { command: "ls" } }, hooksCtx(workDir, controller.signal));
+		expect(makeContextReader(handlers)()).toBeNull();
+	});
+
+	it("kills an in-flight hook when ctx.signal aborts mid-run", async () => {
+		await writeConfig(`sleep 30`);
+		const { pi, handlers } = hooksFakeHost();
+		defaultExport(pi);
+		const toolCall = (handlers.get("tool_call") ?? [])[0]!;
+		const controller = new AbortController();
+		const start = Date.now();
+		const running = toolCall({ toolName: "bash", input: { command: "ls" } }, hooksCtx(workDir, controller.signal)) as Promise<unknown>;
+		setTimeout(() => controller.abort(), 100);
+		await running;
+		// SIGTERM escalation + SIGKILL grace resolve well under the 30s hook sleep.
+		expect(Date.now() - start).toBeLessThan(10_000);
 	});
 });

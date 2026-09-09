@@ -1,6 +1,15 @@
 # pi-hooks
 
-A Claude Code-compatible hooks runner for [pi](https://pi.dev). Reads `.pi/hooks.json` from your project and maps `SessionStart`, `PreToolUse`, and `Stop` events to pi lifecycle events — matching Claude Code's hooks protocol including stdin JSON and stdout `additionalContext` capture.
+A Claude Code-compatible hooks runner for [pi](https://pi.dev). Reads your hooks configuration and maps `SessionStart`, `PreToolUse`, and `Stop` events to pi lifecycle events — matching Claude Code's hooks protocol including stdin JSON and stdout `additionalContext` capture.
+
+**Config resolution order** (first file that defines at least one hook wins):
+
+1. `PI_HOOKS_CONFIG` env var (exclusive single source when set)
+2. `~/.pi/agent/hooks.json` — user-global, **top priority**
+3. `<project>/.pi/hooks.json` — project-local fallback
+4. `~/.pi/hooks.json` — legacy home location fallback
+
+A file that parses but defines no hooks (e.g. `{}`, or a leftover file in an older schema) does not shadow lower-priority files — the chain falls through. Note the chain is winner-take-all: configs are never merged.
 
 ## Install
 
@@ -39,7 +48,7 @@ See the Pi Packages guide on [pi.dev](https://pi.dev) for the full list of sourc
 
 ## Configuration
 
-Create `.pi/hooks.json` in your project root:
+Create `~/.pi/agent/hooks.json` (user-global, highest file priority — runs in every project) or `.pi/hooks.json` in a project root (used only when no global config defines hooks):
 
 ```json
 {
@@ -141,7 +150,7 @@ Pi names MCP tools as `<serverName>_<toolName>` (not `mcp__server__tool` like Cl
 
 ## Using pi-hooks with Serena
 
-[Serena](https://github.com/oraios/serena) ships a `serena-hooks` CLI (Claude Code compatible) whose four subcommands map cleanly onto pi-hooks events. With Serena's MCP server running in pi (confirm with `/mcp` — you should see a `serena` server), drop this into your project's `.pi/hooks.json`:
+[Serena](https://github.com/oraios/serena) ships a `serena-hooks` CLI (Claude Code compatible) whose four subcommands map cleanly onto pi-hooks events. With Serena's MCP server running in pi (confirm with `/mcp` — you should see a `serena` server), drop this into `~/.pi/agent/hooks.json` (global) or the project's `.pi/hooks.json`:
 
 ```json
 {
@@ -189,4 +198,4 @@ What each hook does:
 
 ## Config Override
 
-Set `PI_HOOKS_CONFIG` env var to point to a custom config path.
+Set `PI_HOOKS_CONFIG` env var to point to a custom config path (exclusive single source; when set, no other location is consulted).

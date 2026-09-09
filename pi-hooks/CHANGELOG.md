@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- PreToolUse hook processes are killed through the existing SIGTERM→SIGKILL escalation when the turn is aborted (`ctx.signal`); an already-aborted turn skips spawning entirely.
+- Hook `additionalContext` injected into the prompt is capped at 50KB/2000 lines with a truncation notice.
+
+### Changed
+
+- Config resolution now prioritizes `~/.pi/agent/hooks.json` (user-global, resolved via `getAgentDir()` so `PI_CODING_AGENT_DIR` is honored) above the project `.pi/hooks.json`; the legacy `~/.pi/hooks.json` location remains the last fallback. A candidate that parses but defines no hooks (e.g. `{}`, or a leftover file in an older schema) no longer shadows lower-priority files — the chain falls through to the next candidate (`PI_HOOKS_CONFIG` remains an exclusive single source when set). Configs are still winner-take-all, never merged.
+
 ## [1.0.2] - 2026-08-08
 
 ### Breaking Changes
