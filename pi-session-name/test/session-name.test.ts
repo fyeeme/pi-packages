@@ -4,6 +4,13 @@ vi.mock("@earendil-works/pi-ai/compat", () => ({
 	complete: vi.fn(async () => ({ content: [{ type: "text", text: "Auto Title" }] })),
 }));
 
+// Block the real pi-coding-agent dist from loading (unhydrated pi-ai/compat
+// subpath in this submodule breaks the import graph). index.ts only needs
+// CONFIG_DIR_NAME from it; the real module exports ".pi" on standard installs.
+vi.mock("@earendil-works/pi-coding-agent", () => ({
+	CONFIG_DIR_NAME: ".pi",
+}));
+
 import { buildConversationText, cleanTitle, buildFirstPrompt, buildAutoPrompt, loadConfig, resolveModelAndAuth, generateTitle, type SessionEntry } from "../index.ts";
 import setup from "../index.ts";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";

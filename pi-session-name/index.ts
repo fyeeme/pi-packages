@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import { complete } from "@earendil-works/pi-ai/compat";
 
@@ -122,7 +122,7 @@ const DEFAULT_CONFIG: SessionNameConfig = { mode: "first", enabled: true, maxLen
 
 export function loadConfig(cwd: string, env: Record<string, string | undefined> = process.env): SessionNameConfig {
 	let fileCfg: Partial<SessionNameConfig> = {};
-	const file = join(cwd, ".pi", "session-name.json");
+	const file = join(cwd, CONFIG_DIR_NAME, "session-name.json");
 	try {
 		fileCfg = JSON.parse(readFileSync(file, "utf8")) as Partial<SessionNameConfig>;
 	} catch {
@@ -168,6 +168,7 @@ export async function generateTitle(
 	prompt: string,
 	auth: ModelAuth,
 	completeFn: typeof complete = complete,
+	signal?: AbortSignal,
 ): Promise<string> {
 	const response = await completeFn(
 		auth.model,
@@ -176,7 +177,8 @@ export async function generateTitle(
 				{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() },
 			],
 		},
-		{ apiKey: auth.apiKey, headers: auth.headers },
+		// ctx.signal (undefined while idle) lets Esc/abort cancel the nested call.
+		{ apiKey: auth.apiKey, headers: auth.headers, signal },
 	);
 	return response.content
 		.filter((c): c is { type: "text"; text: string } => c.type === "text")
@@ -224,9 +226,9 @@ export default function (pi: ExtensionAPI): void {
 
 			let title: string | null;
 			if (cfg.mode === "first" || !currentName) {
-				title = cleanTitle(await generateTitle(buildFirstPrompt(text, cfg), auth), cfg.maxLength);
+				title = cleanTitle(await generateTitle(buildFirstPrompt(text, cfg), auth, complete, ctx.signal), cfg.maxLength);
 			} else {
-				const verdict = await generateTitle(buildAutoPrompt(currentName, text, cfg), auth);
+				const verdict = await generateTitle(buildAutoPrompt(currentName, text, cfg), auth, complete, ctx.signal);
 				title = /^keep$/i.test(verdict.trim()) ? null : cleanTitle(verdict, cfg.maxLength);
 			}
 			if (!title) return;
@@ -276,7 +278,7 @@ export default function (pi: ExtensionAPI): void {
 				return;
 			}
 			try {
-				const title = cleanTitle(await generateTitle(buildFirstPrompt(text, cfg), auth), cfg.maxLength);
+				const title = cleanTitle(await generateTitle(buildFirstPrompt(text, cfg), auth, complete, ctx.signal), cfg.maxLength);
 				if (!title) {
 					ctx.ui.notify("Could not generate a name from the model response", "warning");
 					return;

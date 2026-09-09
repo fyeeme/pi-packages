@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Project config path uses `CONFIG_DIR_NAME` instead of a hardcoded `.pi`.
+- Title generation forwards `ctx.signal` so aborts cancel the nested model call.
+
 ## [1.0.2] - 2025-07-25
 
 ### Fixed
