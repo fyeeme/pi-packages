@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- peon.sh discovery (including the up-to-3s `brew --prefix` probe) no longer runs at extension load time; it is deferred to the first session event per the extensions doc's factory rule.
+- `PermissionRequest` (input.required) now fires from `ui_prompt_start` — any blocking `ctx.ui` dialog — instead of sniffing the omp-only `ask_user_question` tool name, which does not exist in pi.
+- Tab-title project name and event payloads use `ctx.cwd` instead of a stale factory-time `process.cwd()`.
+
 ## [1.1.1] - 2026-08-08
 
 ### Changed

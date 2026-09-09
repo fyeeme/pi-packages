@@ -527,17 +527,26 @@ describe("peonPingExtension", () => {
 		vi.mocked(execFileSync).mockReset();
 	});
 
-	it("logs a warning and returns early when peon.sh is not found", () => {
+	it("defers discovery: warns on first session_start when peon.sh is not found", async () => {
 		vi.mocked(existsSync).mockReturnValue(false);
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const pi = { on: vi.fn(), registerCommand: vi.fn() } as unknown as ExtensionAPI;
 
+		// Discovery must not run at factory time (doc: no background/blocking
+		// work in the factory — brew probe can take up to 3s).
 		peonPingExtension(pi);
+		expect(warnSpy).not.toHaveBeenCalled();
+
+		// Handlers are registered unconditionally; the first event resolves.
+		const handler = (pi.on as ReturnType<typeof vi.fn>).mock.calls.find(
+			(c: unknown[]) => c[0] === "session_start",
+		)![1] as Function;
+		await handler({}, { hasUI: false, cwd: "/proj", sessionManager: { getSessionFile: () => "s" } });
 
 		expect(warnSpy).toHaveBeenCalledWith(
 			expect.stringContaining("[pi-peon-ping] peon.sh not found"),
 		);
-		expect(pi.on).not.toHaveBeenCalled();
+		expect(spawn).not.toHaveBeenCalled();
 		warnSpy.mockRestore();
 	});
 
@@ -587,8 +596,8 @@ describe("peonPingExtension", () => {
 			expect(pi.on).toHaveBeenCalledWith("tool_result", expect.any(Function));
 		});
 
-		it("registers tool_call handler", () => {
-			expect(pi.on).toHaveBeenCalledWith("tool_call", expect.any(Function));
+		it("registers ui_prompt_start handler", () => {
+			expect(pi.on).toHaveBeenCalledWith("ui_prompt_start", expect.any(Function));
 		});
 
 		it("registers session_shutdown handler", () => {
@@ -603,7 +612,7 @@ describe("peonPingExtension", () => {
 				const ctx = {
 					hasUI: true,
 					ui: { setTitle: setTitleSpy },
-					sessionManager: { getSessionFile: () => "sess-1" },
+					cwd: "/proj", sessionManager: { getSessionFile: () => "sess-1" },
 				};
 
 				await handler({}, ctx);
@@ -618,7 +627,7 @@ describe("peonPingExtension", () => {
 				const handler = pi.on.mock.calls.find(
 					(c: unknown[]) => c[0] === "session_start",
 				)![1] as Function;
-				const ctx = { hasUI: false, sessionManager: { getSessionFile: () => "sess-1" } };
+				const ctx = { hasUI: false, cwd: "/proj", sessionManager: { getSessionFile: () => "sess-1" } };
 				setTitleSpy.mockClear();
 
 				await handler({}, ctx);
@@ -635,7 +644,7 @@ describe("peonPingExtension", () => {
 				const ctx = {
 					hasUI: true,
 					ui: { setTitle: setTitleSpy },
-					sessionManager: { getSessionFile: () => "sess-2" },
+					cwd: "/proj", sessionManager: { getSessionFile: () => "sess-2" },
 				};
 
 				await handler({}, ctx);
@@ -655,7 +664,7 @@ describe("peonPingExtension", () => {
 				const ctx = {
 					hasUI: true,
 					ui: { setTitle: setTitleSpy },
-					sessionManager: { getSessionFile: () => "sess-3" },
+					cwd: "/proj", sessionManager: { getSessionFile: () => "sess-3" },
 				};
 
 				await handler({}, ctx);
@@ -672,7 +681,7 @@ describe("peonPingExtension", () => {
 				const handler = pi.on.mock.calls.find(
 					(c: unknown[]) => c[0] === "session_before_compact",
 				)![1] as Function;
-				const ctx = { hasUI: true, sessionManager: { getSessionFile: () => "sess-4" } };
+				const ctx = { hasUI: true, cwd: "/proj", sessionManager: { getSessionFile: () => "sess-4" } };
 
 				await handler({}, ctx);
 
@@ -690,7 +699,7 @@ describe("peonPingExtension", () => {
 				const ctx = {
 					hasUI: true,
 					ui: { setTitle: setTitleSpy },
-					sessionManager: { getSessionFile: () => "sess-4" },
+					cwd: "/proj", sessionManager: { getSessionFile: () => "sess-4" },
 				};
 
 				await handler({ isError: true }, ctx);
@@ -705,7 +714,7 @@ describe("peonPingExtension", () => {
 				const handler = pi.on.mock.calls.find(
 					(c: unknown[]) => c[0] === "tool_result",
 				)![1] as Function;
-				const ctx = { hasUI: true, sessionManager: { getSessionFile: () => "sess-5" } };
+				const ctx = { hasUI: true, cwd: "/proj", sessionManager: { getSessionFile: () => "sess-5" } };
 				setTitleSpy.mockClear();
 				mockProc.stdin.write.mockClear();
 
@@ -716,30 +725,18 @@ describe("peonPingExtension", () => {
 			});
 		});
 
-		describe("tool_call handler", () => {
-			it("fires PermissionRequest for ask_user_question", async () => {
+		describe("ui_prompt_start handler", () => {
+			it("fires PermissionRequest for any blocking dialog span", async () => {
 				const handler = pi.on.mock.calls.find(
-					(c: unknown[]) => c[0] === "tool_call",
+					(c: unknown[]) => c[0] === "ui_prompt_start",
 				)![1] as Function;
-				const ctx = { hasUI: true, sessionManager: { getSessionFile: () => "sess-6" } };
+				const ctx = { hasUI: true, cwd: "/proj", sessionManager: { getSessionFile: () => "sess-6" } };
 
-				await handler({ toolName: "ask_user_question" }, ctx);
+				await handler({ kind: "confirm", title: "Run project agents?" }, ctx);
 
-				expect(mockProc.stdin.write).toHaveBeenCalledWith(
-					expect.stringContaining("PermissionRequest"),
-				);
-			});
-
-			it("does not fire for other tools", async () => {
-				const handler = pi.on.mock.calls.find(
-					(c: unknown[]) => c[0] === "tool_call",
-				)![1] as Function;
-				const ctx = { hasUI: true, sessionManager: { getSessionFile: () => "sess-7" } };
-				mockProc.stdin.write.mockClear();
-
-				await handler({ toolName: "bash" }, ctx);
-
-				expect(mockProc.stdin.write).not.toHaveBeenCalled();
+				const payload = String(mockProc.stdin.write.mock.calls[0]![0]);
+				expect(payload).toContain("PermissionRequest");
+				expect(payload).toContain("/proj");
 			});
 		});
 
@@ -748,7 +745,7 @@ describe("peonPingExtension", () => {
 				const handler = pi.on.mock.calls.find(
 					(c: unknown[]) => c[0] === "session_shutdown",
 				)![1] as Function;
-				const ctx = { sessionManager: { getSessionFile: () => "sess-6" } };
+				const ctx = { cwd: "/proj", sessionManager: { getSessionFile: () => "sess-6" } };
 
 				await handler({}, ctx);
 
@@ -761,7 +758,7 @@ describe("peonPingExtension", () => {
 				const handler = pi.on.mock.calls.find(
 					(c: unknown[]) => c[0] === "session_shutdown",
 				)![1] as Function;
-				const ctx = { sessionManager: { getSessionFile: () => "sess-7" } };
+				const ctx = { cwd: "/proj", sessionManager: { getSessionFile: () => "sess-7" } };
 				setTitleSpy.mockClear();
 
 				await handler({}, ctx);
