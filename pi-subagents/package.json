@@ -1,6 +1,6 @@
 {
   "name": "@fyeeme/pi-subagents",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "General-purpose subagent fan-out for pi: a `subagent` tool (single/parallel) spawning real pi subprocesses, three-source agent discovery (user/project/bundled), plus the shared dispatch core (spawnAgent, per-call abort, maxTurns budget, concurrency ceiling) and the live agent UI (above-editor widget, FleetView, /agents). Successor of @fyeeme/pi-subagent-core.",
   "type": "module",
   "main": "index.ts",

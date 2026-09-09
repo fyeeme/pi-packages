@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-09-09
+
 ### Fixed
 
 - `subagent` failures (failed/aborted agents, strict schema rejections, parameter errors) now throw instead of returning a dead `isError: true` payload (a returned value never sets the error flag, so failures looked successful to the model).
