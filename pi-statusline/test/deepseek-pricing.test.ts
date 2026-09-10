@@ -103,18 +103,18 @@ describe("isDeepSeekPeakTime (北京时间峰谷时段判定)", () => {
 });
 
 describe("messageCost (official CNY 峰谷定价)", () => {
-	it("flash 高峰：¥3 输入 / ¥9 输出 / ¥0.10 缓存命中（每百万 tokens）", () => {
+	it("flash 高峰：¥2 输入 / ¥8 输出 / ¥0.04 缓存命中（每百万 tokens）", () => {
 		const s = newStrategy();
 		const c = s.messageCost(
-			"deepseek-v4-flash",
+			"deepseek-flash",
 			{ input: 136, output: 235, cacheRead: 193_152, cacheWrite: 0 },
 			bjTime("2026-08-21T10:00"),
 		);
 		expect(c).not.toBeNull();
-		expect(c).toBeCloseTo((136 * 3 + 235 * 9 + 193_152 * 0.1) / 1e6, 12);
+		expect(c).toBeCloseTo((136 * 2 + 235 * 8 + 193_152 * 0.04) / 1e6, 12);
 	});
 
-	it("flash 空闲（高峰一半）：¥1.5 输入 / ¥4.5 输出 / ¥0.05 缓存命中", () => {
+	it("flash 空闲（高峰一半）：¥1 输入 / ¥4 输出 / ¥0.02 缓存命中", () => {
 		const s = newStrategy();
 		const c = s.messageCost(
 			"deepseek-v4-flash",
@@ -122,7 +122,7 @@ describe("messageCost (official CNY 峰谷定价)", () => {
 			bjTime("2026-08-21T02:00"),
 		);
 		expect(c).not.toBeNull();
-		expect(c).toBeCloseTo((136 * 1.5 + 235 * 4.5 + 193_152 * 0.05) / 1e6, 12);
+		expect(c).toBeCloseTo((136 * 1 + 235 * 4 + 193_152 * 0.02) / 1e6, 12);
 	});
 
 	it("周末全天低谷价（2026-08-23 起）：周六高峰时刻也按空闲单价计费", () => {
@@ -133,7 +133,7 @@ describe("messageCost (official CNY 峰谷定价)", () => {
 			bjTime("2026-08-29T10:00"), // 周六原高峰时段
 		);
 		expect(c).not.toBeNull();
-		expect(c).toBeCloseTo((136 * 1.5 + 235 * 4.5 + 193_152 * 0.05) / 1e6, 12);
+		expect(c).toBeCloseTo((136 * 1 + 235 * 4 + 193_152 * 0.02) / 1e6, 12);
 	});
 
 	it("pro 高峰：¥9 输入 / ¥27 输出 / ¥0.30 缓存命中", () => {
@@ -176,9 +176,13 @@ describe("messageCost (official CNY 峰谷定价)", () => {
 	});
 
 	it("定价表与 DeepSeek 官方 CNY 价一致（2026-08-17 峰谷计价）", () => {
+		expect(DEEPSEEK_CNY_PRICES["deepseek-flash"]).toEqual({
+			peak: { input: 2.0, output: 8.0, cacheRead: 0.04, cacheWrite: 0 },
+			offPeak: { input: 1.0, output: 4.0, cacheRead: 0.02, cacheWrite: 0 },
+		});
 		expect(DEEPSEEK_CNY_PRICES["deepseek-v4-flash"]).toEqual({
-			peak: { input: 3.0, output: 9.0, cacheRead: 0.1, cacheWrite: 0 },
-			offPeak: { input: 1.5, output: 4.5, cacheRead: 0.05, cacheWrite: 0 },
+			peak: { input: 2.0, output: 8.0, cacheRead: 0.04, cacheWrite: 0 },
+			offPeak: { input: 1.0, output: 4.0, cacheRead: 0.02, cacheWrite: 0 },
 		});
 		expect(DEEPSEEK_CNY_PRICES["deepseek-v4-pro"]).toEqual({
 			peak: { input: 9.0, output: 27.0, cacheRead: 0.3, cacheWrite: 0 },
@@ -192,25 +196,28 @@ describe("messageCost (official CNY 峰谷定价)", () => {
 		}
 	});
 
-	it("deepseek-v4-flash-vision-exp 与 flash 同价（官方：图片按 token 计费，无视觉附加费），峰谷价重算生效", () => {
-		expect(DEEPSEEK_CNY_PRICES["deepseek-v4-flash-vision-exp"]).toEqual(
+	it("deepseek-flash 与旧 id（deepseek-v4-flash / deepseek-v4-flash-vision-exp）同价：旧 id 已下线，请求由 DeepSeek-V4.1-Flash 提供并按 Flash 价计费", () => {
+		expect(DEEPSEEK_CNY_PRICES["deepseek-flash"]).toEqual(
 			DEEPSEEK_CNY_PRICES["deepseek-v4-flash"],
 		);
+		expect(DEEPSEEK_CNY_PRICES["deepseek-flash"]).toEqual(
+			DEEPSEEK_CNY_PRICES["deepseek-v4-flash-vision-exp"],
+		);
 		const s = newStrategy();
-		// 高峰未命中输入：1M × ¥3/1M
+		// 高峰未命中输入：1M × ¥2/1M
 		const peak = s.messageCost(
 			"deepseek-v4-flash-vision-exp",
 			{ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 },
 			bjTime("2026-08-21T10:00"),
 		);
-		expect(peak).toBeCloseTo(3.0, 9);
-		// 空闲未命中输入：1M × ¥1.5/1M
+		expect(peak).toBeCloseTo(2.0, 9);
+		// 空闲未命中输入：1M × ¥1/1M
 		const off = s.messageCost(
 			"deepseek-v4-flash-vision-exp",
 			{ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 },
 			bjTime("2026-08-21T02:00"),
 		);
-		expect(off).toBeCloseTo(1.5, 9);
+		expect(off).toBeCloseTo(1.0, 9);
 	});
 });
 
@@ -273,7 +280,7 @@ describe("applyPricingPatch (runtime registry patch, 跟随结算币种与峰谷
 		expect(calls[0].name).toBe("deepseek");
 		const models = modelsOf(calls);
 		const patched = models.find((m) => m.id === "deepseek-v4-flash");
-		expect(patched?.cost).toEqual({ input: 3.0, output: 9.0, cacheRead: 0.1, cacheWrite: 0 });
+		expect(patched?.cost).toEqual({ input: 2.0, output: 8.0, cacheRead: 0.04, cacheWrite: 0 });
 		expect(models.find((m) => m.id === "deepseek-v4-flash-latest")).toBe(futureModel);
 	});
 
@@ -286,9 +293,9 @@ describe("applyPricingPatch (runtime registry patch, 跟随结算币种与峰谷
 
 		const models = modelsOf(calls);
 		expect(models.find((m) => m.id === "deepseek-v4-flash")?.cost).toEqual({
-			input: 1.5,
-			output: 4.5,
-			cacheRead: 0.05,
+			input: 1.0,
+			output: 4.0,
+			cacheRead: 0.02,
 			cacheWrite: 0,
 		});
 	});
@@ -300,9 +307,9 @@ describe("applyPricingPatch (runtime registry patch, 跟随结算币种与峰谷
 		const { registry, calls } = mockRegistry([flash]);
 		s.applyPricingPatch(registry);
 		expect(modelsOf(calls).find((m) => m.id === "deepseek-v4-flash")?.cost).toEqual({
-			input: 1.5,
-			output: 4.5,
-			cacheRead: 0.05,
+			input: 1.0,
+			output: 4.0,
+			cacheRead: 0.02,
 			cacheWrite: 0,
 		});
 		expect(s.shouldRefreshPatch()).toBe(false);
@@ -314,9 +321,9 @@ describe("applyPricingPatch (runtime registry patch, 跟随结算币种与峰谷
 		expect(calls).toHaveLength(2);
 		const models = modelsOf(calls);
 		expect(models.find((m) => m.id === "deepseek-v4-flash")?.cost).toEqual({
-			input: 3.0,
-			output: 9.0,
-			cacheRead: 0.1,
+			input: 2.0,
+			output: 8.0,
+			cacheRead: 0.04,
 			cacheWrite: 0,
 		});
 		expect(s.shouldRefreshPatch()).toBe(false);
@@ -347,9 +354,9 @@ describe("applyPricingPatch (runtime registry patch, 跟随结算币种与峰谷
 		const { registry: reg1, calls: c1 } = mockRegistry([flash]);
 		s.applyPricingPatch(reg1);
 		expect(modelsOf(c1).find((m) => m.id === "deepseek-v4-flash")?.cost).toEqual({
-			input: 3.0,
-			output: 9.0,
-			cacheRead: 0.1,
+			input: 2.0,
+			output: 8.0,
+			cacheRead: 0.04,
 			cacheWrite: 0,
 		});
 

@@ -172,8 +172,8 @@ describe("SessionTokenUsageCalculator", () => {
 		const ctx = makeCtx([msg], "deepseek");
 
 		const stats = calc.compute(ctx);
-		// 1M 未命中输入 × ¥3/1M（高峰）
-		expect(stats.cost).toBeCloseTo(3.0, 9);
+		// 1M 未命中输入 × ¥2/1M（高峰）
+		expect(stats.cost).toBeCloseTo(2.0, 9);
 	});
 
 	it("uses off-peak rates for off-peak-time deepseek messages (半价)", () => {
@@ -190,8 +190,8 @@ describe("SessionTokenUsageCalculator", () => {
 		const ctx = makeCtx([msg], "deepseek");
 
 		const stats = calc.compute(ctx);
-		// 1M 未命中输入 × ¥1.5/1M（空闲）
-		expect(stats.cost).toBeCloseTo(1.5, 9);
+		// 1M 未命中输入 × ¥1/1M（空闲）
+		expect(stats.cost).toBeCloseTo(1.0, 9);
 	});
 
 	it("sums deepseek messages across peak/off-peak boundary with per-message rates", () => {

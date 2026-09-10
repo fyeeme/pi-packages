@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-09-10
+
+### Changed
+
+- Follow DeepSeek's DeepSeek-V4.1-Flash price revision: the Flash column is now ¥0.02/0.04 cache-hit input, ¥1/2 cache-miss input, ¥4/8 output per million tokens (peak values; off-peak is half). `deepseek-flash` is the canonical id for these rates, and the retired `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` ids still work and are billed at the same Flash rates, so all three share one price entry. V4 Pro (`deepseek-v4-pro`, DeepSeek-V4-Pro-0813) is unchanged.
+
 ## [1.2.3] - 2026-09-09
 
 ### Added

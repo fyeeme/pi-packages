@@ -31,19 +31,23 @@ export interface DeepSeekCnyPrice {
 }
 
 /**
- * DeepSeek 官方 CNY 单价（元 / 百万 tokens），2026-08-17 峰谷计价起生效（见官方定价页）：
- * 缓存命中输入 / 未命中输入 / 输出；cacheWrite 官方未单列（按 0 计）。
+ * DeepSeek 官方 CNY 单价（元 / 百万 tokens）：2026-08-17 起峰谷计价生效；flash 单价随后按官方定价页的
+ * DeepSeek-V4.1-Flash 档位下调（高峰 ¥2 输入 / ¥8 输出 / ¥0.04 缓存命中，空闲为其一半），pro
+ * （DeepSeek-V4-Pro-0813）维持原价。字段为缓存命中输入 / 未命中输入 / 输出；cacheWrite 官方未单列（按 0 计）。
  */
+
+/** Flash 档单价：`deepseek-flash` 与其两个已下线旧 id 均由 DeepSeek-V4.1-Flash 提供服务，价格一致。 */
+const DEEPSEEK_FLASH_PRICES: DeepSeekCnyPrice = {
+	peak: { input: 2.0, output: 8.0, cacheRead: 0.04, cacheWrite: 0 },
+	offPeak: { input: 1.0, output: 4.0, cacheRead: 0.02, cacheWrite: 0 },
+};
+
 export const DEEPSEEK_CNY_PRICES: Record<string, DeepSeekCnyPrice> = {
-	"deepseek-v4-flash": {
-		peak: { input: 3.0, output: 9.0, cacheRead: 0.1, cacheWrite: 0 },
-		offPeak: { input: 1.5, output: 4.5, cacheRead: 0.05, cacheWrite: 0 },
-	},
-	// 视觉变体：官方定价与 V4-Flash 完全相同（图片按 token 计费，单张最高 384 tokens，无视觉专项费用）
-	"deepseek-v4-flash-vision-exp": {
-		peak: { input: 3.0, output: 9.0, cacheRead: 0.1, cacheWrite: 0 },
-		offPeak: { input: 1.5, output: 4.5, cacheRead: 0.05, cacheWrite: 0 },
-	},
+	"deepseek-flash": DEEPSEEK_FLASH_PRICES,
+	// 旧 id：模型已下线，但请求仍可发出，由 DeepSeek-V4.1-Flash 提供服务并按 Flash 价计费；
+	// vision 变体亦然（官方未单列视觉费用，图片按 token 计费，单张最高 384 tokens）。
+	"deepseek-v4-flash": DEEPSEEK_FLASH_PRICES,
+	"deepseek-v4-flash-vision-exp": DEEPSEEK_FLASH_PRICES,
 	"deepseek-v4-pro": {
 		peak: { input: 9.0, output: 27.0, cacheRead: 0.3, cacheWrite: 0 },
 		offPeak: { input: 4.5, output: 13.5, cacheRead: 0.15, cacheWrite: 0 },
