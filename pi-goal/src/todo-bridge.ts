@@ -89,6 +89,30 @@ export function restoreTodoPhases(entries: readonly unknown[]): TodoPhase[] {
 	return [];
 }
 
+/** Validate an unknown value (e.g. a `todo_updated` event payload) as phases. */
+export function parseTodoPhases(value: unknown): TodoPhase[] | undefined {
+	if (!Array.isArray(value) || !value.every(isTodoPhase)) return undefined;
+	return value.map((phase) => ({
+		name: phase.name,
+		tasks: phase.tasks.map((task) => ({ content: task.content, status: task.status })),
+	}));
+}
+
+/** Footer progress over non-empty phases, same gate as buildTodoContext. */
+export function todoProgress(phases: TodoPhase[]): { closed: number; total: number } | undefined {
+	const nonEmpty = phases.filter((phase) => phase.tasks.length > 0);
+	if (nonEmpty.length === 0) return undefined;
+	let closed = 0;
+	let total = 0;
+	for (const phase of nonEmpty) {
+		for (const task of phase.tasks) {
+			total++;
+			if (task.status === "completed" || task.status === "abandoned") closed++;
+		}
+	}
+	return { closed, total };
+}
+
 /** omp #sanitizeGoalTodoText: XML-escape and flatten control characters. */
 function sanitizeTodoText(text: string): string {
 	return escapeXmlText(text)
@@ -110,20 +134,11 @@ export function buildTodoContext(phases: TodoPhase[], todoToolActive: boolean): 
 	const nonEmpty = phases.filter((phase) => phase.tasks.length > 0);
 	if (nonEmpty.length === 0) return undefined;
 
-	let total = 0;
-	let closed = 0;
-	let open = 0;
+	const { closed, total } = todoProgress(nonEmpty)!;
+	const open = total - closed;
 	const promptPhases = nonEmpty.map((phase) => ({
 		name: sanitizeTodoText(phase.name),
-		tasks: phase.tasks.map((task) => {
-			total++;
-			if (task.status === "completed" || task.status === "abandoned") {
-				closed++;
-			} else {
-				open++;
-			}
-			return { content: sanitizeTodoText(task.content), status: task.status };
-		}),
+		tasks: phase.tasks.map((task) => ({ content: sanitizeTodoText(task.content), status: task.status })),
 	}));
 
 	return renderTemplate(goalTodoContextPrompt, {

@@ -14,7 +14,7 @@ Source: [oh-my-pi](https://github.com/can1357/oh-my-pi) (a fork of badlogic/pi-m
 - **Interrupt safety** — Esc interrupts pause the goal (never complete it); usage accumulated so far is kept. Resuming a session auto-pauses a still-active goal, since the run that owned it is gone.
 - **`/goal` command** — `set <objective>`, `show`, `pause`, `resume`, `drop`, `budget <N|off>`, or an interactive menu when called without arguments. Typing an objective while a goal is active (or paused) is rejected with omp's status/warning; `/goal drop` and the menu's Drop confirm before discarding.
 - **`/guided-goal [rough objective]`** — the agent interviews you in normal chat (success criteria, verification method, attempt cap, scope boundaries, stop conditions) and then creates the goal itself via `goal create`.
-- **Footer status** — a `<icon> Goal <used/budget>` segment (omp `renderGoalMode` unicode icon set: 🎯 active, ⏸ paused, ⚠ budget-limited) while the goal is enabled or paused. Completed goals stay visible in the transcript after reloads via a persistent `goal-completed` entry renderer.
+- **Footer status** — a `<icon> Goal <used/budget>` segment (omp `renderGoalMode` unicode icon set: 🎯 active, ⏸ paused, ⚠ budget-limited) while the goal is enabled or paused. With [pi-todo](../pi-todo) live, a ` · <closed>/<total> tasks` suffix tracks todo progress (live via `todo_updated`, restored from session entries). Completed goals stay visible in the transcript after reloads via a persistent `goal-completed` entry renderer.
 - **pi-todo integration** — when [pi-todo](../pi-todo) is installed, the goal context message includes a live `<todo_context>` block so continuations treat todos as current state, not stale transcript decoration.
 
 ## Install
@@ -35,7 +35,7 @@ or copy/link this directory into `~/.pi/agent/extensions/` (global) or `.pi/exte
 /goal drop
 ```
 
-Status line: a `<icon> Goal <used/budget>` segment appears in the footer while a goal is enabled or paused (omp footer segment semantics).
+Status line: a `<icon> Goal <used/budget>` segment appears in the footer while a goal is enabled or paused (omp footer segment semantics); with pi-todo live it becomes `🎯 Goal 12K/399K · 3/10 tasks`.
 
 ## Session persistence
 

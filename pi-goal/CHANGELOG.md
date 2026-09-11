@@ -1,6 +1,11 @@
 # Changelog
 
-## [Unreleased]
+## [1.0.1] - 2026-09-11
+
+### Added
+
+- Footer task progress: with pi-todo live, the goal status segment appends ` · <closed>/<total> tasks` (closed = completed + abandoned, empty phases ignored) — e.g. `🎯 Goal 12K/399K · 3/10 tasks`. Restored from `todo-phases` session entries on session start/tree navigation.
+- Missing `todo_updated` event wiring: pi-goal now subscribes to pi-todo's documented `todo_updated` broadcast (payload-validated), keeping the todo context and footer progress live between session restores. Previously `todoPhases` only refreshed on session start/tree navigation, so in-session todo mutations left the context stale.
 
 ## [1.0.0] - 2026-09-09
 

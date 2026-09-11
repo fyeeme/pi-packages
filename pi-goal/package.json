@@ -1,6 +1,6 @@
 {
 	"name": "@fyeeme/pi-goal",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Goal mode for pi \u2014 one persistent autonomous objective looped until verified success: goal tool (create/get/complete/resume/drop), token/time budget accounting with budget-limit steering, automatic continuation turns, /goal and /guided-goal commands, and a goal_updated event bus for other extensions.",
 	"type": "module",
 	"license": "MIT",

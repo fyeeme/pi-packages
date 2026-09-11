@@ -12,7 +12,7 @@ import { IMPOSSIBLE_REPORT_CAP } from "../src/tool.ts";
 import { GOAL_CLEARED_ENTRY_TYPE, GOAL_STATE_ENTRY_TYPE, restoreGoalFromEntries } from "../src/restore.ts";
 import { GoalRuntime, type GoalRuntimeHost } from "../src/runtime.ts";
 import type { Goal, GoalModeState, GoalRuntimeEvent, GoalTokenUsage, GoalToolDetails } from "../src/state.ts";
-import { buildTodoContext, restoreTodoPhases } from "../src/todo-bridge.ts";
+import { buildTodoContext, parseTodoPhases, restoreTodoPhases, todoProgress } from "../src/todo-bridge.ts";
 import {
 	buildGoalToolResponse,
 	createGoalTool,
@@ -524,5 +524,35 @@ describe("todo bridge", () => {
 		const context = buildTodoContext([{ name: "P<1>", tasks: [{ content: "a & b", status: "pending" }] }], true);
 		expect(context).toContain("P&lt;1&gt;");
 		expect(context).toContain("a &amp; b");
+	});
+
+	it("counts footer progress over non-empty phases only (completed + abandoned closed)", () => {
+		expect(
+			todoProgress([
+				{
+					name: "P1",
+					tasks: [
+						{ content: "a", status: "completed" },
+						{ content: "b", status: "abandoned" },
+						{ content: "c", status: "in_progress" },
+					],
+				},
+				{ name: "P2", tasks: [{ content: "d", status: "pending" }] },
+				{ name: "empty", tasks: [] },
+			]),
+		).toEqual({ closed: 2, total: 4 });
+		expect(todoProgress([{ name: "empty", tasks: [] }])).toBeUndefined();
+		expect(todoProgress([])).toBeUndefined();
+	});
+
+	it("validates todo_updated event payloads (parseTodoPhases)", () => {
+		const phases = [{ name: "P1", tasks: [{ content: "a", status: "pending" }] }];
+		expect(parseTodoPhases(phases)).toEqual(phases);
+		// defensive clone, not the caller's objects
+		expect(parseTodoPhases(phases)).not.toBe(phases);
+		expect(parseTodoPhases(undefined)).toBeUndefined();
+		expect(parseTodoPhases("nope")).toBeUndefined();
+		expect(parseTodoPhases([{ name: "P1", tasks: [{ content: "a", status: "bogus" }] }])).toBeUndefined();
+		expect(parseTodoPhases([{ tasks: [] }])).toBeUndefined();
 	});
 });

@@ -30,6 +30,7 @@ interface FakeHost {
 		{ handler: (args: string, ctx: unknown) => Promise<void>; getArgumentCompletions?: (prefix: string) => unknown }
 	>;
 	handlers: Map<string, Array<(event: unknown, ctx: unknown) => unknown>>;
+	busHandlers: Map<string, Array<(data: unknown) => void>>;
 	entries: Array<{ type: string; customType: string; data?: unknown; id: string }>;
 	sentMessages: Array<{
 		customType: string;
@@ -51,6 +52,7 @@ function fakeHost(): FakeHost {
 		tools: [],
 		commands: {},
 		handlers: new Map(),
+		busHandlers: new Map(),
 		entries: [],
 		sentMessages: [],
 		sentUserMessages: [],
@@ -101,7 +103,12 @@ function fakeHost(): FakeHost {
 			emit: (channel: string, data: unknown) => {
 				host.emitted.push({ channel, data });
 			},
-			on: () => () => {},
+			on: (channel: string, handler: (data: unknown) => void) => {
+				const list = host.busHandlers.get(channel) ?? [];
+				list.push(handler);
+				host.busHandlers.set(channel, list);
+				return () => {};
+			},
 		},
 	} as unknown as ExtensionAPI;
 	return host;
@@ -138,6 +145,12 @@ async function fire(host: FakeHost, event: string, payload: unknown, ctx?: unkno
 	const list = host.handlers.get(event) ?? [];
 	for (const handler of list) {
 		await handler(payload, ctx ?? createContext(host));
+	}
+}
+
+function fireBus(host: FakeHost, channel: string, data: unknown): void {
+	for (const handler of host.busHandlers.get(channel) ?? []) {
+		handler(data);
 	}
 }
 
@@ -516,6 +529,71 @@ describe("pi-goal extension wiring", () => {
 		host.statuses.clear();
 		await fire(host, "agent_settled", { type: "agent_settled" });
 		expect(host.statuses.get("goal")).toBe("🎯 Goal 0");
+	});
+
+	// ------------------------------------------------------------
+	// Footer task progress (pi-todo integration)
+	// ------------------------------------------------------------
+
+	it("shows live pi-todo task progress in the footer (todo_updated event)", async () => {
+		const host = fakeHost();
+		defaultExport(host.pi);
+		await fire(host, "session_start", { type: "session_start", reason: "startup" });
+		await host.commands.goal!.handler("Do the thing", createContext(host));
+		expect(host.statuses.get("goal")).toBe("🎯 Goal 0");
+
+		fireBus(host, "todo_updated", {
+			phases: [
+				{
+					name: "P1",
+					tasks: [
+						{ content: "a", status: "completed" },
+						{ content: "b", status: "in_progress" },
+					],
+				},
+			],
+		});
+		expect(host.statuses.get("goal")).toBe("🎯 Goal 0 · 1/2 tasks");
+	});
+
+	it("ignores malformed todo_updated payloads (footer keeps the plain segment)", async () => {
+		const host = fakeHost();
+		defaultExport(host.pi);
+		await fire(host, "session_start", { type: "session_start", reason: "startup" });
+		await host.commands.goal!.handler("Do the thing", createContext(host));
+
+		fireBus(host, "todo_updated", { phases: "nope" });
+		fireBus(host, "todo_updated", {});
+		fireBus(host, "todo_updated", undefined);
+		expect(host.statuses.get("goal")).toBe("🎯 Goal 0");
+	});
+
+	it("restores footer task progress from todo-phases entries on session_start", async () => {
+		const host = fakeHost();
+		defaultExport(host.pi);
+		const entries = [
+			...makeEntries(baseGoal, true),
+			{
+				type: "custom",
+				customType: "todo-phases",
+				id: "t1",
+				data: {
+					phases: [
+						{
+							name: "P1",
+							tasks: [
+								{ content: "a", status: "completed" },
+								{ content: "b", status: "pending" },
+							],
+						},
+					],
+				},
+			},
+		];
+		const ctx = createContext(host, { entries });
+		await fire(host, "session_start", { type: "session_start", reason: "resume" }, ctx);
+		// Cold resume pauses the goal; the restored progress still renders.
+		expect(host.statuses.get("goal")).toBe("⏸ Goal 0 · 1/2 tasks");
 	});
 
 	it("registers /goal argument completions (omp buildArgumentCompletions shape)", () => {

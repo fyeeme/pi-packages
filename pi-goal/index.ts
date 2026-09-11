@@ -49,7 +49,8 @@
  *   - `pi.events.emit("goal_updated", { goal, state })` after every runtime
  *     transition (goal may be null; state undefined after drop)
  *   - reads `todo_updated` events + "todo-phases" entries from pi-todo to
- *     render the goal todo context (works without pi-todo installed)
+ *     render the goal todo context and the footer task progress (works
+ *     without pi-todo installed)
  */
 
 // Prompt lives in a static .md asset next to this module (published with the
@@ -78,7 +79,13 @@ import { GoalRuntime } from "./src/runtime.ts";
 import type { Goal, GoalModeState, GoalTokenUsage } from "./src/state.ts";
 import { cloneGoal } from "./src/state.ts";
 import { renderTemplate } from "./src/template.ts";
-import { buildTodoContext, restoreTodoPhases, type TodoPhase } from "./src/todo-bridge.ts";
+import {
+	buildTodoContext,
+	parseTodoPhases,
+	restoreTodoPhases,
+	todoProgress,
+	type TodoPhase,
+} from "./src/todo-bridge.ts";
 import { runGoalEvaluator } from "./src/evaluator.ts";
 import { createGoalTool, type GoalToolDeps } from "./src/tool.ts";
 
@@ -167,9 +174,10 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		}
 	}
 
-	/** omp status-line/segments.ts renderGoalMode: segment visible only while
+/** omp status-line/segments.ts renderGoalMode: segment visible only while
 	 *  enabled or paused; text "<icon> Goal used[/budget]" (goal.statusInFooter
-	 *  defaults to true, so usage always renders). */
+	 *  defaults to true, so usage always renders). pi-goal deviation: with
+	 *  live pi-todo phases a ` · <closed>/<total> tasks` suffix is appended. */
 	function updateStatus(): void {
 		const ctx = currentCtx;
 		if (!ctx) return;
@@ -181,7 +189,9 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		const goal = state.goal;
 		const used = formatNumber(goal.tokensUsed);
 		const budget = goal.tokenBudget !== undefined ? `/${formatNumber(goal.tokenBudget)}` : "";
-		ctx.ui.setStatus("goal", `${goalStatusIcon(goal.status)} Goal ${used}${budget}`);
+		const progress = todoProgress(todoPhases);
+		const tasks = progress ? ` · ${progress.closed}/${progress.total} tasks` : "";
+		ctx.ui.setStatus("goal", `${goalStatusIcon(goal.status)} Goal ${used}${budget}${tasks}`);
 	}
 
 	function notify(text: string, severity: "info" | "warning" | "error" = "info"): void {
@@ -578,6 +588,16 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 
 	pi.on("turn_end", (_event, ctx) => {
 		currentCtx = ctx;
+		updateStatus();
+	});
+
+	// pi-todo contract: { phases } arrives over the shared event bus after
+	// every successful todo mutation. Keeps the goal todo context and the
+	// footer task progress live between session restores.
+	pi.events.on("todo_updated", (data) => {
+		const phases = parseTodoPhases((data as { phases?: unknown } | undefined)?.phases);
+		if (!phases) return;
+		todoPhases = phases;
 		updateStatus();
 	});
 
