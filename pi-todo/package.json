@@ -1,6 +1,6 @@
 {
 	"name": "@fyeeme/pi-todo",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Phased todo list tool for pi — nine operations (init/start/done/rm/drop/block/unblock/append/view) over phase/task state persisted with the session, a /todo command, and a todo_updated event bus broadcast for other extensions.",
 	"type": "module",
 	"license": "MIT",
