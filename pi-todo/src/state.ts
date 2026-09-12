@@ -4,11 +4,17 @@
  * Ported from oh-my-pi (github.com/can1357/oh-my-pi, a fork of badlogic/pi-mono)
  * `packages/coding-agent/src/tools/todo.ts` — the data model, the nine
  * operations, their validation semantics, and the summary text are carried
- * over behavior-for-behavior. Dropped from the omp source (host-internal
- * surfaces with no pi counterpart):
- *   - markdown round-trip (omp /todo edit)   - prompt-line analysis machines
- *   - collapsed-viewport selection / HUD      - subagent description matching
- *   - nextActionableTask (prewalk consumer)   - tool examples (omp-only field)
+ * over behavior-for-behavior, with deliberate deviations (cognitive-neutral
+ * notepad refactor):
+ *   - no single-`in_progress` invariant / auto-promotion pointer: statuses are
+ *     set only by explicit ops (`start`/`done`/`drop`/`block`/`unblock`)
+ *   - no stop-reminder machinery (question guards, nag cycle)
+ * Dropped from the omp source (host-internal surfaces with no pi counterpart):
+ *   - prompt-line analysis machines          - subagent description matching
+ *   - nextActionableTask (prewalk consumer)  - tool examples (omp-only field)
+ * Kept despite the omp header listing them as host-internal: the markdown
+ * round-trip (commands.ts /todo edit|import) and the collapsed-viewport
+ * selection (render.ts) — both live below.
  */
 
 import * as os from "node:os";
@@ -112,7 +118,15 @@ function todoTransitionKey(phase: string, content: string): string {
 	return `${phase}\u0000${content}`;
 }
 
-export function getCompletionTransitions(previous: TodoPhase[], updated: TodoPhase[]): TodoCompletionTransition[] {
+/** A task whose status changed in a mutation (old → new). */
+export interface TodoStatusTransition {
+	phase: string;
+	content: string;
+	from: TodoStatus;
+	to: TodoStatus;
+}
+
+export function getStatusTransitions(previous: TodoPhase[], updated: TodoPhase[]): TodoStatusTransition[] {
 	const previousStatuses = new Map<string, TodoStatus>();
 	for (const phase of previous) {
 		for (const task of phase.tasks) {
@@ -120,39 +134,16 @@ export function getCompletionTransitions(previous: TodoPhase[], updated: TodoPha
 		}
 	}
 
-	const transitions: TodoCompletionTransition[] = [];
+	const transitions: TodoStatusTransition[] = [];
 	for (const phase of updated) {
 		for (const task of phase.tasks) {
-			if (task.status !== "completed") continue;
 			const previousStatus = previousStatuses.get(todoTransitionKey(phase.name, task.content));
-			if (previousStatus && previousStatus !== "completed") {
-				transitions.push({ phase: phase.name, content: task.content });
+			if (previousStatus && previousStatus !== task.status) {
+				transitions.push({ phase: phase.name, content: task.content, from: previousStatus, to: task.status });
 			}
 		}
 	}
 	return transitions;
-}
-
-/**
- * Enforce the single-`in_progress` invariant after every mutation: demote
- * surplus in-progress tasks, then auto-promote the earliest pending task when
- * none is in progress (the "pointer" the todo prompt documents).
- */
-export function normalizeInProgressTask(phases: TodoPhase[]): void {
-	const orderedTasks = phases.flatMap(phase => phase.tasks);
-	if (orderedTasks.length === 0) return;
-
-	const inProgressTasks = orderedTasks.filter(task => task.status === "in_progress");
-	if (inProgressTasks.length > 1) {
-		for (const task of inProgressTasks.slice(1)) {
-			task.status = "pending";
-		}
-	}
-
-	if (inProgressTasks.length > 0) return;
-
-	const firstPendingTask = orderedTasks.find(task => task.status === "pending");
-	if (firstPendingTask) firstPendingTask.status = "in_progress";
 }
 
 /** Whether a todo is settled: completed or deliberately abandoned. Shared so
@@ -165,39 +156,6 @@ export function isClosedTodo<T extends { status: TodoStatus }>(task: T): boolean
 // =============================================================================
 // Collapsed-viewport selection (omp #5873 walking viewport)
 // =============================================================================
-
-/** Minimum overlap (after normalization) required for a substring match.
- * Picked at six chars to admit single-word identifiers like "review" /
- * "Sonnet" without admitting tiny common substrings like "test" / "fix"
- * that would collide across unrelated todos. */
-const TODO_DESCRIPTION_MIN_OVERLAP = 6;
-
-function normalizeForTodoMatch(value: string): string {
-	return value
-		.toLowerCase()
-		.replace(/[^\p{L}\p{N}]+/gu, " ")
-		.trim();
-}
-
-/**
- * Report whether `content` likely names the same work as any entry in
- * `descriptions`. Used by the todo renderer to light up a pending todo when an
- * in-flight subagent is doing the work for it. Matching is normalize-then-equal
- * first, with a substring fallback in either direction requiring at least
- * {@link TODO_DESCRIPTION_MIN_OVERLAP} chars on the contained side.
- */
-export function todoMatchesAnyDescription(content: string, descriptions: readonly string[]): boolean {
-	const target = normalizeForTodoMatch(content);
-	if (!target) return false;
-	for (const desc of descriptions) {
-		const candidate = normalizeForTodoMatch(desc);
-		if (!candidate) continue;
-		if (target === candidate) return true;
-		if (target.length >= TODO_DESCRIPTION_MIN_OVERLAP && candidate.includes(target)) return true;
-		if (candidate.length >= TODO_DESCRIPTION_MIN_OVERLAP && target.includes(candidate)) return true;
-	}
-	return false;
-}
 
 /** omp pluralize (packages/utils/src/format.ts). */
 export function pluralize(label: string, count: number): string {
@@ -214,9 +172,10 @@ export function formatMoreItems(remaining: number, itemType: string): string {
 }
 
 /** A todo the collapsed viewport treats as current work: the literal
- *  `in_progress` task or a pending task a live subagent is executing. */
-function isActiveTodo<T extends { status: TodoStatus }>(task: T, isMatched: (task: T) => boolean): boolean {
-	return task.status === "in_progress" || (task.status === "pending" && isMatched(task));
+ *  `in_progress` task. (omp also matched pending tasks a live subagent was
+ *  executing; that matcher was removed with the cognitive-neutral refactor.) */
+function isActiveTodo<T extends { status: TodoStatus }>(task: T): boolean {
+	return task.status === "in_progress";
 }
 
 /** Result of {@link selectCollapsedTodos}: the rows to render plus an optional
@@ -230,14 +189,10 @@ export interface CollapsedTodoSelection<T> {
  *  visible as it happens (omp COLLAPSED_CLOSED_CONTEXT). */
 const COLLAPSED_CLOSED_CONTEXT = 1;
 
-function selectWithinCap<T extends { status: TodoStatus }>(
-	base: T[],
-	isMatched: (task: T) => boolean,
-	cap: number,
-): CollapsedTodoSelection<T> {
+function selectWithinCap<T extends { status: TodoStatus }>(base: T[], cap: number): CollapsedTodoSelection<T> {
 	if (base.length <= cap) return { items: base, summary: "" };
 
-	const active = base.filter(task => isActiveTodo(task, isMatched));
+	const active = base.filter(task => isActiveTodo(task));
 	// Only when active work strictly exceeds the cap do we drop pending rows and
 	// count hidden *actives*. At exactly `cap` actives, fall through so the normal
 	// branch still surfaces any following pending work in the summary.
@@ -250,12 +205,12 @@ function selectWithinCap<T extends { status: TodoStatus }>(
 	}
 
 	// Fill trailing rows with tasks following the first active one, so the
-	// promoted/current task leads and its successors follow in todo order.
+	// active task leads and its successors follow in todo order.
 	const firstActiveIdx = active.length > 0 ? base.indexOf(active[0]) : 0;
 	const fill: T[] = [];
 	for (let i = firstActiveIdx; i < base.length && active.length + fill.length < cap; i++) {
 		const task = base[i];
-		if (isActiveTodo(task, isMatched)) continue;
+		if (isActiveTodo(task)) continue;
 		fill.push(task);
 	}
 	const items = [...active, ...fill];
@@ -273,77 +228,15 @@ function selectWithinCap<T extends { status: TodoStatus }>(
  */
 export function selectCollapsedTodos<T extends { status: TodoStatus }>(
 	tasks: T[],
-	isMatched: (task: T) => boolean,
 	cap: number,
 ): CollapsedTodoSelection<T> {
 	const open = tasks.filter(task => !isClosedTodo(task));
 	// Closed tasks are never active, so a settled phase selects over itself.
-	if (open.length === 0) return selectWithinCap(tasks, isMatched, cap);
+	if (open.length === 0) return selectWithinCap(tasks, cap);
 	// `done` accepts any named task, so closed tasks are not necessarily a prefix.
 	const lead = tasks.filter(isClosedTodo).slice(-COLLAPSED_CLOSED_CONTEXT);
-	const selected = selectWithinCap(open, isMatched, cap);
+	const selected = selectWithinCap(open, cap);
 	return { items: [...lead, ...selected.items], summary: selected.summary };
-}
-
-// =============================================================================
-// Stop-reminder guards (omp TodoTracker.isAwaitingUserAnswer)
-// =============================================================================
-
-const MARKDOWN_PROMPT_PREFIX_RE = /^(?:>\s*)?(?:(?:[-*+]|\d+[.)])\s+)*/;
-const PROMPT_LABEL_RE = /^(?:q(?:uestion)?|ask)\s*\d*\s*[:.)-]\s*/i;
-const QUESTION_PROMPT_RE =
-	/^(?:what|which|when|where|why|how|who|whom|whose|do|does|did|can|could|would|will|should|is|are|am|may|shall)\b/i;
-const USER_DIRECTED_PROMPT_RE = /\b(?:you|your|we|our)\b/i;
-const USER_RESPONSE_CUE_RE =
-	/^(?:please\s+)?(?:confirm|reply|choose|pick|decide|advise)\b|^(?:please\s+)?answer\b|^(?:please\s+)?(?:let\s+me\s+know|tell\s+me)\b/i;
-/**
- * A trailing question mark is the universal signal that a line is a question, but
- * the English word/pronoun gates above exist to filter incidental "?" out of prose
- * (e.g. a TypeScript `foo?: string` tail). Non-English text has no cheap word list,
- * yet any non-ASCII character in a "?"/"？"-terminated line reliably marks it as
- * genuine prose — so treat it as a real user-directed question (omp #7803).
- */
-const NON_ASCII_TEXT_RE = /[^\x00-\x7F]/;
-
-interface PromptLine {
-	text: string;
-	hadPromptLabel: boolean;
-}
-
-function promptLine(line: string): PromptLine {
-	const withoutMarkdownPrefix = line.trim().replace(MARKDOWN_PROMPT_PREFIX_RE, "").trim();
-	const withoutPromptLabel = withoutMarkdownPrefix.replace(PROMPT_LABEL_RE, "").trim();
-	return {
-		text: withoutPromptLabel,
-		hadPromptLabel: withoutPromptLabel !== withoutMarkdownPrefix,
-	};
-}
-
-function isQuestionPromptLine(line: string): boolean {
-	const candidate = promptLine(line);
-	if (!/[?？]\s*$/.test(candidate.text)) return false;
-	return (
-		candidate.hadPromptLabel ||
-		QUESTION_PROMPT_RE.test(candidate.text) ||
-		USER_DIRECTED_PROMPT_RE.test(candidate.text) ||
-		NON_ASCII_TEXT_RE.test(candidate.text)
-	);
-}
-
-function isResponseCueLine(line: string): boolean {
-	const candidate = promptLine(line)
-		.text.replace(/[.!?。！？]+$/, "")
-		.trim();
-	return USER_RESPONSE_CUE_RE.test(candidate);
-}
-
-/** Whether an assistant reply ends by asking the user something — omp skips
- *  the stop reminder in that case (the ball is in the user's court). */
-export function isAwaitingUserAnswer(assistantText: string): boolean {
-	const text = assistantText.trim();
-	if (!text) return false;
-	const lastLine = text.split(/\r?\n/).at(-1)?.trim();
-	return lastLine !== undefined && (isQuestionPromptLine(lastLine) || isResponseCueLine(lastLine));
 }
 
 // =============================================================================
@@ -473,7 +366,6 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 		errors.push(`Line ${lineNum + 1}: unrecognized syntax "${trimmed}"`);
 	}
 
-	normalizeInProgressTask(phases);
 	return { phases, errors };
 }
 
@@ -491,18 +383,6 @@ export function resolveTodoMarkdownPath(input: string, cwd: string): string {
 	const raw = normalizePathLikeInput(input) || "TODO.md";
 	const expanded = raw === "~" ? os.homedir() : raw.startsWith("~/") ? path.join(os.homedir(), raw.slice(2)) : raw;
 	return path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
-}
-
-/**
- * Actionable open work (pending / in_progress): what stop-time reminders count.
- * Blocked tasks are excluded — they are parked awaiting external input, so
- * nagging about them would be noise (omp todo prompt: "excluded from
- * stop-time incomplete-todo reminder").
- */
-export function openTasks(phases: TodoPhase[]): TodoItem[] {
-	return phases.flatMap(phase =>
-		phase.tasks.filter(task => task.status === "pending" || task.status === "in_progress"),
-	);
 }
 
 // =============================================================================
@@ -655,13 +535,6 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntry, errors: string[]): 
 		case "start": {
 			const hit = resolveTaskOrError(phases, entry.task, errors);
 			if (!hit) return phases;
-			for (const phase of phases) {
-				for (const candidate of phase.tasks) {
-					if (candidate.status === "in_progress" && candidate !== hit.task) {
-						candidate.status = "pending";
-					}
-				}
-			}
 			hit.task.status = "in_progress";
 			return phases;
 		}
@@ -745,7 +618,6 @@ export function inferTodoOp(args: Record<string, unknown>, hasExistingPhases: bo
 export function applyParams(phases: TodoPhase[], params: TodoOpEntry): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
 	const next = applyEntry(phases, params, errors);
-	normalizeInProgressTask(next);
 	return { phases: next, errors };
 }
 
@@ -759,13 +631,22 @@ export function applyOpsToPhases(
 	for (const op of ops) {
 		next = applyEntry(next, op, errors);
 	}
-	normalizeInProgressTask(next);
 	return { phases: next, errors };
 }
 
 // =============================================================================
 // Summary text (tool result body)
 // =============================================================================
+
+/** Fold the per-task dumps above this size: mutation results carry the counts
+ *  and the leading open tasks, not the whole list — on big lists every
+ *  `done`/`start` would otherwise flood the model's context with a
+ *  full-checklist echo. `view` (readOnly) always echoes in full; this folds
+ *  only mutation results without errors (error results must carry the
+ *  unchanged list for the model's retry). */
+const SUMMARY_FULL_LIST_LIMIT = 20;
+/** Open tasks shown when the remaining dump is folded. */
+const SUMMARY_FOLDED_SHOWN = 10;
 
 export function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false): string {
 	const tasks = phases.flatMap(phase => phase.tasks);
@@ -787,55 +668,60 @@ export function formatSummary(phases: TodoPhase[], errors: string[], readOnly = 
 	);
 	if (currentIdx === -1) currentIdx = phases.length - 1;
 	const current = phases[currentIdx];
-	const done = current.tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
+	const done = current.tasks.filter(isClosedTodo).length;
 
 	const lines: string[] = [];
+	const fold = !readOnly && errors.length === 0 && tasks.length > SUMMARY_FULL_LIST_LIMIT;
 	if (errors.length > 0) lines.push(`Errors: ${errors.join("; ")}`);
 	if (remainingTasks.length === 0) {
 		lines.push("Remaining items: none.");
 	} else {
 		lines.push(`Remaining items (${remainingTasks.length}):`);
-		for (const task of remainingTasks) {
+		const shown = fold ? remainingTasks.slice(0, SUMMARY_FOLDED_SHOWN) : remainingTasks;
+		for (const task of shown) {
 			lines.push(`  - ${task.content} [${task.status}] (${task.phase})`);
+		}
+		if (shown.length < remainingTasks.length) {
+			lines.push(`  … ${remainingTasks.length - shown.length} more open — call \`view\` for the full list.`);
 		}
 	}
 	// Closed = completed + abandoned, mirroring the per-phase `done` count.
-	const closedAll = tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
+	const closedAll = tasks.filter(isClosedTodo).length;
 	const blockedAll = tasks.filter(task => task.status === "blocked").length;
-	// The active phase is the EARLIEST one still holding open work, so the
-	// in-progress pointer can sit in a phase whose successors already have
-	// completed tasks. Detect that "worked ahead" case to explain the
-	// otherwise-surprising backward pointer instead of letting it read as a
-	// completed task reverting to pending.
-	const workedAhead = phases.some(
-		(phase, idx) =>
-			idx > currentIdx && phase.tasks.some(task => task.status === "completed" || task.status === "abandoned"),
-	);
+	// The active phase is the EARLIEST one still holding open work, so it can
+	// sit behind phases that already hold completed tasks from out-of-order
+	// execution. Say so instead of letting it read as a completed task
+	// reverting to pending.
+	const workedAhead = phases.some((phase, idx) => idx > currentIdx && phase.tasks.some(isClosedTodo));
 	lines.push(
 		`Overall: ${closedAll}/${tasks.length} done, ${remainingTasks.length} open${blockedAll > 0 ? `, ${blockedAll} blocked` : ""}.`,
 	);
 	lines.push(
 		`Active phase ${currentIdx + 1}/${phases.length} "${current.name}" (${done}/${current.tasks.length})${
 			workedAhead
-				? " — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed)."
+				? " — earliest phase with open tasks; later phases may already hold completed work from out-of-order execution (nothing was un-completed)."
 				: "."
 		}`,
 	);
-	for (const phase of phases) {
-		lines.push(`  ${phase.name}:`);
-		for (const task of phase.tasks) {
-			const checkbox = task.status === "completed" ? "[X]" : "[ ]";
-			const tag =
-				task.status === "in_progress"
-					? " (in progress)"
-					: task.status === "abandoned"
-						? " (dropped)"
-						: task.status === "blocked"
-							? task.blocker
-								? ` (blocked: ${task.blocker})`
-								: " (blocked)"
-							: "";
-			lines.push(`    - ${checkbox} ${task.content}${tag}`);
+	if (fold) {
+		lines.push(`Full checklist omitted (${tasks.length} tasks) — \`view\` echoes it.`);
+	} else {
+		for (const phase of phases) {
+			lines.push(`  ${phase.name}:`);
+			for (const task of phase.tasks) {
+				const checkbox = task.status === "completed" ? "[X]" : "[ ]";
+				const tag =
+					task.status === "in_progress"
+						? " (in progress)"
+						: task.status === "abandoned"
+							? " (dropped)"
+							: task.status === "blocked"
+								? task.blocker
+									? ` (blocked: ${task.blocker})`
+									: " (blocked)"
+								: "";
+				lines.push(`    - ${checkbox} ${task.content}${tag}`);
+			}
 		}
 	}
 	return lines.join("\n");

@@ -9,6 +9,9 @@
  *   AgentTool class + ToolSession  → ToolDefinition + closure deps
  *   concurrency: "exclusive"      → executionMode: "sequential"
  *   session getTodoPhases/setTodoPhases → getPhases/setPhases/persist/broadcast
+ *   eager-todo promptGuidelines    → dropped (cognitive-neutral notepad: the
+ *       tool description documents the mechanics; the system prompt is not
+ *       steered)
  */
 
 import { readFileSync } from "node:fs";
@@ -22,7 +25,7 @@ import {
 	applyParams,
 	clonePhases,
 	formatSummary,
-	getCompletionTransitions,
+	getStatusTransitions,
 	inferTodoOp,
 	type TodoOperation,
 	type TodoOpEntry,
@@ -66,13 +69,6 @@ export const TodoParamsSchema = Type.Object({
 
 export type TodoParams = Static<typeof TodoParamsSchema>;
 
-/** Advisory nudge appended to the default system prompt while the tool is active. */
-export const TODO_PROMPT_GUIDELINES = [
-	"Consider calling the todo tool first to lay out a phased plan with a single `init` op. A good list covers the whole request — investigation through implementation and verification — not just the next step, with specific task descriptions a future turn could execute without re-planning.",
-	"A useful list keeps each task to a concise, specific 5-10 word label; the `init` op only accepts phase names and task-label strings, so don't invent extra task metadata fields.",
-	"If you create the list, continue the request in the same turn and avoid re-calling the todo tool unless task state materially changes.",
-];
-
 export interface TodoToolDeps {
 	/** Current in-memory phases (already cloned on write). */
 	getPhases(): TodoPhase[];
@@ -84,16 +80,23 @@ export interface TodoToolDeps {
 	broadcast(phases: TodoPhase[]): void;
 }
 
+/** The one write-back invariant: replace state, persist, broadcast — in that
+ *  order. Shared by the tool path and the /todo command path so the two can
+ *  never drift (persist/broadcast semantics live in index.ts's deps). */
+export function commitPhases(deps: TodoToolDeps, next: TodoPhase[]): void {
+	deps.setPhases(next);
+	deps.persist(next);
+	deps.broadcast(next);
+}
+
 export function createTodoTool(deps: TodoToolDeps): ToolDefinition<typeof TodoParamsSchema, TodoToolDetails> {
 	const definition: ToolDefinition<typeof TodoParamsSchema, TodoToolDetails> = {
 		name: "todo",
 		label: "Todo",
 		description: todoDescription,
-		promptSnippet: "Write a structured todo list to track progress within a session",
-		promptGuidelines: TODO_PROMPT_GUIDELINES,
 		parameters: TodoParamsSchema,
 		executionMode: "sequential",
-		renderCall: (args, theme) => renderTodoCall(args, theme),
+		renderCall: renderTodoCall,
 		// omp's renderer folds call args into the result view (touched-phase
 		// diffing); pi passes them through the render context.
 		renderResult: (result, options, theme, context) => renderTodoResult(result, options, theme, context?.args),
@@ -118,7 +121,7 @@ export function createTodoTool(deps: TodoToolDeps): ToolDefinition<typeof TodoPa
 			_onUpdate: undefined,
 			_ctx: ExtensionContext,
 		): Promise<AgentToolResult<TodoToolDetails>> {
-			const previousPhases = clonePhases(deps.getPhases());
+			const previousPhases = deps.getPhases();
 			const op: TodoOperation = params.op;
 			// Pure-view calls are reads: no normalization, no state write.
 			const readOnly = op === "view";
@@ -130,21 +133,47 @@ export function createTodoTool(deps: TodoToolDeps): ToolDefinition<typeof TodoPa
 			// the ops that did land. State stays at previous. pi's tool contract
 			// is throw-on-failure (no isError field on AgentToolResult), and the
 			// thrown message carries the errors plus the unchanged list so the
-			// model can retry with correct content.
+			// model can retry with correct content. formatSummary does not fold
+			// error results (the fold is gated on empty errors), so the full list
+			// is present even on big lists.
 			if (errors.length > 0) {
 				throw new Error(formatSummary(previousPhases, errors, readOnly));
 			}
 			if (!readOnly) {
-				deps.setPhases(clonePhases(updated));
-				deps.persist(clonePhases(updated));
-				deps.broadcast(clonePhases(updated));
+				// `updated` is a fresh clone nothing else references: hand ownership
+				// to the closure, and let persist/broadcast make their own
+				// entry-shaped snapshots (clonePhases inside index.ts).
+				commitPhases(deps, updated);
 			}
-			const completedTasks = readOnly ? [] : getCompletionTransitions(previousPhases, updated);
+			// Per-write confirmation, independent of summary folding: on big lists
+			// the folded summary may not show the operated tasks at all, so the
+			// model needs an explicit record of what changed (status + blocker note).
+			const transitions = readOnly ? [] : getStatusTransitions(previousPhases, updated);
 			const details: TodoToolDetails = { op, phases: clonePhases(updated), storage: "session" };
+			const completedTasks = transitions
+				.filter(transition => transition.to === "completed")
+				.map(({ phase, content }) => ({ phase, content }));
 			if (completedTasks.length > 0) details.completedTasks = completedTasks;
 
+			let text = formatSummary(updated, [], readOnly);
+			if (transitions.length > 0) {
+				const changed = transitions
+					.map(transition => {
+						const blocker =
+							transition.to === "blocked"
+								? updated
+									.find(phase => phase.name === transition.phase)
+									?.tasks.find(task => task.content === transition.content)?.blocker
+								: undefined;
+						const note = blocker ? ` (blocked: ${blocker})` : "";
+						return `  - ${transition.content} [${transition.from} → ${transition.to}]${note} (${transition.phase})`;
+					})
+					.join("\n");
+				text = `Changed:\n${changed}\n\n${text}`;
+			}
+
 			return {
-				content: [{ type: "text", text: formatSummary(updated, [], readOnly) }],
+				content: [{ type: "text", text }],
 				details,
 			};
 		},

@@ -7,8 +7,6 @@ import {
 	inferTodoOp,
 	isTodoPhase,
 	isTodoPhaseSnapshot,
-	normalizeInProgressTask,
-	openTasks,
 	type TodoOpEntry,
 	type TodoPhase,
 } from "../src/state.ts";
@@ -18,7 +16,7 @@ function phasesWithTasks(...entries: Array<[string, ...string[]]>): TodoPhase[] 
 }
 
 describe("todo state: init", () => {
-	it("installs a phased list, all tasks pending, in order", () => {
+	it("installs a phased list, all tasks pending, in order (no auto-promotion)", () => {
 		const { phases, errors } = applyParams(
 			[],
 			{
@@ -31,8 +29,8 @@ describe("todo state: init", () => {
 		);
 		expect(errors).toEqual([]);
 		expect(phases.map(p => p.name)).toEqual(["Foundation", "Verify"]);
-		// normalizeInProgressTask auto-promotes the earliest pending task.
-		expect(phases[0].tasks[0]).toEqual({ content: "Scaffold", status: "in_progress" });
+		// Statuses change only through explicit ops: nothing auto-promotes.
+		expect(phases[0].tasks[0]).toEqual({ content: "Scaffold", status: "pending" });
 		expect(phases[0].tasks[1].status).toBe("pending");
 		expect(phases[1].tasks[0].status).toBe("pending");
 	});
@@ -73,7 +71,7 @@ describe("todo state: init", () => {
 			{
 				name: "Tasks",
 				tasks: [
-					{ content: "one", status: "in_progress" },
+					{ content: "one", status: "pending" },
 					{ content: "two", status: "pending" },
 				],
 			},
@@ -82,14 +80,15 @@ describe("todo state: init", () => {
 });
 
 describe("todo state: start", () => {
-	it("demotes every other in_progress task back to pending", () => {
+	it("marks the target in progress without touching other tasks (no invariant)", () => {
 		const phases: TodoPhase[] = [
 			{ name: "A", tasks: [{ content: "a1", status: "in_progress" }] },
 			{ name: "B", tasks: [{ content: "b1", status: "pending" }] },
 		];
 		const { phases: updated, errors } = applyParams(phases, { op: "start", task: "b1" });
 		expect(errors).toEqual([]);
-		expect(updated[0].tasks[0].status).toBe("pending");
+		// Multiple in_progress tasks are allowed: statuses are explicit-only.
+		expect(updated[0].tasks[0].status).toBe("in_progress");
 		expect(updated[1].tasks[0].status).toBe("in_progress");
 	});
 
@@ -274,60 +273,30 @@ describe("todo state: batch application", () => {
 		];
 		const { phases: updated, errors } = applyOpsToPhases(phases, [{ op: "rm", phase: "A" }, { op: "append", phase: "A", items: ["fresh"] }]);
 		expect(errors).toEqual([]);
-		expect(updated[0].tasks).toEqual([{ content: "fresh", status: "in_progress" }]);
+		expect(updated[0].tasks).toEqual([{ content: "fresh", status: "pending" }]);
 	});
 });
 
-describe("todo state: normalization", () => {
-	it("demotes surplus in_progress tasks", () => {
-		const phases: TodoPhase[] = [
-			{
-				name: "A",
-				tasks: [
-					{ content: "a1", status: "in_progress" },
-					{ content: "a2", status: "in_progress" },
-				],
-			},
-		];
-		normalizeInProgressTask(phases);
-		expect(phases[0].tasks.map(t => t.status)).toEqual(["in_progress", "pending"]);
-	});
-
-	it("auto-promotes the earliest pending task when none is in progress", () => {
+describe("todo state: explicit-status semantics (no normalization)", () => {
+	it("completion never auto-promotes another task", () => {
 		const phases: TodoPhase[] = [
 			{ name: "A", tasks: [{ content: "a1", status: "completed" }] },
 			{ name: "B", tasks: [{ content: "b1", status: "pending" }] },
 		];
-		normalizeInProgressTask(phases);
-		expect(phases[1].tasks[0].status).toBe("in_progress");
+		const { phases: updated } = applyParams(clonePhases(phases), { op: "done", task: "b1" });
+		expect(updated[1].tasks[0].status).toBe("completed");
+		// No hidden pointer: no task was touched besides the target.
+		expect(updated[0].tasks[0].status).toBe("completed");
 	});
 
-	it("out-of-order completion can move the pointer back to an earlier phase", () => {
-		let { phases } = applyParams(phasesWithTasks(["A", "a1", "a2"], ["B", "b1"]), { op: "done", task: "a1" });
-		({ phases } = applyParams(phases, { op: "done", task: "b1" }));
-		// b1 done; pointer returns to a2 (earliest open task).
-		expect(phases[0].tasks[1].status).toBe("in_progress");
+	it("out-of-order completion leaves every other status untouched", () => {
+		let { phases } = applyParams(phasesWithTasks(["A", "a1", "a2"], ["B", "b1"]), { op: "done", task: "b1" });
+		expect(phases[0].tasks.map(t => t.status)).toEqual(["pending", "pending"]);
 		expect(phases[1].tasks[0].status).toBe("completed");
 	});
 });
 
 describe("todo state: helpers", () => {
-	it("counts actionable open tasks, excluding settled and blocked work", () => {
-		const phases: TodoPhase[] = [
-			{
-				name: "A",
-				tasks: [
-					{ content: "a1", status: "completed" },
-					{ content: "a2", status: "abandoned" },
-					{ content: "a3", status: "pending" },
-					{ content: "a4", status: "in_progress" },
-					{ content: "a5", status: "blocked", blocker: "ci" },
-				],
-			},
-		];
-		expect(openTasks(phases).map(t => t.content)).toEqual(["a3", "a4"]);
-	});
-
 	it("validates phase snapshots for restore", () => {
 		expect(isTodoPhase({ name: "A", tasks: [{ content: "a", status: "pending" }] })).toBe(true);
 		expect(isTodoPhase({ name: "A", tasks: [{ content: "a", status: "bogus" }] })).toBe(false);
@@ -362,6 +331,36 @@ describe("todo state: summary text", () => {
 	it("reports errors first and no-ops as cleared", () => {
 		expect(formatSummary([], ["boom"])).toBe("Errors: boom");
 		expect(formatSummary([], [])).toBe("Todo list cleared.");
+	});
+
+	it("folds the per-task dumps on big mutation results but view still echoes in full", () => {
+		// 25 tasks (> SUMMARY_FULL_LIST_LIMIT): 5 done, 20 open.
+		const statuses: TodoPhase[] = [
+			{
+				name: "Big",
+				tasks: Array.from({ length: 25 }, (_, i) => ({
+					content: `task ${i + 1}`,
+					status: (i < 5 ? "completed" : "pending") as TodoPhase["tasks"][number]["status"],
+				})),
+			},
+		];
+
+		// Mutation result: remaining capped at 10 + fold hints, no phase checklist.
+		const mutation = formatSummary(statuses, []);
+		expect(mutation).toContain("Remaining items (20):");
+		expect(mutation).toContain("- task 6 [pending] (Big)");
+		expect(mutation).toContain("… 10 more open — call `view` for the full list.");
+		expect(mutation).toContain("Overall: 5/25 done, 20 open.");
+		expect(mutation).toContain("Full checklist omitted (25 tasks) — `view` echoes it.");
+		expect(mutation).not.toContain("  Big:");
+		expect(mutation).not.toContain("- task 16 [pending]");
+
+		// view (readOnly): full echo, no folding, no omission notice.
+		const view = formatSummary(statuses, [], true);
+		expect(view).toContain("- task 25 [pending] (Big)");
+		expect(view).toContain("[X] task 1");
+		expect(view).not.toContain("Full checklist omitted");
+		expect(view).not.toContain("more open — call");
 	});
 });
 

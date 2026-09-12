@@ -13,9 +13,6 @@ import { clonePhases, isTodoPhaseSnapshot, type TodoPhase } from "./state.ts";
 /** Session entry customType for todo snapshots (see pi.appendEntry). */
 export const TODO_PHASES_ENTRY_TYPE = "todo-phases";
 
-/** Session entry customType for stop-time reminders. */
-export const TODO_REMINDER_ENTRY_TYPE = "todo-reminder";
-
 /**
  * Reconstruct todo state from session entries: the latest valid
  * `todo-phases` snapshot reachable on the current branch wins; malformed

@@ -7,14 +7,16 @@
  * call line and result lines separately. Strings, glyphs, colors, roman
  * numerals, per-phase progress, touched-phase collapsing, and the collapsed
  * walking viewport all match omp:
- *   - call:   ⏳(muted) Todo · <op> <task> · <phase> · N items (dim meta)
+ *   - call:   ⏳(muted) Todo · <op> <task> <phase> N items (dim meta; the
+ *             op's fields join with spaces, multiple ops join with ·)
  *   - result: ☑(accent) Todo · N tasks + per-phase tree
  *   - tasks:  ☑ success strikethrough / ☐ accent in-progress / ☐ error
  *             strikethrough abandoned / ☐ warning blocked (note) / ☐ dim pending
  *   - tree:   ├─ / └─ dim branch glyphs with the muted trailing summary
  * Dropped (host-internal, no pi counterpart): strike animations and spinner
- * frames (final strike state renders), subagent-match lighting (the
- * description provider stays empty outside omp), framed block chrome.
+ * frames (final strike state renders), subagent-match lighting (matcher
+ * removed with the cognitive-neutral refactor; pending renders dim), framed
+ * block chrome.
  */
 
 import { Text, type Component } from "@earendil-works/pi-tui";
@@ -24,9 +26,8 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
 	type TodoCompletionTransition,
 	type TodoItem,
-	formatMoreItems,
+	isClosedTodo,
 	phaseRomanNumeral,
-	phasesToMarkdown,
 	selectCollapsedTodos,
 	type TodoPhase,
 	type TodoToolDetails,
@@ -83,7 +84,7 @@ function formatPhaseDisplayName(name: string, oneBasedIndex: number): string {
 
 /** Dim `closed/total` suffix — counts completed + abandoned (omp isClosedTodo). */
 function formatPhaseProgress(phase: TodoPhase, theme: Theme): string {
-	const done = phase.tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
+	const done = phase.tasks.filter(isClosedTodo).length;
 	return theme.fg("dim", `  ${done}/${phase.tasks.length}`);
 }
 
@@ -100,7 +101,7 @@ function formatPhaseSummary(phase: TodoPhase, oneBasedIndex: number, theme: Them
 /** omp theme.checkbox unicode set (checkbox.checked / checkbox.unchecked). */
 const CHECKBOX = { checked: "☑", unchecked: "☐" } as const;
 
-function formatTodoLine(item: TodoItem, theme: Theme, matched = false): string {
+function formatTodoLine(item: TodoItem, theme: Theme): string {
 	const label = clip(item.content);
 	const box = CHECKBOX.unchecked;
 	switch (item.status) {
@@ -115,9 +116,7 @@ function formatTodoLine(item: TodoItem, theme: Theme, matched = false): string {
 			return theme.fg("warning", `${box} ${label} (${note})`);
 		}
 		default:
-			// A pending todo lit by a live subagent match renders accent (omp #5873);
-			// the subagent description provider is host-internal, so pending stays dim.
-			return theme.fg(matched ? "accent" : "dim", `${box} ${label}`);
+			return theme.fg("dim", `${box} ${label}`);
 	}
 }
 
@@ -136,8 +135,7 @@ interface TreeLineOptions {
 	theme: Theme;
 }
 
-function renderTreeLines({ items, trailingSummary, renderItem, theme }: TreeLineOptions): string[] {
-	const summary = trailingSummary;
+function renderTreeLines({ items, trailingSummary: summary, renderItem, theme }: TreeLineOptions): string[] {
 	const lines: string[] = [];
 	for (let i = 0; i < items.length; i++) {
 		const rendered = renderItem(items[i]);
@@ -157,9 +155,11 @@ function renderTreeLines({ items, trailingSummary, renderItem, theme }: TreeLine
 // =============================================================================
 
 /**
- * Phases the latest update touched, plus the active (in_progress) phase.
- * Returns `null` when there is no usable signal, meaning "render every phase
- * fully" — this preserves the legacy view and the manual-expand path.
+ * Phases the latest update touched, plus the phase where the work now sits:
+ * the earliest phase still holding open work (the same "active phase" the
+ * summary text reports). Returns `null` when there is no usable signal,
+ * meaning "render every phase fully" — this preserves the legacy view and the
+ * manual-expand path.
  */
 function computeTouchedPhases(
 	args: TodoRenderArgs | undefined,
@@ -167,18 +167,23 @@ function computeTouchedPhases(
 	completedTasks: TodoCompletionTransition[],
 ): Set<string> | null {
 	const touched = new Set<string>();
-	// The phase holding the in_progress task is where attention sits after the
-	// auto-promotion that follows every completion.
+	// Explicitly started work stays expanded.
 	for (const phase of phases) {
 		if (phase.tasks.some(task => task.status === "in_progress")) touched.add(phase.name);
 	}
+	// Without the omp auto-promotion pointer there may be no in_progress task at
+	// all; keep the earliest open-work phase expanded so the phase the agent
+	// works on next never collapses to a one-line summary.
+	const activePhase = phases.find(phase =>
+		phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"),
+	);
+	if (activePhase) touched.add(activePhase.name);
 	// Phases with a task that just transitioned to completed in this update.
 	for (const transition of completedTasks) touched.add(transition.phase);
 	// Phases explicitly named by the ops that ran. `init` replaces the whole
 	// list, so the entire plan is fresh and every phase counts as touched.
 	const ops = normalizeTodoArg(args);
 	for (const op of ops) {
-		if (!op || typeof op !== "object") continue;
 		if (op.op === "init") {
 			for (const phase of phases) touched.add(phase.name);
 			break;
@@ -198,11 +203,7 @@ function computeTouchedPhases(
 // Call / result renderers
 // =============================================================================
 
-export interface TodoRenderArgsPublic {
-	op?: string;
-	task?: string;
-	phase?: string;
-}
+export type TodoRenderArgsPublic = Omit<TodoRenderOp, "items">;
 
 export function renderTodoCall(args: TodoRenderArgsPublic, theme: Theme): Component {
 	// omp renderCall: renderStatusLine({icon:"pending", title:"Todo", meta})
@@ -253,8 +254,6 @@ export function renderTodoResult(
 	// single task flip doesn't redraw every phase's full task list. The manual
 	// expand toggle (and the no-signal fallback) still shows all.
 	const touched = options.expanded || !multiPhase ? null : computeTouchedPhases(args as TodoRenderArgs, phases, completedTasks);
-	// Subagent description matching is host-internal; pending renders dim.
-	const isMatched = (_task: TodoItem): boolean => false;
 
 	for (let p = 0; p < phases.length; p++) {
 		const phase = phases[p];
@@ -274,11 +273,11 @@ export function renderTodoResult(
 		const treeLines = options.expanded
 			? renderTreeLines({ items: phase.tasks, renderItem: todo => formatTodoLine(todo, theme), theme })
 			: (() => {
-					const selection = selectCollapsedTodos(phase.tasks, isMatched, COLLAPSED_ITEMS);
+					const selection = selectCollapsedTodos(phase.tasks, COLLAPSED_ITEMS);
 					return renderTreeLines({
 						items: selection.items,
 						trailingSummary: selection.summary,
-						renderItem: todo => formatTodoLine(todo, theme, isMatched(todo)),
+						renderItem: todo => formatTodoLine(todo, theme),
 						theme,
 					});
 				})();
@@ -286,10 +285,6 @@ export function renderTodoResult(
 			bodyLines.push(`${indent}${line}`);
 		}
 	}
-	while (bodyLines.length > 0 && bodyLines[0].trim() === "") bodyLines.shift();
 
 	return new Text([header, ...bodyLines].join("\n"), 0, 0);
 }
-
-// Re-exported for consumers that compose the pieces (tests).
-export { formatMoreItems, phasesToMarkdown };

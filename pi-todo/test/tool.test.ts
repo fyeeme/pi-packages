@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import defaultExport from "../index.ts";
 import { createTodoTool, TodoParamsSchema } from "../src/tool.ts";
-import { restorePhasesFromEntries, TODO_PHASES_ENTRY_TYPE, TODO_REMINDER_ENTRY_TYPE } from "../src/restore.ts";
+import { restorePhasesFromEntries, TODO_PHASES_ENTRY_TYPE } from "../src/restore.ts";
 import { Value } from "typebox/value";
 import type { TodoParams } from "../src/tool.ts";
 import type { TodoPhase, TodoToolDetails } from "../src/state.ts";
@@ -178,7 +178,7 @@ describe("todo tool execute", () => {
 		});
 		expect(result.details?.op).toBe("init");
 		expect(result.details?.storage).toBe("session");
-		expect(result.details?.phases[0].tasks[0].status).toBe("in_progress");
+		expect(result.details?.phases[0].tasks[0].status).toBe("pending");
 		expect(result.content[0]).toMatchObject({ type: "text" });
 		expect(host.entries).toHaveLength(1);
 		expect(host.entries[0].customType).toBe(TODO_PHASES_ENTRY_TYPE);
@@ -227,6 +227,46 @@ describe("todo tool execute", () => {
 		const result = await executeTool(tool, { op: "done", task: "a1" });
 		expect(result.details?.completedTasks).toEqual([{ phase: "A", content: "a1" }]);
 	});
+
+	it("prepends a Changed: block with status and blocker note to mutation results", async () => {
+		const host = fakeHost();
+		defaultExport(host.pi);
+		const tool = host.tools[0] as Record<string, unknown>;
+		await executeTool(tool, { op: "init", list: [{ phase: "A", items: ["a1", "a2"] }] });
+
+		const blocked = await executeTool(tool, { op: "block", task: "a2", reason: "ci down" });
+		expect(blocked.content[0]).toMatchObject({ type: "text" });
+		expect((blocked.content[0] as { text: string }).text).toContain(
+			"Changed:\n  - a2 [pending → blocked] (blocked: ci down) (A)",
+		);
+
+		const done = await executeTool(tool, { op: "done", task: "a1" });
+		expect((done.content[0] as { text: string }).text).toContain("Changed:\n  - a1 [pending → completed] (A)");
+
+		// view stays a pure echo: no Changed block.
+		const view = await executeTool(tool, { op: "view" });
+		expect((view.content[0] as { text: string }).text).not.toContain("Changed:");
+	});
+
+	it("error results never fold: the unchanged list survives on big lists (retry contract)", async () => {
+		const host = fakeHost();
+		defaultExport(host.pi);
+		const tool = host.tools[0] as Record<string, unknown>;
+		// 25 tasks (> SUMMARY_FULL_LIST_LIMIT): every task name is "task-<n>".
+		const items = Array.from({ length: 25 }, (_, i) => `task-${i + 1}`);
+		await executeTool(tool, { op: "init", list: [{ phase: "Big", items }] });
+
+		const thrown = await executeTool(tool, { op: "done", task: "task-19 typo" }).then(
+			() => null,
+			(err: unknown) => (err instanceof Error ? err : new Error(String(err))),
+		);
+		expect(thrown).toBeInstanceOf(Error);
+		// Retry contract: the unchanged list is fully present, no fold hints.
+		expect(thrown?.message).toContain("task-25");
+		expect(thrown?.message).toContain("task-11");
+		expect(thrown?.message).not.toContain("Full checklist omitted");
+		expect(thrown?.message).not.toContain("more open — call");
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -251,7 +291,7 @@ describe("todo restore", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Session wiring: session_start restore + stop reminder
+// Session wiring: session_start restore
 // ---------------------------------------------------------------------------
 
 describe("todo extension wiring", () => {
@@ -289,72 +329,7 @@ describe("todo extension wiring", () => {
 		expect(result.details?.phases).toEqual([{ name: "Current", tasks: [{ content: "current-task", status: "in_progress" }] }]);
 	});
 
-	it("stop reminder matches omp checkCompletion: nag text, followUp turn, 3-attempt cycle", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		const tool = host.tools[0] as Record<string, unknown>;
-		const endHandlers = host.handlers.get("agent_end") ?? [];
-		const assistantMsg = { role: "assistant", content: [{ type: "text", text: "Working on it." }] };
-		const fireAgentEnd = async () => {
-			for (const handler of endHandlers) {
-				await handler({ type: "agent_end", messages: [assistantMsg] }, {});
-			}
-		};
-
-		// No todos: silent.
-		await fireAgentEnd();
-		expect(host.sentMessages.filter(m => m.customType === "todo-reminder")).toHaveLength(0);
-
-		// Blocked-only work is parked, not nagged (omp counts pending+in_progress).
-		await executeTool(tool, { op: "init", list: [{ phase: "A", items: ["a1"] }] });
-		await executeTool(tool, { op: "block", task: "a1", reason: "ci down" });
-		await fireAgentEnd();
-		expect(host.sentMessages.filter(m => m.customType === "todo-reminder")).toHaveLength(0);
-
-		// A pending task survives: omp reminder text + continuation turn.
-		await executeTool(tool, { op: "append", phase: "A", items: ["a2"] });
-		await fireAgentEnd();
-		const first = host.sentMessages.find(m => m.customType === "todo-reminder");
-		expect(first?.display).toBe(false);
-		expect(first?.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
-		expect(first?.content).toContain("<system-reminder>");
-		expect(first?.content).toContain("You stopped with 1 incomplete todo item(s):");
-		expect(first?.content).toContain("- A\n  - a2");
-		expect(first?.content).toContain("(Reminder 1/3)");
-		// Transcript-anchored component text (omp TodoReminderComponent).
-		const reminderEntry = host.entries.find(e => e.customType === TODO_REMINDER_ENTRY_TYPE);
-		expect(reminderEntry?.data).toMatchObject({ count: 1, attempt: 1, maxAttempts: 3 });
-
-		// Attempts count up to the omp default max of 3, then stop.
-		host.sentMessages.length = 0;
-		await fireAgentEnd();
-		await fireAgentEnd();
-		await fireAgentEnd();
-		const reminders = host.sentMessages.filter(m => m.customType === "todo-reminder");
-		expect(reminders).toHaveLength(2);
-		expect(reminders[0]?.content).toContain("(Reminder 2/3)");
-		expect(reminders[1]?.content).toContain("(Reminder 3/3)");
-
-		// omp resetCycle: a fresh user prompt restarts the cycle.
-		const startHandlers = host.handlers.get("message_start") ?? [];
-		for (const handler of startHandlers) {
-			await handler({ type: "message_start", message: { role: "user" } }, {});
-		}
-		host.sentMessages.length = 0;
-		await fireAgentEnd();
-		expect(host.sentMessages.filter(m => m.customType === "todo-reminder")).toHaveLength(1);
-		expect(host.sentMessages[0]?.content).toContain("(Reminder 1/3)");
-
-		// Close everything: silent again.
-		host.sentMessages.length = 0;
-		await executeTool(tool, { op: "done", task: "a2" });
-		await executeTool(tool, { op: "unblock", task: "a1" });
-		await executeTool(tool, { op: "done", task: "a1" });
-		await fireAgentEnd();
-		expect(host.sentMessages.filter(m => m.customType === "todo-reminder")).toHaveLength(0);
-	});
-
-	it("skips the reminder when the assistant ended by asking the user (omp isAwaitingUserAnswer)", async () => {
+	it("agent_end leaves the agent alone: no nag, no auto-continuation", async () => {
 		const host = fakeHost();
 		defaultExport(host.pi);
 		await executeTool(host.tools[0] as Record<string, unknown>, {
@@ -364,20 +339,18 @@ describe("todo extension wiring", () => {
 		const endHandlers = host.handlers.get("agent_end") ?? [];
 		for (const handler of endHandlers) {
 			await handler(
-				{
-					type: "agent_end",
-					messages: [{ role: "assistant", content: [{ type: "text", text: "Which database should I use?" }] }],
-				},
+				{ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Working on it." }] }] },
 				{},
 			);
 		}
-		expect(host.sentMessages.filter(m => m.customType === "todo-reminder")).toHaveLength(0);
+		// Open todos do not trigger any hidden message or continuation turn.
+		expect(host.sentMessages).toHaveLength(0);
 	});
 
-	it("registers an entry renderer for reminders and a /todo command", () => {
+	it("registers no reminder renderer and a /todo command", () => {
 		const host = fakeHost();
 		defaultExport(host.pi);
-		expect(host.entryRenderers.has(TODO_REMINDER_ENTRY_TYPE)).toBe(true);
+		expect(host.entryRenderers.size).toBe(0);
 		expect(host.commands.todo).toBeDefined();
 	});
 });
@@ -427,8 +400,8 @@ describe("todo command", () => {
 		const ui = uiStub();
 		await run("", makeCtx(ui));
 		expect(ui.notifications[0]?.text).toContain("# Auth");
-		// omp normalizeInProgressTask auto-promotes the first pending task.
-		expect(ui.notifications[0]?.text).toContain("- [/] a1");
+		// No auto-promotion: init leaves every task pending.
+		expect(ui.notifications[0]?.text).toContain("- [ ] a1");
 		expect(ui.notifications[0]?.text).toContain("- [ ] a2");
 	});
 
@@ -529,16 +502,12 @@ describe("todo command", () => {
 		await run("rm two", makeCtx(ui));
 		expect(ui.notifications[2]?.text).toBe("Removed phase: Two");
 
-		// /todo rm (no arg) clears everything with the omp removed-intent reminder.
+		// /todo rm (no arg) clears everything.
 		host.sentMessages.length = 0;
 		await run("rm", makeCtx(ui));
 		expect(ui.notifications[3]?.text).toBe("Cleared all todos.");
-		const reminder = host.sentMessages.find(m => m.customType === "todo-user-edit");
-		expect(reminder?.content).toContain("The user manually modified the todo list (/todo rm (all)).");
-		expect(reminder?.content).toContain(
-			"The user intentionally cleared the todo list. Do NOT recreate or re-populate it",
-		);
-		expect(reminder?.display).toBe(false);
+		// No manual-edit system-reminder is injected (cognitive-neutral refactor).
+		expect(host.sentMessages).toHaveLength(0);
 	});
 
 	it("unknown task/phase targets report the omp error", async () => {
@@ -556,7 +525,7 @@ describe("todo command", () => {
 		const ui = uiStub();
 		await run("copy", makeCtx(ui));
 		expect(ui.notifications[0]?.text).toContain("Copy not available");
-		expect(ui.notifications[0]?.text).toContain("- [/] a1");
+		expect(ui.notifications[0]?.text).toContain("- [ ] a1");
 	});
 
 	it("help prints the omp usage block; unknown verbs error with it", async () => {
@@ -620,10 +589,8 @@ describe("todo command", () => {
 		(ctx.ui as Record<string, unknown>).editor = async () => edited;
 		await run("edit", ctx);
 		expect(ui.notifications[0]?.text).toBe("Todos updated from editor: 1 phase(s), 2 task(s).");
-		// Reminder tells the agent about the manual edit (omp #commit step 3).
-		const reminder = host.sentMessages.find(m => m.customType === "todo-user-edit");
-		expect(reminder?.content).toContain("The user manually modified the todo list (/todo edit).");
-		expect(reminder?.content).toContain("<system-reminder>");
+		// No manual-edit system-reminder is injected (cognitive-neutral refactor).
+		expect(host.sentMessages).toHaveLength(0);
 	});
 
 	it("edit cancel leaves todos unchanged with the omp warning", async () => {
@@ -647,7 +614,7 @@ describe("todo command", () => {
 			stderr.push(String(message));
 		});
 		await run("", { hasUI: false, ui: { notify: () => {} } });
-		expect(stderr.at(-1)).toContain("- [/] a1");
+		expect(stderr.at(-1)).toContain("- [ ] a1");
 		spy.mockRestore();
 	});
 });

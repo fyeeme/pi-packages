@@ -140,7 +140,8 @@ describe("todo render: result (omp renderer)", () => {
 	});
 
 	it("computeTouchedPhases consumes the call args via the render context (omp args fold)", () => {
-		// done on phase Two: One is untouched → one-line summary; Two expands.
+		// done on phase Two: Two is touched (completion + op phase); One is the
+		// earliest phase with open work, so it stays expanded too (no pointer).
 		const phases = [phase("One", ["pending"]), phase("Two", ["completed", "pending"])];
 		const completed: NonNullable<TodoToolDetails["completedTasks"]> = [{ phase: "Two", content: "two-1" }];
 		const out = text(
@@ -152,7 +153,8 @@ describe("todo render: result (omp renderer)", () => {
 			),
 		);
 		expect(out).toContain("I. One  0/1");
-		expect(out).not.toContain("one-1");
+		// Active phase (earliest open work) never collapses to a summary line.
+		expect(out).toContain("one-1");
 		expect(out).toContain("II. Two  1/2");
 		expect(out).toContain("two-2");
 	});

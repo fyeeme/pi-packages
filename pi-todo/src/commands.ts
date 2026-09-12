@@ -3,15 +3,14 @@
  *
  * Ported from oh-my-pi `todo-command-controller.ts` (+ its ACP helper in
  * slash-commands/helpers/todo.ts): view, edit, copy, export, import, append,
- * start, done, drop, rm, help — with quote-aware tokenizing, fuzzy
- * task/phase matching, and the developer system-reminder injection that tells
- * the agent the user manually modified the list.
+ * start, done, drop, rm, help — with quote-aware tokenizing and fuzzy
+ * task/phase matching. The omp developer system-reminder injection after
+ * manual edits was removed in the cognitive-neutral refactor.
  *
  * Host-internal surfaces map to pi:
  *   $EDITOR round-trip      → ctx.ui.editor (prefilled Markdown)
  *   clipboard copy          → printed (extension API has no clipboard write;
  *                             mirrors omp's own ACP fallback text)
- *   developer message       → pi.sendMessage display:false (custom role)
  *   user_todo_edit entry    → "todo-phases" snapshot (pi-todo's documented
  *                             entry contract, read back by restore and
  *                             pi-goal's todo bridge)
@@ -21,21 +20,18 @@ import { readFileSync, writeFileSync } from "node:fs";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
 	type TodoItem,
+	type TodoOpEntry,
 	applyOpsToPhases,
+	clonePhases,
 	type TodoPhase,
 	markdownToPhases,
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
 } from "./state.ts";
+import { commitPhases, type TodoToolDeps } from "./tool.ts";
 
-export interface TodoCommandDeps {
-	getPhases(): TodoPhase[];
-	setPhases(phases: TodoPhase[]): void;
-	persist(phases: TodoPhase[]): void;
-	broadcast(phases: TodoPhase[]): void;
-	/** Latest event context so the reminder can reach the agent mid-session. */
-	sendHiddenMessage?(content: string): void;
-}
+/** Same dependency contract as the tool path (single write-back invariant). */
+export type TodoCommandDeps = TodoToolDeps;
 
 const USAGE = [
 	"Usage: /todo <verb> [args]",
@@ -145,24 +141,6 @@ function findTaskFuzzy(phases: TodoPhase[], query: string): TodoTaskMatch | unde
 }
 
 // =============================================================================
-// System reminder (omp buildSystemReminder) — tells the agent the list changed
-// =============================================================================
-
-function buildSystemReminder(action: string, phases: TodoPhase[], removed = false): string {
-	const md = phases.length === 0 ? "(empty)" : phasesToMarkdown(phases).trimEnd();
-	const lines = ["<system-reminder>", `The user manually modified the todo list (${action}).`];
-	if (removed) {
-		lines.push(
-			phases.length === 0
-				? "The user intentionally cleared the todo list. Do NOT recreate or re-populate it unless the user explicitly asks; continue the current request without a todo list."
-				: "The user intentionally removed the entries no longer shown below. Do NOT re-add them unless the user explicitly asks.",
-		);
-	}
-	lines.push("Current todo list:", "", md, "</system-reminder>");
-	return lines.join("\n");
-}
-
-// =============================================================================
 // Command handler
 // =============================================================================
 
@@ -226,15 +204,6 @@ function emit(ctx: ExtensionCommandContext, text: string, severity: "info" | "wa
 	console.error(text);
 }
 
-function commit(deps: TodoCommandDeps, nextPhases: TodoPhase[], action: string, opts?: { removed?: boolean }): void {
-	deps.setPhases(nextPhases);
-	deps.persist(nextPhases);
-	deps.broadcast(nextPhases);
-	// omp #commit step 3: inject the system reminder so the agent learns about
-	// the change next turn. Removals carry explicit intent (omp issue #5258).
-	deps.sendHiddenMessage?.(buildSystemReminder(action, nextPhases, opts?.removed ?? false));
-}
-
 function showCurrent(deps: TodoCommandDeps, ctx: ExtensionCommandContext): void {
 	const phases = deps.getPhases();
 	if (phases.length === 0) {
@@ -282,7 +251,7 @@ async function importFromFile(deps: TodoCommandDeps, ctx: ExtensionCommandContex
 		emit(ctx, `Could not parse ${source}:\n  ${errors.join("\n  ")}`, "error");
 		return;
 	}
-	commit(deps, phases, `/todo import ${source}`);
+	commitPhases(deps, phases);
 	const taskCount = phases.reduce((sum, p) => sum + p.tasks.length, 0);
 	emit(ctx, `Imported ${phases.length} phase(s), ${taskCount} task(s) from ${source}.`);
 }
@@ -305,7 +274,7 @@ function append(deps: TodoCommandDeps, ctx: ExtensionCommandContext, rest: strin
 		content = tokens.slice(1).join(" ");
 	}
 
-	const next = current.map(phase => ({ ...phase, tasks: phase.tasks.slice() }));
+	const next = clonePhases(current);
 	let targetPhase: TodoPhase;
 
 	if (phaseName) {
@@ -322,7 +291,7 @@ function append(deps: TodoCommandDeps, ctx: ExtensionCommandContext, rest: strin
 	const finalContent = titleCaseSentence(content);
 	targetPhase.tasks.push({ content: finalContent, status: "pending" });
 
-	commit(deps, next, `/todo append → ${targetPhase.name}`);
+	commitPhases(deps, next);
 	emit(ctx, `Appended to ${targetPhase.name}: ${finalContent}`);
 }
 
@@ -331,19 +300,30 @@ function start(deps: TodoCommandDeps, ctx: ExtensionCommandContext, rest: string
 		emit(ctx, "Usage: /todo start <task>", "error");
 		return;
 	}
-	const current = deps.getPhases();
-	const hit = findTaskFuzzy(current, rest);
+	const hit = findTaskFuzzy(deps.getPhases(), rest);
 	if (!hit) {
 		emit(ctx, `No task matched "${rest}". Use /todo to list current tasks.`, "error");
 		return;
 	}
-	const { phases, errors } = applyOpsToPhases(current, [{ op: "start", task: hit.task.content }]);
+	applyAndCommit(deps, ctx, [{ op: "start", task: hit.task.content }], `Started: ${hit.task.content}`);
+}
+
+/** Shared tail of every mutating verb: apply ops, commit on success, report.
+ *  A failing batch is discarded wholesale (state unchanged) and its errors
+ *  surface as one error line. */
+function applyAndCommit(
+	deps: TodoCommandDeps,
+	ctx: ExtensionCommandContext,
+	ops: TodoOpEntry[],
+	successMessage: string,
+): void {
+	const { phases, errors } = applyOpsToPhases(deps.getPhases(), ops);
 	if (errors.length > 0) {
 		emit(ctx, errors.join("; "), "error");
 		return;
 	}
-	commit(deps, phases, `/todo start ${hit.task.content}`);
-	emit(ctx, `Started: ${hit.task.content}`);
+	commitPhases(deps, phases);
+	emit(ctx, successMessage);
 }
 
 function mutateStatus(
@@ -357,37 +337,19 @@ function mutateStatus(
 	const trimmedArg = rest.trim();
 	if (!trimmedArg) {
 		// no-arg: apply to all
-		const { phases, errors } = applyOpsToPhases(current, [{ op }]);
-		if (errors.length > 0) {
-			emit(ctx, errors.join("; "), "error");
-			return;
-		}
-		commit(deps, phases, `/todo ${op} (all)`);
-		emit(ctx, `Marked all tasks ${target}.`);
+		applyAndCommit(deps, ctx, [{ op }], `Marked all tasks ${target}.`);
 		return;
 	}
 
 	const taskHit = findTaskFuzzy(current, trimmedArg);
 	if (taskHit) {
-		const { phases, errors } = applyOpsToPhases(current, [{ op, task: taskHit.task.content }]);
-		if (errors.length > 0) {
-			emit(ctx, errors.join("; "), "error");
-			return;
-		}
-		commit(deps, phases, `/todo ${op} ${taskHit.task.content}`);
-		emit(ctx, `Marked ${target}: ${taskHit.task.content}`);
+		applyAndCommit(deps, ctx, [{ op, task: taskHit.task.content }], `Marked ${target}: ${taskHit.task.content}`);
 		return;
 	}
 
 	const phaseHit = findPhaseFuzzy(current, trimmedArg);
 	if (phaseHit) {
-		const { phases, errors } = applyOpsToPhases(current, [{ op, phase: phaseHit.name }]);
-		if (errors.length > 0) {
-			emit(ctx, errors.join("; "), "error");
-			return;
-		}
-		commit(deps, phases, `/todo ${op} ${phaseHit.name}`);
-		emit(ctx, `Marked phase ${phaseHit.name} ${target}.`);
+		applyAndCommit(deps, ctx, [{ op, phase: phaseHit.name }], `Marked phase ${phaseHit.name} ${target}.`);
 		return;
 	}
 
@@ -398,30 +360,18 @@ function remove(deps: TodoCommandDeps, ctx: ExtensionCommandContext, rest: strin
 	const current = deps.getPhases();
 	const trimmedArg = rest.trim();
 	if (!trimmedArg) {
-		commit(deps, [], "/todo rm (all)", { removed: true });
+		commitPhases(deps, []);
 		emit(ctx, "Cleared all todos.");
 		return;
 	}
 	const taskHit = findTaskFuzzy(current, trimmedArg);
 	if (taskHit) {
-		const { phases, errors } = applyOpsToPhases(current, [{ op: "rm", task: taskHit.task.content }]);
-		if (errors.length > 0) {
-			emit(ctx, errors.join("; "), "error");
-			return;
-		}
-		commit(deps, phases, `/todo rm ${taskHit.task.content}`, { removed: true });
-		emit(ctx, `Removed: ${taskHit.task.content}`);
+		applyAndCommit(deps, ctx, [{ op: "rm", task: taskHit.task.content }], `Removed: ${taskHit.task.content}`);
 		return;
 	}
 	const phaseHit = findPhaseFuzzy(current, trimmedArg);
 	if (phaseHit) {
-		const { phases, errors } = applyOpsToPhases(current, [{ op: "rm", phase: phaseHit.name }]);
-		if (errors.length > 0) {
-			emit(ctx, errors.join("; "), "error");
-			return;
-		}
-		commit(deps, phases, `/todo rm ${phaseHit.name}`, { removed: true });
-		emit(ctx, `Removed phase: ${phaseHit.name}`);
+		applyAndCommit(deps, ctx, [{ op: "rm", phase: phaseHit.name }], `Removed phase: ${phaseHit.name}`);
 		return;
 	}
 	emit(ctx, `No task or phase matched "${trimmedArg}".`, "error");
@@ -451,7 +401,7 @@ async function editInEditor(deps: TodoCommandDeps, ctx: ExtensionCommandContext)
 		emit(ctx, `Could not parse Markdown:\n  ${errors.join("\n  ")}`, "error");
 		return;
 	}
-	commit(deps, parsed, "/todo edit");
+	commitPhases(deps, parsed);
 	const taskCount = parsed.reduce((sum, p) => sum + p.tasks.length, 0);
 	emit(ctx, `Todos updated from editor: ${parsed.length} phase(s), ${taskCount} task(s).`);
 }

@@ -11,31 +11,33 @@
  *     MarkdownPath                               |  escaped brackets, errors)
  *   tools/todo.ts phaseRomanNumeral              | algorithmic roman numerals
  *   tools/todo.ts selectCollapsedTodos /         | collapsed walking viewport
- *     selectWithinCap / todoMatchesAny-          |
- *     Description                                |
+ *     selectWithinCap                            |
  *   tools/todo.ts formatSummary                  | exact summary text
  *   tools/todo.ts formatMoreItems / pluralize    | ellipsis summaries
- *   session/todo-tracker.ts checkCompletion /    | reminder text, attempt
- *     isAwaitingUserAnswer                       | cycle, question guard
  *   modes/controllers/todo-command-controller.ts | /todo verb surface, fuzzy
- *                                                | matching, system reminder
+ *                                                | matching
  *
- * Every expected string is copied verbatim from the omp sources listed.
+ * Expected strings are copied verbatim from the omp sources listed, except
+ * where the deviations note below applies.
+ *
+ * Deliberate omp deviations NOT pinned here (cognitive-neutral refactor):
+ * normalizeInProgressTask / auto-promotion, stop-reminder machinery, and the
+ * subagent description matcher were removed; formatSummary's worked-ahead
+ * wording and the >20-task fold with its `view` hints are pi-todo deviations
+ * from omp (assertions below pin the pi-todo wording, not omp's). See
+ * src/state.ts header.
  */
 
 import { homedir } from "node:os";
 import { describe, expect, it } from "vitest";
 import {
 	formatSummary,
-	isAwaitingUserAnswer,
 	markdownToPhases,
-	normalizeInProgressTask,
 	phaseRomanNumeral,
 	phasesToMarkdown,
 	pluralize,
 	resolveTodoMarkdownPath,
 	selectCollapsedTodos,
-	todoMatchesAnyDescription,
 	type TodoItem,
 	type TodoPhase,
 } from "../src/state.ts";
@@ -126,9 +128,9 @@ describe("markdown round-trip matches omp", () => {
 		]);
 	});
 
-	it("normalizeInProgressTask runs on parse (omp markdownToPhases tail)", () => {
+	it("markdownToPhases parses statuses literally (no normalization)", () => {
 		const { phases } = markdownToPhases("- [ ] one\n- [ ] two");
-		expect(phases[0]?.tasks[0]?.status).toBe("in_progress");
+		expect(phases[0]?.tasks[0]?.status).toBe("pending");
 		expect(phases[0]?.tasks[1]?.status).toBe("pending");
 	});
 
@@ -169,11 +171,9 @@ function task(content: string, status: TodoItem["status"]): TodoItem {
 }
 
 describe("selectCollapsedTodos matches omp", () => {
-	const never = () => false;
-
 	it("returns everything within the cap", () => {
 		const tasks = [task("a", "in_progress"), task("b", "pending")];
-		const selection = selectCollapsedTodos(tasks, never, 8);
+		const selection = selectCollapsedTodos(tasks, 8);
 		expect(selection.items).toEqual(tasks);
 		expect(selection.summary).toBe("");
 	});
@@ -191,7 +191,7 @@ describe("selectCollapsedTodos matches omp", () => {
 			task("g", "pending"),
 			task("h", "pending"),
 		];
-		const selection = selectCollapsedTodos(tasks, never, 8);
+		const selection = selectCollapsedTodos(tasks, 8);
 		// Open work = 8 (a..h) ≤ cap; lead adds the LAST closed row additively.
 		expect(selection.items.map(t => t.content)).toEqual([
 			"closed-new",
@@ -209,7 +209,7 @@ describe("selectCollapsedTodos matches omp", () => {
 
 	it("counts hidden open work with the omp ellipsis summary", () => {
 		const tasks = [task("done", "completed"), ...Array.from({ length: 10 }, (_, i) => task(`t${i}`, "pending"))];
-		const selection = selectCollapsedTodos(tasks, never, 8);
+		const selection = selectCollapsedTodos(tasks, 8);
 		expect(selection.items.filter(t => t.content === "done")).toHaveLength(1);
 		expect(selection.summary).toBe("… 2 more todos");
 	});
@@ -221,51 +221,16 @@ describe("selectCollapsedTodos matches omp", () => {
 			task("w3", "in_progress"),
 			task("p", "pending"),
 		];
-		const selection = selectCollapsedTodos(tasks, never, 2);
+		const selection = selectCollapsedTodos(tasks, 2);
 		expect(selection.items.map(t => t.content)).toEqual(["w1", "w2"]);
 		expect(selection.summary).toBe("… 1 more active todo");
 	});
 
 	it("a settled phase selects over its closed tasks", () => {
 		const tasks = [task("a", "completed"), task("b", "abandoned"), task("c", "completed")];
-		const selection = selectCollapsedTodos(tasks, never, 8);
+		const selection = selectCollapsedTodos(tasks, 8);
 		expect(selection.items).toEqual(tasks);
 		expect(selection.summary).toBe("");
-	});
-});
-
-describe("todoMatchesAnyDescription matches omp", () => {
-	it("matches normalized equality and ≥6-char substrings both ways", () => {
-		expect(todoMatchesAnyDescription("Fix the build", ["fix the build!"])).toBe(true);
-		expect(todoMatchesAnyDescription("Sonnet #2: bug scan", ["Sonnet #2"])).toBe(true);
-		expect(todoMatchesAnyDescription("review", ["code review phase"])).toBe(true);
-		expect(todoMatchesAnyDescription("test", ["testing"])).toBe(false); // <6 overlap
-		expect(todoMatchesAnyDescription("", ["anything"])).toBe(false);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Stop-reminder guards — omp TodoTracker
-// ---------------------------------------------------------------------------
-
-describe("isAwaitingUserAnswer matches omp", () => {
-	it("detects question endings (word gates + non-ASCII)", () => {
-		expect(isAwaitingUserAnswer("Done for now.\nWhich database should I use?")).toBe(true);
-		expect(isAwaitingUserAnswer("Should I proceed?")).toBe(true);
-		expect(isAwaitingUserAnswer("要继续吗？")).toBe(true); // CJK question
-		expect(isAwaitingUserAnswer("Q1: ready?")).toBe(true); // prompt label
-	});
-
-	it("detects response cues", () => {
-		expect(isAwaitingUserAnswer("Please confirm the plan.")).toBe(true);
-		expect(isAwaitingUserAnswer("Let me know if that works")).toBe(true);
-	});
-
-	it("ignores prose with incidental question marks", () => {
-		// No question word/pronoun/non-ASCII gate fires; omp treats it as prose.
-		expect(isAwaitingUserAnswer("Fixed the optional foo?: string handling.")).toBe(false);
-		expect(isAwaitingUserAnswer("All checks pass.")).toBe(false);
-		expect(isAwaitingUserAnswer("")).toBe(false);
 	});
 });
 
@@ -313,14 +278,14 @@ describe("formatSummary matches omp verbatim", () => {
 		);
 	});
 
-	it("renders the worked-ahead explanation (omp backward-pointer note)", () => {
+	it("renders the worked-ahead explanation (out-of-order completion note)", () => {
 		const phases: TodoPhase[] = [
 			{ name: "A", tasks: [{ content: "a", status: "pending" }] },
 			{ name: "B", tasks: [{ content: "b", status: "completed" }] },
 		];
 		const out = formatSummary(phases, []);
 		expect(out).toContain(
-			'Active phase 1/2 "A" (0/1) — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed).',
+			'Active phase 1/2 "A" (0/1) — earliest phase with open tasks; later phases may already hold completed work from out-of-order execution (nothing was un-completed).',
 		);
 	});
 
@@ -341,29 +306,5 @@ describe("pluralize matches omp", () => {
 		expect(pluralize("todo", 2)).toBe("todos");
 		expect(pluralize("status", 2)).toBe("statuses");
 		expect(pluralize("entry", 2)).toBe("entries");
-	});
-});
-
-// ---------------------------------------------------------------------------
-// normalizeInProgressTask invariant (omp applyParams tail)
-// ---------------------------------------------------------------------------
-
-describe("normalizeInProgressTask matches omp", () => {
-	it("demotes surplus in-progress tasks", () => {
-		const phases: TodoPhase[] = [
-			{ name: "A", tasks: [task("a", "in_progress"), task("b", "in_progress")] },
-		];
-		normalizeInProgressTask(phases);
-		expect(phases[0]?.tasks.map(t => t.status)).toEqual(["in_progress", "pending"]);
-	});
-
-	it("auto-promotes the earliest pending when none is in progress", () => {
-		const phases: TodoPhase[] = [
-			{ name: "A", tasks: [task("a", "completed"), task("b", "pending")] },
-			{ name: "B", tasks: [task("c", "pending")] },
-		];
-		normalizeInProgressTask(phases);
-		expect(phases[0]?.tasks[1]?.status).toBe("in_progress");
-		expect(phases[1]?.tasks[0]?.status).toBe("pending");
 	});
 });
