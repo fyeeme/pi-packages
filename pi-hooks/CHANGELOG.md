@@ -5,7 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.4] - 2026-09-12
+
+### Added
+
+- `denyAsContext` per-hook flag: a deny (`permissionDecision: "deny"` or exit code 2) is demoted to `additionalContext` — the tool call proceeds and the nudge text is injected before the next LLM call instead of blocking the agent (e.g. `serena-hooks remind` stops killing read bursts).
 
 ## [1.0.3] - 2026-09-09
 

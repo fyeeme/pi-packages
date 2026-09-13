@@ -51,6 +51,11 @@ interface HookEntry {
 	command: string;
 	/** Per-hook timeout in seconds (Claude Code compatible). Default 60. */
 	timeout?: number;
+	/** Demote deny (`permissionDecision: "deny"` or exit code 2) to
+	 *  `additionalContext`: the tool call proceeds and the nudge text is
+	 *  injected before the next LLM call instead of blocking the agent
+	 *  (e.g. `serena-hooks remind`). */
+	denyAsContext?: boolean;
 }
 
 interface HookGroup {
@@ -105,7 +110,12 @@ export function normalizeConfig(raw: unknown): HooksConfig | null {
 				if (he.type !== "command" || typeof he.command !== "string") continue;
 				const timeout =
 					typeof he.timeout === "number" && he.timeout > 0 ? he.timeout : undefined;
-				entries.push({ type: "command", command: he.command, ...(timeout === undefined ? {} : { timeout }) });
+				entries.push({
+					type: "command",
+					command: he.command,
+					...(timeout === undefined ? {} : { timeout }),
+					...(he.denyAsContext === true ? { denyAsContext: true } : {}),
+				});
 			}
 			if (entries.length > 0) groups.push({ matcher: gr.matcher, hooks: entries });
 		}
@@ -242,6 +252,18 @@ export interface HookResult {
 	block: string | null;
 }
 
+/**
+ * Demote a deny to a pure context hint (`denyAsContext` per-hook flag): the
+ * tool call proceeds and the nudge text rides along before the next LLM call
+ * instead of blocking the agent. Prefers the hook's own `additionalContext`
+ * (e.g. serena-hooks remind's "Consider using Serena's symbolic tools...")
+ * and falls back to the block reason.
+ */
+export function applyDenyAsContext(result: HookResult): HookResult {
+	if (!result.block) return result;
+	return { context: result.context ?? result.block, block: null };
+}
+
 function emptyResult(): HookResult {
 	return { context: null, block: null };
 }
@@ -282,6 +304,7 @@ async function runCommand(
 	cwd: string,
 	stdinText: string,
 	timeoutMs: number,
+	denyAsContext: boolean,
 	signal?: AbortSignal,
 ): Promise<HookResult> {
 	return new Promise((resolve) => {
@@ -377,7 +400,8 @@ async function runCommand(
 			// parseHookOutput honors it as a block, so don't log it as a failure.
 			if (code !== 0 && code !== 2 && code !== null) console.error(`[hooks] exited ${code}: ${command}`);
 			const stdout = Buffer.concat(chunks).toString("utf8").trim();
-			finish(parseHookOutput(command, stdout, code));
+			const result = parseHookOutput(command, stdout, code);
+			finish(denyAsContext ? applyDenyAsContext(result) : result);
 		});
 
 		proc.on("error", (err) => {
@@ -407,13 +431,14 @@ async function runGroups(
 ): Promise<{ contexts: string[]; block: string | null }> {
 	if (!groups) return { contexts: [], block: null };
 
-	const commands: Array<{ command: string; timeoutMs: number }> = [];
+	const commands: Array<{ command: string; timeoutMs: number; denyAsContext: boolean }> = [];
 	for (const group of groups) {
 		if (!matchTool(group.matcher, toolName)) continue;
 		for (const hook of group.hooks) {
 			commands.push({
 				command: hook.command,
 				timeoutMs: (hook.timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
+				denyAsContext: hook.denyAsContext === true,
 			});
 		}
 	}
@@ -425,7 +450,9 @@ async function runGroups(
 	const results: HookResult[] = [];
 	for (let i = 0; i < commands.length; i += MAX_CONCURRENT) {
 		const batch = commands.slice(i, i + MAX_CONCURRENT);
-		results.push(...(await Promise.all(batch.map((c) => runCommand(c.command, cwd, stdinText, c.timeoutMs, signal)))));
+		results.push(
+			...(await Promise.all(batch.map((c) => runCommand(c.command, cwd, stdinText, c.timeoutMs, c.denyAsContext, signal)))),
+		);
 	}
 
 	const contexts: string[] = [];

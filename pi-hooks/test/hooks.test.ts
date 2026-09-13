@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { matchTool, normalizeConfig, parseHookOutput, loadConfig } from "../index.ts";
+import { matchTool, normalizeConfig, parseHookOutput, loadConfig, applyDenyAsContext } from "../index.ts";
 
 // ---------------------------------------------------------------------------
 // matchTool (Claude Code regex semantics)
@@ -122,6 +122,27 @@ describe("normalizeConfig", () => {
 		expect(entries?.[0]).toEqual({ type: "command", command: "valid" });
 		expect(entries?.[2]).toEqual({ type: "command", command: "t2", timeout: 30 });
 	});
+
+	it("preserves denyAsContext only when exactly true", () => {
+		const cfg = normalizeConfig({
+			hooks: {
+				PreToolUse: [
+					{
+						matcher: "",
+						hooks: [
+							{ type: "command", command: "on", denyAsContext: true },
+							{ type: "command", command: "off", denyAsContext: false },
+							{ type: "command", command: "junk", denyAsContext: "yes" },
+						],
+					},
+				],
+			},
+		});
+		const entries = cfg?.hooks.PreToolUse?.[0].hooks;
+		expect(entries?.[0]).toEqual({ type: "command", command: "on", denyAsContext: true });
+		expect(entries?.[1]).toEqual({ type: "command", command: "off" });
+		expect(entries?.[2]).toEqual({ type: "command", command: "junk" });
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -159,6 +180,44 @@ describe("parseHookOutput", () => {
 		const out = parseHookOutput("c", "running...", 0);
 		expect(out.context).toBeNull();
 		expect(out.block).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// applyDenyAsContext (denyAsContext per-hook flag: demote deny to a nudge)
+// ---------------------------------------------------------------------------
+
+describe("applyDenyAsContext", () => {
+	it("converts a deny with additionalContext into a pure context hint", () => {
+		// serena-hooks remind's deny shape: block reason + nudge text.
+		const deny = parseHookOutput(
+			"c",
+			JSON.stringify({
+				hookSpecificOutput: {
+					permissionDecision: "deny",
+					permissionDecisionReason: "Too many consecutive read calls...",
+					additionalContext: "Consider using Serena's symbolic tools instead.",
+				},
+			}),
+			0,
+		);
+		const soft = applyDenyAsContext(deny);
+		expect(soft.block).toBeNull();
+		expect(soft.context).toBe("Consider using Serena's symbolic tools instead.");
+	});
+
+	it("falls back to the block reason when the deny has no additionalContext", () => {
+		// e.g. bare exit code 2 with empty stdout.
+		const soft = applyDenyAsContext({ context: null, block: "blocked by hook" });
+		expect(soft.block).toBeNull();
+		expect(soft.context).toBe("blocked by hook");
+	});
+
+	it("leaves non-blocking results untouched", () => {
+		const result = { context: "hi", block: null };
+		expect(applyDenyAsContext(result)).toEqual(result);
+		const empty = { context: null, block: null };
+		expect(applyDenyAsContext(empty)).toEqual(empty);
 	});
 });
 
