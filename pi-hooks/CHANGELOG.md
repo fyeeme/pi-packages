@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.0.5] - 2026-09-16
+
+### Fixed
+
+- A bare exit code 2 with no parseable JSON on stdout is no longer treated as a deny: it is logged as a suspected broken hook command and the tool call proceeds. A crash or misconfiguration (e.g. `python3` exiting 2 for "can't open file") previously hard-blocked every tool call for the rest of the session. Structured JSON denies (`permissionDecision: "deny"`, or exit 2 carrying a deny payload) are unchanged.
+
 ## [1.0.4] - 2026-09-12
 
 ### Added

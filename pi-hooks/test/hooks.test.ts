@@ -156,9 +156,26 @@ describe("parseHookOutput", () => {
 		expect(out.block).toBeNull();
 	});
 
-	it("blocks on exit code 2", () => {
+	it("allows a bare exit code 2 with empty stdout (broken command, not a deny)", () => {
+		// e.g. `python3 missing.py` exits 2 — taking it as a deny would
+		// hard-block every tool call for the rest of the session.
 		const out = parseHookOutput("c", "", 2);
-		expect(out.block).toBe("blocked by hook");
+		expect(out.block).toBeNull();
+		expect(out.context).toBeNull();
+	});
+
+	it("allows exit code 2 with non-JSON stdout", () => {
+		const out = parseHookOutput("c", "Traceback (most recent call last): ...", 2);
+		expect(out.block).toBeNull();
+		expect(out.context).toBeNull();
+	});
+
+	it("still blocks on exit code 2 with a JSON deny payload", () => {
+		const stdout = JSON.stringify({
+			hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: "no" },
+		});
+		const out = parseHookOutput("c", stdout, 2);
+		expect(out.block).toBe("no");
 	});
 
 	it("blocks on permissionDecision deny and uses the reason", () => {

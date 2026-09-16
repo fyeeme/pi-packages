@@ -284,6 +284,18 @@ export function parseHookOutput(command: string, stdout: string, exitCode: numbe
 		}
 	}
 
+	// A bare exit code 2 with no parseable stdout is indistinguishable from a
+	// broken hook command (e.g. `python3` exits 2 for "can't open file"), and
+	// taking it as a deny hard-blocks EVERY tool call for the rest of the
+	// session. Treat the unstructured case as a suspected crash instead: warn
+	// and allow. A structured JSON deny still blocks, whatever the exit code.
+	if (exitCode === 2 && output === null) {
+		console.error(
+			`[hooks] exit 2 without a JSON deny payload from ${command} — likely a broken command, not a deny; allowing the call`,
+		);
+		return { context: null, block: null };
+	}
+
 	const context = output?.hookSpecificOutput?.additionalContext ?? null;
 	const deny = exitCode === 2 || output?.hookSpecificOutput?.permissionDecision === "deny";
 	const reason =

@@ -136,7 +136,8 @@ Commands may return JSON on stdout, or control flow via exit codes:
 ```
 
 - exit code **0** with `additionalContext` → context injected.
-- exit code **2** (PreToolUse) → tool call blocked (`terminate: true`); reason fed to the model. `terminate` skips the follow-up LLM call only when the denied call is in an all-terminating batch (pi >= 0.84.1, #7715); in a multi-tool batch the block always applies but the agent may continue.
+- exit code **2** (PreToolUse) **with a JSON deny payload** (`permissionDecision: "deny"`) → tool call blocked (`terminate: true`); reason fed to the model. `terminate` skips the follow-up LLM call only when the denied call is in an all-terminating batch (pi >= 0.84.1, #7715); in a multi-tool batch the block always applies but the agent may continue.
+- exit code **2** without parseable JSON (e.g. a broken command like `python3` failing to open a script) → treated as a crash, not a deny: warning on stderr, tool call proceeds. This keeps a misconfigured hook from hard-blocking every tool call.
 - exit code **2** (Stop) → ignored (pi cannot block exit).
 - other non-zero → logged, execution continues.
 - non-JSON stdout → logged as a warning, ignored.
