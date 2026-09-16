@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+## [1.0.2] - 2026-09-16
+
+### Changed
+
+- Prompt copy in the injected `<todo_context>` block: stale-item guidance now reads "stale, already finished, or superseded" (was "no longer active pointer") and ends with "Statuses only change through explicit todo ops — call `start` on the task you are working on" instead of the stale-in-progress phrasing.
+
 ## [1.0.1] - 2026-09-11
 
 ### Added
