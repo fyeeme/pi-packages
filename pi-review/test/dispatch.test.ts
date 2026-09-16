@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { parseGuards, selectVariant } from "../src/strategy.ts";
-import { parseReviewArgs, render, resolveEffort } from "../src/dispatch.ts";
+import { parseReviewArgs, render, resolveEffort, usesFanout } from "../src/dispatch.ts";
 
 const PKG_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const template = (rel: string) =>
@@ -120,9 +120,22 @@ describe("resolveEffort", () => {
 	});
 });
 
+describe("usesFanout (effort split: single-pass default, fan-out opt-in)", () => {
+	it("low/medium/high are single-pass (no subagents)", () => {
+		expect(usesFanout("low")).toBe(false);
+		expect(usesFanout("medium")).toBe(false);
+		expect(usesFanout("high")).toBe(false);
+	});
+
+	it("xhigh/max keep the finder/verifier pipeline", () => {
+		expect(usesFanout("xhigh")).toBe(true);
+		expect(usesFanout("max")).toBe(true);
+	});
+});
+
 describe("prompt template assets", () => {
-	it("the three templates exist and declare their vars", () => {
-		for (const rel of ["review.md", "simplify.parallel.md", "simplify.single.md"]) {
+	it("the four templates exist and declare their vars", () => {
+		for (const rel of ["review.parallel.md", "review.single.md", "simplify.parallel.md", "simplify.single.md"]) {
 			const { frontmatter } = template(rel);
 			expect(typeof frontmatter.description).toBe("string");
 			expect(Array.isArray(frontmatter.vars)).toBe(true);
@@ -149,10 +162,29 @@ describe("prompt template assets", () => {
 		expect(body).toContain("{{git-command}}");
 	});
 
-	it("both simplify variants and the review trigger carry the verify guidance", () => {
+	it("both simplify variants and both review triggers carry the verify guidance", () => {
 		expect(template("simplify.parallel.md").body).toContain("{{verify}}");
 		expect(template("simplify.single.md").body).toContain("{{verify}}");
-		expect(template("review.md").body).toContain("{{verify}}");
+		expect(template("review.parallel.md").body).toContain("{{verify}}");
+		expect(template("review.single.md").body).toContain("{{verify}}");
+	});
+
+	it("the single-pass review trigger forbids the fan-out; the parallel trigger demands it", () => {
+		const single = template("review.single.md").body;
+		expect(single).toContain("SINGLE-PASS FLOW");
+		expect(single).toContain("do NOT dispatch finder or verifier agents");
+		const parallel = template("review.parallel.md").body;
+		expect(parallel).toContain("XHIGH/MAX FLOW");
+		expect(parallel).toContain("subagent");
+	});
+
+	it("the single-pass trigger renders the loop notice only when armed", () => {
+		const body = template("review.single.md").body;
+		expect(body).toContain("{{loop-note}}");
+		const armed = render(body, { "loop-note": "\nLoop fixing is armed: up to 3 rounds.\n" });
+		expect(armed).toContain("Loop fixing is armed");
+		const unarmed = render(body, { "loop-note": "" });
+		expect(unarmed).not.toContain("Loop fixing is armed");
 	});
 });
 
@@ -161,7 +193,7 @@ describe("prompt template assets", () => {
 			effort: "low",
 			"effort-source": "default",
 			"extra-args": "",
-			skill: "/skills/review/SKILL.md",
+			skill: "/skills/code-review/SKILL.md",
 			"finder-max-turns": finder,
 			"verifier-max-turns": verifier,
 			"gap-hunt-max-turns": gapHunt,
@@ -169,14 +201,14 @@ describe("prompt template assets", () => {
 		});
 
 		it("defaults render the pre-config literals byte-for-byte", () => {
-			const out = render(template("review.md").body, reviewVars("20", "15", "15"));
+			const out = render(template("review.parallel.md").body, reviewVars("20", "15", "15"));
 			expect(out).toContain("with `maxTurns: 20` per finder batch");
 			expect(out).toContain("`maxTurns: 15` per verifier");
 			expect(out).toContain("`maxTurns: 15`\nfor the gap-hunt as the skill instructs");
 		});
 
 		it("configured budgets replace the defaults in the rendered message", () => {
-			const out = render(template("review.md").body, reviewVars("30", "25", "50"));
+			const out = render(template("review.parallel.md").body, reviewVars("30", "25", "50"));
 			expect(out).toContain("with `maxTurns: 30` per finder batch");
 			expect(out).toContain("`maxTurns: 25` per verifier");
 			expect(out).toContain("`maxTurns: 50`\nfor the gap-hunt as the skill instructs");
@@ -192,7 +224,7 @@ describe("prompt template assets", () => {
 				pct: "3%",
 				"git-command": "git diff",
 				"context-package": "(diff)",
-				skill: "/skills/simplify/SKILL.md",
+				skill: "/skills/code-simplify/SKILL.md",
 				verify: "",
 				"simplify-max-turns": "15",
 			});

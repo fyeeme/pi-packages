@@ -21,8 +21,8 @@ import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 
 const PKG_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SKILLS_DIR = join(PKG_ROOT, "skills");
-const REVIEW = readFileSync(join(SKILLS_DIR, "review", "SKILL.md"), "utf8");
-const SIMPLIFY = readFileSync(join(SKILLS_DIR, "simplify", "SKILL.md"), "utf8");
+const REVIEW = readFileSync(join(SKILLS_DIR, "code-review", "SKILL.md"), "utf8");
+const SIMPLIFY = readFileSync(join(SKILLS_DIR, "code-simplify", "SKILL.md"), "utf8");
 
 const ANGLES = ["Reuse", "Simplification", "Efficiency", "Altitude"] as const;
 
@@ -98,14 +98,14 @@ describe("template agent references", () => {
 	);
 
 	/** Agent names referenced by a template body (the bundled set is listed
-	 *  verbatim in review.md; simplify.parallel.md names the 4 cleaners). */
+	 *  verbatim in review.parallel.md; simplify.parallel.md names the 4 cleaners). */
 	const referenced = (rel: string): string[] => {
 		const body = readFileSync(join(PKG_ROOT, "prompts", rel), "utf8");
 		return [...agentNames].filter((name) => new RegExp(`\\b${name}\\b`).test(body));
 	};
 
 	it("every agent referenced by a template exists in agents/", () => {
-		for (const rel of ["review.md", "simplify.parallel.md", "simplify.single.md"]) {
+		for (const rel of ["review.parallel.md", "review.single.md", "simplify.parallel.md", "simplify.single.md"]) {
 			for (const name of referenced(rel)) {
 				expect(agentNames.has(name), `${rel} references "${name}" which has no definition`).toBe(true);
 			}
@@ -114,7 +114,8 @@ describe("template agent references", () => {
 
 	it("every agents/ definition is referenced by at least one template (nothing ships dead)", () => {
 		const all = new Set<string>([
-			...referenced("review.md"),
+			...referenced("review.parallel.md"),
+			...referenced("review.single.md"),
 			...referenced("simplify.parallel.md"),
 			...referenced("simplify.single.md"),
 		]);

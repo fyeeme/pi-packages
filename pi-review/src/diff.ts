@@ -30,7 +30,7 @@ export function findGitRoot(from: string): string | null {
 	}
 }
 
-/** Normalize a /simplify target argument: trimmed, with an optional
+/** Normalize a /code-simplify target argument: trimmed, with an optional
  *  path-prefix `@` PRESERVED — a real directory may itself start with `@`
  *  (e.g. node_modules/@scope/pkg), so the resolver tries the literal path
  *  first and only falls back to the @-stripped form when it does not exist. */
@@ -38,7 +38,7 @@ function normalizeTarget(target: string | undefined): string {
 	return (target ?? "").trim();
 }
 
-/** Resolve the diff scope for a review/simplify target. Pure — unit-testable.
+/** Resolve the diff scope for a code-review/code-simplify target. Pure — unit-testable.
  *
  *  - target absent/unresolvable → the nearest git root of `cwd`, full diff.
  *  - target is a path → its nearest git root; the relative path inside that

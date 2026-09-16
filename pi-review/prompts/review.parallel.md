@@ -1,12 +1,12 @@
 ---
-description: "/review trigger — effort-level code review via the review skill"
+description: "/code-review trigger — xhigh/max deep sweep: finder/verifier/gap-hunt fan-out via the code-review skill"
 vars: [effort, effort-source, extra-args, skill, finder-max-turns, verifier-max-turns, gap-hunt-max-turns, verify]
 ---
 Run a code review now. Effective effort: {{effort}} ({{effort-source}}){{extra-args}}.
 
-First load the review skill with the read tool: {{skill}}. Then follow it
-exactly — dispatch the finder / verifier / gap-hunter agents it calls for
-through the `subagent` tool (bundled agents: finder-diff-scan,
+First load the code-review skill with the read tool: {{skill}}. Then follow its
+XHIGH/MAX FLOW exactly — dispatch the finder / verifier / gap-hunter agents it
+calls for through the `subagent` tool (bundled agents: finder-diff-scan,
 finder-removed-behavior, finder-cross-file, finder-language-pitfall,
 finder-wrapper-proxy, cleaner-reuse, cleaner-simplification,
 cleaner-efficiency, cleaner-altitude, finder-conventions, verifier,

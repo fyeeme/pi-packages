@@ -3,7 +3,7 @@
  *
  * Sandwich architecture (see openspec change subagent-sandwich-refactor):
  *
- *   Skills  skills/review, skills/simplify — review methodology,
+ *   Skills  skills/code-review, skills/code-simplify — review methodology,
  *           registered natively via the pi manifest (`pi.skills`); they
  *           reference capabilities by stable tool/agent names only.
  *   Prompts prompts/ — the orchestration strategy as data: parallel-when
@@ -20,7 +20,7 @@
  *           manifest path wiring and no separate install step), registers
  *           this package's agents directory as a discovery source, and adds
  *           the `review_report` structured findings sink plus the
- *           /review and /simplify dispatcher commands.
+ *           /code-review and /code-simplify dispatcher commands.
  *
  * The `subagent` tool registers exactly once per process: if pi-subagents
  * is ALSO installed standalone (or another consumer composes it), the guard

@@ -1,6 +1,6 @@
 ---
-name: review
-description: "Review the current diff, or a PR number/branch/path target, for correctness bugs and reuse/simplification/efficiency cleanups at the given effort level (low/medium: fewer, high-confidence findings; high→max: broader coverage, may include uncertain findings). Fresh reverse of CC `/review` (its own name there is `code-review`), re-verified against CLI v2.1.261 (2026-09-05; originally reversed from v2.1.223). Effort semantics: medium = precision, high+ = recall. Pass --fix to apply, --comment to post findings (GitHub inline / GitLab MR note), --share to publish a review page."
+name: code-review
+description: "Review the current diff, or a PR number/branch/path target, for correctness bugs and reuse/simplification/efficiency cleanups at the given effort level (low/medium/high: single-pass in-session review — medium precision, high recall; xhigh/max: subagent fan-out deep sweep). Fresh reverse of CC `/review` (its own name there is `code-review`), re-verified against CLI v2.1.261 (2026-09-05; originally reversed from v2.1.223). Effort semantics: medium = precision, high+ = recall. Pass --fix to apply, --loop to cycle fix→re-review until no P0/P1 findings remain, --comment to post findings (GitHub inline / GitLab MR note), --share to publish a review page."
 ---
 
 <!--
@@ -9,6 +9,19 @@ description: "Review the current diff, or a PR number/branch/path target, for co
   sourced DIRECTLY from the 2.1.223 binary — NOT carried forward from the
   earlier v2.1.220 reconstruction. Every section below was located in the
   extracted strings (cc_strings_223.txt) and verified.
+
+  ── v2.1 redesign: effort split (single-pass default) ──
+    - low/medium/high → SINGLE-PASS FLOW in the main session (no subagents):
+      rubric-ported flag criteria, P0–P3 priorities, in-session self-verify.
+      Rationale: the medium+ fan-out pipeline (8–10 finder subprocesses +
+      grouped verifiers) cost tens of minutes per run and returned zero
+      findings when spawned subprocesses failed to boot — unacceptable ROI
+      for the default path.
+    - xhigh/max keep the fan-out pipeline unchanged (opt-in deep sweep).
+    - NEW --loop: extension-driven fix→re-review rounds (≤ maxTurns.loop,
+      default 3) until no P0/P1 findings remain; blocking decisions read
+      the structured review_report JSON (never markdown scraping).
+    - review_report findings gained an optional `priority` (P0–P3).
 
   ── RE-VERIFIED against CLI v2.1.261 (bin/claude.exe raw bytes, 2026-09-05) ──
     - The 2.1.217-era background Workflow (phases Scope/Find/Verify/Sweep/
@@ -61,9 +74,11 @@ description: "Review the current diff, or a PR number/branch/path target, for co
     - Fixed-later obligation (CC Q8m): later fixes in the session must
       re-report findings with updated outcome.
 
-  Invocation: /review [low|medium|high|xhigh|max] [--fix] [--comment] [--share] [<target>]
+  Invocation: /code-review [low|medium|high|xhigh|max] [--fix] [--loop] [--comment] [--share] [<target>]
     target = Class#method | file path | PR number | branch name
-    With no level given, the /review HANDLER reuses the last level you
+    --loop = extension-driven fix→re-review rounds (single-pass levels only,
+    ≤ maxTurns.loop, default 3) until no P0/P1 findings remain
+    With no level given, the /code-review HANDLER reuses the last level you
     typed (CC 2.1.223 codeReviewLastEffort); the skill always receives a
     concrete level.
     (CC also supports `ultra` — deep multi-agent review in the cloud.
@@ -82,6 +97,8 @@ description: "Review the current diff, or a PR number/branch/path target, for co
                   Markdown as text.
     2. Fan-out  — CC uses the Agent tool; Pi uses the `subagent` tool
                   (mode: parallel), or runs angles sequentially if unavailable.
+                  v2.1: fan-out is the XHIGH/MAX path only — low/medium/high
+                  run as a single pass in the main session (no subagents).
     3. Verify   — CC uses the Agent tool; Pi uses `subagent` for the
                   independent verify agent (fallback: self-check).
     4. Workflow — CC 2.1.217 routed high/xhigh/max to a background Workflow
@@ -101,8 +118,9 @@ description: "Review the current diff, or a PR number/branch/path target, for co
                   mirrors both fallbacks (see the --comment section).
 
   Prerequisite: the `subagent` tool (@fyeeme/pi-subagents; parallel mode) for
-                medium and above, and for the xhigh/max gap-hunter. lavish-axi
-                for --share. low runs standalone (no subagents).
+                xhigh/max only (finder/verifier/gap-hunt fan-out). lavish-axi
+                for --share. low/medium/high run standalone in this session
+                (no subagents).
 -->
 
 You are reviewing the current diff for correctness bugs and reuse /
@@ -111,22 +129,30 @@ altitude, and conventions findings when the output cap forces a cut.
 
 ## Effort levels
 
-| Level | Intent | Verify | Subagents | 四元组 `{correctnessAngles, perAngle, maxFindings, sweep}` |
+| Level | Path | Intent | Verify | Cap |
 |-------|--------|--------|-----------|------------|
-| low (default) | quick scan | no | no | 上限 `min(files_changed, 4)` |
-| medium | **precision** — surface only findings a maintainer would act on | independent verifier (grouped) | 8 finders | `{3, 6, 8, false}` |
-| high | **recall** — catch every real bug a careful reviewer would; **err on the side of surfacing** | recall-biased verifier (grouped) | 8 finders | `{3, 6, 10, false}` |
-| xhigh | recall + **gap-hunt** | recall-biased verifier (grouped) | 10 finders + 1 gap | `{5, 8, 15, true}` |
-| max | 同 xhigh | 同 xhigh | 同 xhigh | 同 xhigh |
+| low (default) | SINGLE-PASS | quick scan | no | `min(files_changed, 4)` |
+| medium | SINGLE-PASS | **precision** — surface only findings a maintainer would act on | self-verify (in-session) | 8 |
+| high | SINGLE-PASS | **recall** — catch every real bug a careful reviewer would; **err on the side of surfacing** | self-verify (in-session) | 10 |
+| xhigh | FAN-OUT (below) | recall + **gap-hunt** | independent verifier agents (grouped) | `{5, 8, 15, true}` |
+| max | FAN-OUT（同 xhigh） | 同 xhigh | 同 xhigh | 同 xhigh |
+
+**low/medium/high never dispatch subagents** — one pass in this session:
+read the diff (Turn 1), surface candidates against the rubric (Turn 2),
+self-verify them (Turn 3, medium/high only), report (Turn 4). This is the
+default path: the 8–10 finder + grouped-verifier pipeline cost tens of
+minutes per run and twice produced zero findings when spawned subprocesses
+failed to boot — unacceptable ROI for a daily-driver review.
 
 **max 与 xhigh 结构相同**：fan-out / verify / sweep 完全一致，差别仅在模型 reasoning effort（CC v2.1.226 注释实证：`max → same structure as xhigh (the API reasoning effort differs, not the fan-out)`）。若运行时不支持调节 reasoning effort，max 在结构上退化为 xhigh——不要因档名而期待更多 fan-out。
 
-The quad tuple parameterizes the whole pipeline (CC inline semantics, verified 2.1.227):
+The quad tuple parameterizes the XHIGH/MAX fan-out only (CC inline semantics,
+verified 2.1.227):
 
-- `correctnessAngles` — how many correctness angles A–E run, taken **in order** (medium/high: A/B/C; xhigh/max: A–E).
-- `perAngle` — candidate cap per finder (6 at medium/high, 8 at xhigh/max).
-- `maxFindings` — the report cap after verify (8 / 10 / 15).
-- `sweep` — whether Phase 3 gap-hunt runs (xhigh/max only, ≤ 8 new candidates).
+- `correctnessAngles` — 5 at xhigh/max (angles A–E all run).
+- `perAngle` — candidate cap per finder (8).
+- `maxFindings` — the report cap after verify (15).
+- `sweep` — whether Phase 3 gap-hunt runs (≤ 8 new candidates).
 
 Each finder surfaces up to `perAngle` candidate findings with `file`, `line`, a
 one-line `summary`, a ≤60-char `short_summary`, and a concrete
@@ -177,52 +203,123 @@ actions based on it>
 ```
 
 Embed this block verbatim at the top of **every** finder / verifier / gap-hunt
-subagent prompt. Subagents do not re-discover the diff or CLAUDE.md; the
-target argument travels as a scope constraint only, never as an instruction to
-a subagent.
+subagent prompt (XHIGH/MAX FLOW). Subagents do not re-discover the diff or
+CLAUDE.md; the target argument travels as a scope constraint only, never as an
+instruction to a subagent. In the SINGLE-PASS FLOW, keep the assembled block
+as your own working notes — conventions come from it, not from re-discovery.
 
 ---
 
-# LOW-EFFORT FLOW  (default; runs standalone, no subagents)
+# SINGLE-PASS FLOW  (default: low / medium / high — no subagents)
 
-`low effort → 1 diff pass → no verify → min(files_changed, 4) findings`
+You review the diff yourself, in this session. Do NOT dispatch finder or
+verifier agents at these levels, even if the `subagent` tool is available.
+
+- `low` — 1 diff pass, no self-verify, cap `min(files_changed, 4)`.
+- `medium` — 1 pass + self-verify, cap 8, **precision**.
+- `high` — 1 pass + self-verify, cap 10, **recall**.
 
 ## Turn 1 — read
 
 One tool call: read the unified diff (`git diff @{upstream}...HEAD; git diff HEAD`
 to cover both committed and uncommitted changes, or `git diff main...HEAD` / the
-target passed as an argument). Skip test/fixture hunks (`test/`, `spec/`,
-`__tests__/`, `*_test.*`, `*.test.*`, `fixtures/`, `testdata/`) — test-file
-changes are not reviewed at this level. No subagents, no full-file reads.
+target passed as an argument). At low, skip test/fixture hunks (`test/`,
+`spec/`, `__tests__/`, `*_test.*`, `*.test.*`, `fixtures/`, `testdata/`) —
+test-file changes are not reviewed at that level; medium/high include them.
+Then read the enclosing function for each nontrivial hunk; the applicable
+CLAUDE.md conventions are already pinned in the Phase 0.5 scope block.
 
-## Turn 2 — findings
+## Turn 2 — candidates (the rubric)
 
-Flag runtime-correctness bugs visible from the hunk alone: inverted/wrong
-condition, off-by-one, null/undefined deref where adjacent lines show the value
-can be absent, removed guard, falsy-zero check, missing `await`,
-wrong-variable copy-paste, error swallowed in a catch that should propagate.
-Also flag — still from the hunk alone — new code that duplicates an existing
-helper visible in the diff context, and dead code the diff leaves behind.
+Work the finder angles inline — their definitions live in the XHIGH/MAX FLOW
+below and are shared with the subagent definitions:
 
-Do **not** flag style, naming, perf, missing tests, or anything outside the hunk.
+- **low** — Angle A over the hunks only: runtime-correctness bugs visible
+  from the hunk alone (inverted/wrong condition, off-by-one, null/undefined
+  deref where adjacent lines show the value can be absent, removed guard,
+  falsy-zero check, missing `await`, wrong-variable copy-paste, error
+  swallowed in a catch that should propagate), plus new code duplicating an
+  existing helper visible in the diff context, plus dead code the diff leaves
+  behind. Do **not** flag style, naming, perf, missing tests, or anything
+  outside the hunk. If you have fewer than the cap, do one more pass focused
+  on the largest changed file and on any **removed** code blocks. Output
+  exactly `(none)` only if the diff is trivially correct after that pass.
+- **medium** — Angles A, B, C, then a quick Reuse / Simplification /
+  Efficiency pass over the changed code.
+- **high** — the full angle set: A–E, then Reuse / Simplification /
+  Efficiency / Altitude / Conventions.
 
-Target **min(files_changed, 4) findings**, most-severe first. If you have fewer,
-do one more pass focused on the largest changed file and on any **removed** code
-blocks. Output exactly `(none)` only if the diff is trivially correct after
-that pass.
+Flag issues that (rubric ported from the reference /review implementation):
 
-Low 档输出契约是**双变体**（与 CC 的 `p$p`/`d$p` 一致）：若 `review_report` 工具可用（本扩展已注册），调用它**一次**上报 `{level: "low", fanned_out: false, findings}`，每条 finding 带 `file` / `line` / `summary` / `short_summary`（≤60 字符）/ `failure_scenario`；无发现时传空数组。不要重复打印文本——工具负责渲染。若 `review_report` 不可用，改为纯文本输出：每行 `path/to/file.ext:123 — 问题与失败后果`，无发现输出 `(none)`，不调用任何上报工具。
+1. Meaningfully impact the accuracy, performance, security, or
+   maintainability of the code.
+2. Are discrete and actionable (not general issues or multiple combined
+   issues).
+3. Don't demand rigor inconsistent with the rest of the codebase.
+4. Were introduced in the changes being reviewed (not pre-existing bugs).
+5. The author would likely fix if made aware of them.
+6. Don't rely on unstated assumptions about the codebase or the author's
+   intent.
+
+Every candidate carries `file`, `line`, `category`, a one-line `summary`, a
+≤60-char `short_summary`, a concrete `failure_scenario`, and a **priority**
+(`--loop` treats P0/P1 as blocking):
+
+- **P0** — data loss, security hole, crash on a main path, broken build.
+- **P1** — real bug on a plausible path; broken invariant with visible
+  effect.
+- **P2** — worthwhile cleanup (duplication, wasted work, wrong altitude) or
+  an uncertain-trigger correctness issue.
+- **P3** — nice-to-have.
+
+Correctness outranks cleanup when the cap forces a cut.
+
+## Turn 3 — self-verify (medium / high; low skips)
+
+Re-read every candidate against the code once, in this session:
+
+- Drop anything whose `failure_scenario` you cannot make concrete.
+- Set the verdict: **`CONFIRMED`** — you can name the inputs/state that
+  trigger it and the wrong output or crash (quote the line); **`PLAUSIBLE`**
+  — the mechanism is real but the trigger is uncertain (timing, env,
+  config); state what would confirm it.
+- **`PLAUSIBLE` by default** — do not drop a candidate for being
+  "speculative" or "depends on runtime state" when the state is realistic:
+  concurrency races, nil/undefined on a rare-but-reachable path (error
+  handler, cold cache, missing optional field), falsy-zero treated as
+  missing, off-by-one on a boundary the code does not exclude, retry storms
+  / partial failures, regex/allowlist that lost an anchor.
+- At medium (precision), additionally drop what a maintainer would not act
+  on. At high (recall), keep every surviving candidate — a missed bug ships.
+
+## Turn 4 — report
+
+Report via the `review_report` tool exactly as the Output section below
+specifies, with `fanned_out: false` (honesty: this was a single-pass
+self-review). At low the candidates ARE the findings (unverified — leave
+`verdict` unset so the reader can discount them); if the `review_report` tool
+is unavailable, print the findings as text (one line per finding:
+`path/to/file.ext:123 — 问题与失败后果`), `(none)` when empty.
+
+## Loop fixing (--loop)
+
+When the trigger message says loop fixing is armed, the extension takes over
+after your report: it reads the newest `review_report` JSON under
+`.pi/review/`, and while P0/P1 findings remain it sends a fix prompt (apply
+them per the --fix section's rules), waits, then asks you to re-run this
+single-pass flow. Treat each re-review as a fresh pass with a fresh
+`report_id` and an honest fresh findings list — do not rubber-stamp the
+previous run.
 
 ---
 
-# MEDIUM-AND-ABOVE FLOW  (fan-out + verify)
+# XHIGH/MAX FLOW  (deep sweep: fan-out + verify)
 
-## Phase 1 — Find candidates (single pass or parallel fan-out)
-
-Work through the angles below. If the `subagent` tool is available, launch
-finder agents in a single batch (mode: parallel) so they run concurrently;
-otherwise do not fake the fan-out — work the angles yourself in sequence in
-this same context, or report that the subagent capability is unavailable.
+Reached only at effort xhigh/max — low/medium/high use the SINGLE-PASS FLOW
+above. Launch finder agents through the `subagent` tool in a single batch
+(mode: parallel) so they run concurrently; if it is unavailable, do not fake
+the fan-out — work the angles yourself in sequence in this same context, or
+report that the subagent capability is unavailable.
 
 **Checking `subagent` availability** — wherever this skill says "if the
 `subagent` tool is available", decide from THIS session's tool list, never by
@@ -255,15 +352,11 @@ every finder batch:
    before Phase 2 (or fold it into the xhigh/max gap-hunt), and note the
    re-dispatch in the report.
 
-**Finder allocation** (CC inline, verified 2.1.227): the number of correctness
-angles comes from the effort quad tuple, taken **in order A→E** (`slice(0, N)`
-— do not hand-pick angles; that makes runs unreproducible):
-
-- **medium / high** (3 correctness angles): **8 finders** — A, B, C + one
-  finder each for Reuse, Simplification, Efficiency + one Altitude + one
-  Conventions.
-- **xhigh / max** (5 correctness angles): **10 finders** — A, B, C, D, E + the
-  same 3 cleanup finders + Altitude + Conventions.
+**Finder allocation** (CC inline, verified 2.1.227): xhigh/max run all five
+correctness angles — **10 finders**: A, B, C, D, E + one finder each for
+Reuse, Simplification, Efficiency + one Altitude + one Conventions. The quad
+tuple's angles are taken **in order A→E** (`slice(0, N)` — do not hand-pick
+angles; that makes runs unreproducible).
 
 Each cleanup angle (Reuse / Simplification / Efficiency) gets its own finder;
 Altitude and Conventions are independent finders. Never silently drop an
@@ -410,12 +503,11 @@ optional field), falsy-zero treated as missing, off-by-one on a boundary the
 code does not exclude, retry storms / partial failures, regex/allowlist that
 lost an anchor. These are PLAUSIBLE.
 
-**Recall bias by level** — at high/xhigh/max, a single non-REFUTED verdict
-keeps the candidate: do NOT drop it on uncertainty ("speculative", "depends
-on runtime state"). That is the recall contract of high+. Medium is the
-precision level: there, additionally weigh whether a maintainer would act on
-the finding before keeping it. At xhigh/max a missed bug ships — err on the
-side of surfacing hardest there.
+**Recall bias** — a single non-REFUTED verdict keeps the candidate: do NOT
+drop it on uncertainty ("speculative", "depends on runtime state"). This
+flow is the recall contract of xhigh/max — a missed bug ships, so err on the
+side of surfacing hardest here. (Medium's precision filter lives in the
+single-pass self-verify; it never reaches this flow.)
 
 **REFUTED** only when constructible from the code: factually wrong (quote the
 actual line); provably impossible (type/constant/invariant — show it); already
@@ -452,8 +544,6 @@ Feed anything it finds back through Phase 2 verify before keeping it. If the
 `subagent` tool is unavailable, take one self-sweep instead and note the
 gap-hunt was self-run (lacks the independent fresh-eyes benefit).
 
-At **high and below**, skip Phase 3.
-
 ## Output
 
 Report the findings via the `review_report` tool (this extension's counterpart
@@ -471,7 +561,9 @@ or publish an artifact of the review — the tool call is the report");
 Each finding in the array carries: `file`, `line` (optional), `category`
 (`correctness` / `reuse` / `simplification` / `efficiency` / `altitude` /
 `conventions`, or a more specific slug like `test-coverage`), `verdict`
-(`CONFIRMED` / `PLAUSIBLE`), `short_summary` (≤60 字符、纯声明——去掉理由与
+(`CONFIRMED` / `PLAUSIBLE`), `priority` (`P0`–`P3`; single-pass levels
+always set it — `--loop` treats P0/P1 as blocking; xhigh/max may omit it),
+`short_summary` (≤60 字符、纯声明——去掉理由与
 后果，汇总表概述列优先使用它；示例：`"off-by-one in loop bound"`),
 `summary` (一行中文，含理由与后果，详情块使用), `failure_scenario`
 (concrete input/state → wrong output/crash; for cleanup findings, the
@@ -498,7 +590,7 @@ the files by id.
 `outcome` 作为标识符保留英文 token。
 
 **`fanned_out` 诚实** — 准确设置：仅当多智能体 fan-out 真的跑起来（subagent
-finder + verify agent）才为 `true`；low effort 或任何单遍/自审降级为 `false`。该
+finder + verify agent，xhigh/max）才为 `true`；low/medium/high 单遍或任何自审降级为 `false`。该
 字段会出现在报告表头，让读者不被误导（替代旧的 Single-pass honesty 小节）。
 
 **降级** — 若 `review_report` 工具未注册（这份 SKILL.md 跑在 pi-review 扩展之外），
@@ -508,7 +600,9 @@ finder + verify agent）才为 `true`；low effort 或任何单遍/自审降级�
 
 ## Applying fixes (--fix)
 
-The `--fix` flag was passed. After producing the findings list, apply the
+The `--fix` flag was passed (the extension-driven `--loop` sends the same
+fix prompts between re-review passes — follow them identically). After
+producing the findings list, apply the
 findings to the working tree instead of stopping at the report: fix each one
 directly — correctness bugs and reuse/simplification/efficiency cleanups alike.
 Skip any finding whose fix would change intended behavior, require changes well

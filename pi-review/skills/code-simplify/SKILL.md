@@ -1,11 +1,11 @@
 ---
-name: simplify
-description: "Review the changed code for reuse, simplification, efficiency, and altitude cleanups, then apply the fixes. Quality only — it does not hunt for bugs; use /review for that. v3 (from Claude Code CLI v2.1.227, symbol-level verified; re-verified against v2.1.261 on 2026-09-05 — bodies unchanged except Altitude) — 4 cleanup agents fan out in parallel when context allows, else a single-pass inline cleanup; either way the fixes are applied, verified against the project's check command, and auto-reverted on failure, then reported as structured outcomes via review_report."
+name: code-simplify
+description: "Review the changed code for reuse, simplification, efficiency, and altitude cleanups, then apply the fixes. Quality only — it does not hunt for bugs; use /code-review for that. v3 (from Claude Code CLI v2.1.227, symbol-level verified; re-verified against v2.1.261 on 2026-09-05 — bodies unchanged except Altitude) — 4 cleanup agents fan out in parallel when context allows, else a single-pass inline cleanup; either way the fixes are applied, verified against the project's check command, and auto-reverted on failure, then reported as structured outcomes via review_report."
 ---
 
 <!--
   Origin: Claude Code built-in skill `/simplify` (CLI v2.1.227), reverse-
-  engineered from bin/claude.exe raw bytes. Pi registers it as /simplify.
+  engineered from bin/claude.exe raw bytes. Pi registers it as /code-simplify.
 
   Lineage:
     v2.1.220 → the first reconstruction         (v1)
@@ -26,7 +26,7 @@ description: "Review the changed code for reuse, simplification, efficiency, and
                behavior"; "Quality only — it does not hunt for bugs; use
                /code-review for that") and the Agent-tool fan-out ("all in a
                single message so they run concurrently") are unchanged.
-               The /code-review↔/simplify division of labor is now stated
+               The /code-review↔/code-simplify division of labor is now stated
                explicitly in both skills upstream — same as here.
 
   CC 2.1.227 empirical evidence (symbol-level, extracted from bin/claude.exe):
@@ -46,9 +46,9 @@ description: "Review the changed code for reuse, simplification, efficiency, and
       FORKED_AGENT_DEFAULT_MAX_TURNS = 50 — mirrored as the subagent tool's
       defaults (PI_MAX_CONCURRENT_SUBAGENTS env still overrides the ceiling).
 
-  Bundled: ships inside the pi-review extension (skills/simplify/SKILL.md).
+  Bundled: ships inside the pi-review extension (skills/code-simplify/SKILL.md).
 
-  Invocation: /simplify [<target>]
+  Invocation: /code-simplify [<target>]
     target = file path | PR number | branch name
 
   ════════════════════════════════════════════════════════════════════════
@@ -69,10 +69,10 @@ description: "Review the changed code for reuse, simplification, efficiency, and
        Dii. The cleanup agents' tool whitelist (read/grep/find/ls/bash) never
        includes a fan-out tool, so recursion stays physically bounded
        regardless of tool registration. The decision is made
-       DETERMINISTICALLY by the /simplify handler — it can
+       DETERMINISTICALLY by the /code-simplify handler — it can
        read ctx.getContextUsage(), which a pure-prompt skill cannot — and announced
        in the trigger message; this skill just provides the two mode bodies.
-    3. Command     — CC: /simplify; Pi: /simplify.
+    3. Command     — CC: /simplify; Pi: /code-simplify.
     4. Dispatch    — CC's lead model writes the 4 Agent prompts itself after its
        visible Phase 0. Pi keeps the same TIMELINE but moves the packaging into
        code: the trigger message carries the handler-resolved scope, the
@@ -94,9 +94,9 @@ description: "Review the changed code for reuse, simplification, efficiency, and
 
 You are improving the quality of the changed code, not hunting for bugs. Review
 it for reuse, simplification, efficiency, and altitude issues, then fix what you
-find. Do not look for correctness bugs — that is what `/review` is for.
+find. Do not look for correctness bugs — that is what `/code-review` is for.
 
-The `/simplify` handler has already chosen the mode (PARALLEL or
+The `/code-simplify` handler has already chosen the mode (PARALLEL or
 SINGLE-PASS) from real context usage and announced it in the trigger message.
 Follow the body that matches; do not fake the mode you weren't asked to run.
 Both modes open the same way: the trigger message carries the handler-resolved
@@ -106,7 +106,7 @@ VISIBLE, model-run step before anything launches.
 ## Phase 0 — Gather the diff
 
 When the trigger message carries a handler-resolved scope (it always does for
-/simplify), use THAT: run the exact `git -C … diff …` command the trigger
+/code-simplify), use THAT: run the exact `git -C … diff …` command the trigger
 provides — the handler already ran the cascade (merge-base → HEAD → staged →
 unstaged) to pick it — read the full diff, and write a 2–4 line change-intent
 summary before anything else. Do not re-derive a different range. That summary
@@ -125,7 +125,7 @@ review that target instead. Treat this diff as the review scope.)
 
 # PARALLEL MODE  (context not near-full AND diff under the fan-out threshold AND fan-out available)
 
-`/simplify → visible Phase 0 (read the diff, summarize) → subagent tool (parallel, 4 cleaner agents) → apply the fixes`
+`/code-simplify → visible Phase 0 (read the diff, summarize) → subagent tool (parallel, 4 cleaner agents) → apply the fixes`
 
 ## Phase 1 — Review (4 cleanup agents in parallel)
 
@@ -184,7 +184,7 @@ Follow the shared **Phase 2** procedure at the end of this skill (snapshot → a
 
 # SINGLE-PASS MODE  (context near-full OR diff too large OR fan-out unavailable)
 
-`/simplify → handler decided single-pass (reasons in the trigger message) → inline cleanup → apply the fixes`
+`/code-simplify → handler decided single-pass (reasons in the trigger message) → inline cleanup → apply the fixes`
 
 The handler decided against the 4-agent fan-out (context near-full, diff too
 large, fan-out unavailable, or usage unmeasurable — the exact reasons are in
@@ -237,7 +237,7 @@ Follow the shared **Phase 2** procedure at the end of this skill (snapshot → a
 # Phase 2 — Apply, verify, and report (shared by both modes)
 
 Dedup findings that point at the same line or mechanism first. Then apply,
-verify, and report. This safety net is what distinguishes `/simplify` from
+verify, and report. This safety net is what distinguishes `/code-simplify` from
 a blind cleanup: a finding is only "done" once it is applied AND the project
 still verifies — otherwise it is reverted.
 
@@ -258,7 +258,7 @@ for any file in a subdirectory. If a fix CREATES a new file, record its path so
 Step 3a can remove it on rollback (it has no baseline entry).
 
 This baseline captures the working-tree state **including** the user's
-uncommitted changes — reverting to it undoes only `/simplify`'s fixes,
+uncommitted changes — reverting to it undoes only `/code-simplify`'s fixes,
 never the user's diff. Do **not** use `git checkout` / `git restore` to revert:
 that would discard the user's intended changes too.
 

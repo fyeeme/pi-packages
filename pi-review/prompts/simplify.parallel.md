@@ -1,5 +1,5 @@
 ---
-description: "/simplify trigger — PARALLEL mode (4-agent fan-out via the subagent tool)"
+description: "/code-simplify trigger — PARALLEL mode (4-agent fan-out via the subagent tool)"
 parallel-when:
   context-below: 0.8
   diff-chars-below: 400000

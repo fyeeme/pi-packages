@@ -31,12 +31,19 @@ import * as path from "node:path";
 const VERDICT_VALUES = ["CONFIRMED", "PLAUSIBLE"] as const;
 const Verdict = StringEnum(VERDICT_VALUES);
 
-const OUTCOME_VALUES = ["fixed", "skipped", "no_change_needed"] as const;
 /** CC ReportFindings `outcome` 三档（2.1.227 二进制实证）。fixed-later 再上报时更新。 */
+export const OUTCOME_VALUES = ["fixed", "skipped", "no_change_needed"] as const;
 const Outcome = StringEnum(OUTCOME_VALUES);
 
+/** --loop 的 blocking 阈值：P0/P1 触发修复→再评审一轮（P2/P3 只入报告）。 */
+const PRIORITY_VALUES = ["P0", "P1", "P2", "P3"] as const;
+const Priority = StringEnum(PRIORITY_VALUES, {
+	description:
+		"优先级 P0（阻断，立刻修）/ P1（高）/ P2（中）/ P3（低）。--loop 循环修复以 P0/P1 为 blocking 阈值；省略视为 P2。",
+});
+
 // 供 SKILL-schema 同步测试引用（防漂移：SKILL 流程契约不得与常量脱节）。
-export { OUTCOME_VALUES, VERDICT_VALUES };
+export { PRIORITY_VALUES, VERDICT_VALUES };
 
 const Level = StringEnum([
 	"low",
@@ -59,6 +66,7 @@ const FindingParams = Type.Object({
 			"产生该发现的角度 slug：correctness / reuse / simplification / efficiency / altitude / conventions（或更具体如 test-coverage）。",
 	}),
 	verdict: Type.Optional(Verdict),
+	priority: Type.Optional(Priority),
 	short_summary: Type.Optional(
 		Type.String({
 			description:
@@ -108,6 +116,7 @@ type LooseFinding = {
 	line?: number;
 	category: string;
 	verdict?: string;
+	priority?: string;
 	short_summary?: string;
 	summary: string;
 	failure_scenario: string;
@@ -126,7 +135,10 @@ function sanitizeFinding(f: LooseFinding): { f: LooseFinding; note?: string } | 
 		note = `（outcome "${outcome}" 非法，已归一化为 skipped）`;
 		outcome = "skipped";
 	}
-	return { f: { ...f, outcome }, note };
+	// 非法 priority 静默丢弃（降至未标注），不影响该条 finding 存活。
+	const priority =
+		f.priority !== undefined && (PRIORITY_VALUES as readonly string[]).includes(f.priority) ? f.priority : undefined;
+	return { f: { ...f, outcome, priority }, note };
 }
 
 /**
@@ -155,6 +167,7 @@ interface FindingInput {
 	line?: number;
 	category: string;
 	verdict?: string;
+	priority?: string;
 	short_summary?: string;
 	summary: string;
 	failure_scenario: string;
@@ -202,13 +215,14 @@ function renderReport(p: ReportInput): string {
 	lines.push("|---|------|------|------|------|");
 	for (let i = 0; i < p.findings.length; i++) {
 		const f = p.findings[i]!;
-		lines.push(`| ${i + 1} | ${escapeCell(f.verdict ?? "")} | ${escapeCell(f.category)} | ${escapeCell(fmtLoc(f))} | ${escapeCell(f.short_summary ?? f.summary)} |`);
+		const verdictCell = [f.priority, f.verdict].filter(Boolean).join(" · ");
+		lines.push(`| ${i + 1} | ${escapeCell(verdictCell)} | ${escapeCell(f.category)} | ${escapeCell(fmtLoc(f))} | ${escapeCell(f.short_summary ?? f.summary)} |`);
 	}
 	lines.push("");
 	lines.push("**详情**");
 	lines.push("");
 	p.findings.forEach((f, i) => {
-		const v = f.verdict ? ` *(${f.verdict})*` : "";
+		const v = [f.priority, f.verdict].filter(Boolean).length > 0 ? ` *(${[f.priority, f.verdict].filter(Boolean).join(" · ")})*` : "";
 		const out = f.outcome ? `\n修复结果：\`${f.outcome}\`` : "";
 		const note = f.note ? `\n${f.note}` : "";
 		lines.push(`**${i + 1}. ${fmtLoc(f)} — ${f.category}**${v}`);

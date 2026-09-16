@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-16
+
+### Added
+
+- `/code-review --loop` — extension-driven fix→re-review cycles for the single-pass levels: after the report, the dispatcher reads the newest `review_report` JSON under the project's pi review dir, and while OPEN P0/P1 findings remain (P0/P1 without a decided `outcome` — a fix turn's re-report marks its findings fixed/skipped) it sends a fix prompt (followUp), waits for the session to go fully quiescent (nothing running and nothing queued — a bare idle wait returns inside the enqueue→run gap), then asks the session to re-run the single-pass flow; up to `maxTurns.loop` fix→re-review rounds (default 3), stopped by Esc/abort, a missing report, or a clean report. The blocking decision reads the structured JSON — never assistant-text scraping. `--loop` is stripped from the skill text and is ignored with a warning on xhigh/max (no single report turn to loop on). `review_report` findings gained an optional `priority` (`P0`–`P3`, invalid values dropped silently; rendered in the table 判定 column and detail headers) so the loop has its threshold and reports carry severity.
+
+### Changed
+
+- **Effort split: single-pass by default** — `/code-review low|medium|high` now review the diff in ONE pass in the main session (no subagents): read → candidates against a rubric ported from the reference /review implementation (flag criteria: impactful, discrete/actionable, consistent rigor, introduced-by-diff, author-would-fix, no unstated assumptions; P0–P3 priorities; correctness outranks cleanup) → in-session self-verify at medium/high (drop non-concrete failure scenarios, CONFIRMED/PLAUSIBLE verdicts, PLAUSIBLE-by-default; medium additionally filters by act-on-it precision, high keeps recall) → `review_report` with `fanned_out: false`. Rationale: the medium+ fan-out pipeline (8–10 finder subprocesses + grouped verifiers) cost tens of minutes per run and returned zero findings when spawned subprocesses failed to boot. xhigh/max keep the finder/verifier/gap-hunt pipeline unchanged as the opt-in deep sweep. Templates split accordingly: `prompts/review.md` → `prompts/review.parallel.md` (xhigh/max trigger) + new `prompts/review.single.md`; the dispatcher picks by `usesFanout(level)`. Sticky-effort, `--fix`/`--comment`/`--share` flows, and all twelve bundled agents are unchanged.
+
+- Commands and skills renamed to restore the `/code-*` names: `/review` → `/code-review`, `/simplify` → `/code-simplify` (registerCommand names, descriptions, notify messages); skills `review` → `code-review`, `simplify` → `code-simplify` (frontmatter `name`, directories `skills/review/` → `skills/code-review/`, `skills/simplify/` → `skills/code-simplify/`), so the chain reads `/code-review` → `prompts/review.md` → `skills/code-review/SKILL.md` and `/code-simplify` → `prompts/simplify.*.md` → `skills/code-simplify/SKILL.md`. `/skill:review` invocations become `/skill:code-review`; `/skill:simplify` becomes `/skill:code-simplify`. In-skill references (Invocation lines, handler mentions, cross-skill pointers), prompt trigger descriptions, README, package description, and tests updated in step. References to Claude Code's own upstream commands (origin comments, "CC: /simplify; Pi: …", the frontmatter "Fresh reverse of CC `/review`" note) are deliberately unchanged.
+
+- Sticky `/review` effort (`codeReviewLastEffort`) now persists to `<agentDir>/pi-review.json` — the same file as `maxTurns` — instead of `~/.pi/.pi-review-state.json`. The write is read-modify-write, so configured turn budgets and any other fields survive; an unparseable (hand-edited) file is left untouched rather than overwritten. Copy an existing level into `<agentDir>/pi-review.json` to migrate; the old state file is no longer read or written.
+
 ## [2.0.1] - 2026-09-09
 
 ### Added

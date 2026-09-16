@@ -10,19 +10,20 @@
  *
  *   {
  *     "maxTurns": {
- *       "subagent": 20,   // per-call budget for each /review finder batch
- *       "gapHunt":  15,   // budget for the /review Phase 3 gap-hunter
- *       "simplify": 15    // budget for each /simplify PARALLEL cleaner agent
+ *       "subagent": 20,   // per-call budget for each /code-review finder batch (xhigh/max)
+ *       "gapHunt":  15,   // budget for the /code-review Phase 3 gap-hunter (xhigh/max)
+ *       "simplify": 15,   // budget for each /code-simplify PARALLEL cleaner agent
+ *       "loop": 3         // --loop fix→re-review round cap (single-pass levels)
  *     }
  *   }
  *
  * The defaults here are the numbers the bundled prompts and skills were
- * written with (finder 20 / gap-hunt 15 / simplify 15). With no config file
+ * written with (finder 20 / gap-hunt 15 / simplify 15 / loop 3). With no config file
  * — or with any key absent or invalid — the rendered instructions carry
  * exactly those numbers, so absence of configuration changes nothing.
  *
  * Read at command time (like pi-subagents' maxConcurrency): an edited file
- * takes effect on the next /review or /simplify without a restart. Malformed
+ * takes effect on the next /code-review or /code-simplify without a restart. Malformed
  * files are ignored with a stderr warning (never fatal); unknown/garbage
  * fields are dropped on read.
  */
@@ -33,16 +34,18 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 /** Settings file name (both layers). */
 const CONFIG_FILE = "pi-review.json";
 
-/** The four dispatchable turn budgets, keyed by what they throttle. */
+/** The dispatchable turn budgets, keyed by what they throttle. */
 export interface TurnBudgets {
-	/** `maxTurns` set on each /review finder-batch `subagent` call. */
+	/** `maxTurns` set on each /code-review finder-batch `subagent` call. */
 	subagent: number;
-	/** `maxTurns` set on each /review Phase 2 verifier `subagent` call. */
+	/** `maxTurns` set on each /code-review Phase 2 verifier `subagent` call. */
 	verifier: number;
-	/** `maxTurns` set on the /review Phase 3 gap-hunt `subagent` call. */
+	/** `maxTurns` set on the /code-review Phase 3 gap-hunt `subagent` call. */
 	gapHunt: number;
-	/** `maxTurns` set on each /simplify PARALLEL cleaner `subagent` call. */
+	/** `maxTurns` set on each /code-simplify PARALLEL cleaner `subagent` call. */
 	simplify: number;
+	/** Max fix→re-review rounds when /code-review runs with --loop. */
+	loop: number;
 }
 
 /** Built-in budgets — identical to the literals in prompts/ and skills/. */
@@ -51,6 +54,7 @@ export const DEFAULT_TURN_BUDGETS: TurnBudgets = {
 	verifier: 15,
 	gapHunt: 15,
 	simplify: 15,
+	loop: 3,
 };
 
 function globalPath(): string {
@@ -85,6 +89,8 @@ function readBudgetsFile(path: string): Partial<TurnBudgets> {
 		if (gapHunt !== undefined) out.gapHunt = gapHunt;
 		const simplify = sanitizeBudget(mt.simplify);
 		if (simplify !== undefined) out.simplify = simplify;
+		const loop = sanitizeBudget(mt.loop);
+		if (loop !== undefined) out.loop = loop;
 		return out;
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);

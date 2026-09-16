@@ -1,5 +1,5 @@
 ---
-description: "/simplify trigger — SINGLE-PASS mode (angles worked inline, no fan-out)"
+description: "/code-simplify trigger — SINGLE-PASS mode (angles worked inline, no fan-out)"
 vars: [target, reasons, scope-label, too-large, git-command, context-package, skill, verify]
 ---
 Clean up the changed code now. Target: {{target}}.

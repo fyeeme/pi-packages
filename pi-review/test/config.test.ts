@@ -43,7 +43,7 @@ function writeProject(config: unknown): void {
 describe("loadTurnBudgets", () => {
 	it("returns the built-in defaults when no config exists anywhere", () => {
 		expect(loadTurnBudgets(PROJECT_DIR)).toEqual(DEFAULT_TURN_BUDGETS);
-		expect(DEFAULT_TURN_BUDGETS).toEqual({ subagent: 20, verifier: 15, gapHunt: 15, simplify: 15 });
+		expect(DEFAULT_TURN_BUDGETS).toEqual({ subagent: 20, verifier: 15, gapHunt: 15, simplify: 15, loop: 3 });
 	});
 
 	it("reads the global layer", () => {
@@ -53,6 +53,7 @@ describe("loadTurnBudgets", () => {
 			verifier: 15,
 			gapHunt: 25,
 			simplify: 10,
+			loop: 3,
 		});
 	});
 
@@ -64,12 +65,13 @@ describe("loadTurnBudgets", () => {
 			verifier: 15,
 			gapHunt: 40,
 			simplify: 10,
+			loop: 3,
 		});
 	});
 
 	it("partial config keeps defaults for absent keys", () => {
 		writeGlobal({ maxTurns: { simplify: 8 } });
-		expect(loadTurnBudgets(PROJECT_DIR)).toEqual({ subagent: 20, verifier: 15, gapHunt: 15, simplify: 8 });
+		expect(loadTurnBudgets(PROJECT_DIR)).toEqual({ subagent: 20, verifier: 15, gapHunt: 15, simplify: 8, loop: 3 });
 	});
 
 	it.each([
@@ -86,7 +88,7 @@ describe("loadTurnBudgets", () => {
 
 	it("drops unknown fields and a garbage maxTurns shape", () => {
 		writeGlobal({ maxTurns: { finder: 99, subagent: 12 }, unrelated: true });
-		expect(loadTurnBudgets(PROJECT_DIR)).toEqual({ subagent: 12, verifier: 15, gapHunt: 15, simplify: 15 });
+		expect(loadTurnBudgets(PROJECT_DIR)).toEqual({ subagent: 12, verifier: 15, gapHunt: 15, simplify: 15, loop: 3 });
 	});
 
 	it("ignores a malformed file with a warning and keeps defaults", () => {
@@ -104,7 +106,8 @@ describe("loadTurnBudgets", () => {
 		expect(DEFAULT_TURN_BUDGETS.verifier).toBe(15);
 		expect(DEFAULT_TURN_BUDGETS.gapHunt).toBe(15);
 		expect(DEFAULT_TURN_BUDGETS.simplify).toBe(15);
+		expect(DEFAULT_TURN_BUDGETS.loop).toBe(3);
 		writeProject({ maxTurns: { subagent: 5, gapHunt: 5, simplify: 5 } });
-		expect(loadTurnBudgets(PROJECT_DIR)).toEqual({ subagent: 5, verifier: 15, gapHunt: 5, simplify: 5 });
+		expect(loadTurnBudgets(PROJECT_DIR)).toEqual({ subagent: 5, verifier: 15, gapHunt: 5, simplify: 5, loop: 3 });
 	});
 });
