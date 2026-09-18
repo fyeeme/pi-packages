@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-09-18
+
 ### Changed
 
 - Compact token segment: `tokens 78.9%(↑in ↓out Rcache)` replaces `tokens total(in, out, cache,hit%)`. Cache hit rate moves to the front; the total and cache-write numbers are no longer displayed.
