@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, readdirSync } from "node:fs";
+import { basename, join } from "node:path";
 import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import { complete } from "@earendil-works/pi-ai/compat";
@@ -62,50 +62,142 @@ export function cleanTitle(raw: string, maxLength: number = 200): string | null 
 }
 
 // ---------------------------------------------------------------------------
+// Sibling titles — scan local session files for other sessions' names, so the
+// prompt can steer the model away from titles already in use (distinctiveness
+// is a property of the list, so the model must see the list).
+// ---------------------------------------------------------------------------
+
+/** Extract a session file's display name: the latest `session_info` entry; an empty name clears it. */
+export function parseSessionTitle(content: string): string | undefined {
+	const lines = content.split("\n");
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const line = lines[i]!.trim();
+		if (!line) continue;
+		try {
+			const d = JSON.parse(line) as { type?: string; name?: string };
+			if (d.type === "session_info") return d.name?.trim() || undefined;
+		} catch {
+			// skip malformed lines
+		}
+	}
+	return undefined;
+}
+
+const TITLE_CACHE_TTL_MS = 60_000;
+const titleCache = new Map<string, { fetchedAt: number; entries: Array<{ file: string; name: string }> }>();
+
+/**
+ * Recent sibling session titles from `sessionsDir` (newest first).
+ * Excludes the current session's file and `excludeNames` (e.g. the current title,
+ * so a rename is not compared against itself). Best effort: any error → [].
+ */
+export function collectRecentSessionTitles(
+	sessionsDir: string,
+	opts: { currentSessionFile?: string; excludeNames?: string[]; maxTitles?: number; maxFiles?: number } = {},
+): string[] {
+	const maxTitles = opts.maxTitles ?? 20;
+	const maxFiles = opts.maxFiles ?? 50;
+
+	let scanned: Array<{ file: string; name: string }>;
+	const cached = titleCache.get(sessionsDir);
+	if (cached && Date.now() - cached.fetchedAt < TITLE_CACHE_TTL_MS) {
+		scanned = cached.entries;
+	} else {
+		scanned = [];
+		try {
+			const files = readdirSync(sessionsDir)
+				.filter((f) => f.endsWith(".jsonl"))
+				.sort()
+				.reverse()
+				.slice(0, maxFiles);
+			for (const fname of files) {
+				try {
+					const name = parseSessionTitle(readFileSync(join(sessionsDir, fname), "utf8"));
+					if (name) scanned.push({ file: fname, name });
+				} catch {
+					// unreadable file — skip
+				}
+			}
+		} catch {
+			// missing/unreadable dir — empty
+		}
+		titleCache.set(sessionsDir, { fetchedAt: Date.now(), entries: scanned });
+	}
+
+	const exclude = new Set((opts.excludeNames ?? []).map((n) => n.trim()).filter((n) => n.length > 0));
+	const currentBase = opts.currentSessionFile ? basename(opts.currentSessionFile) : undefined;
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const { file, name } of scanned) {
+		if (currentBase && file === currentBase) continue;
+		if (exclude.has(name) || seen.has(name)) continue;
+		seen.add(name);
+		out.push(name);
+		if (out.length >= maxTitles) break;
+	}
+	return out;
+}
+
+// ---------------------------------------------------------------------------
 // Prompt builders — first-title & auto-rename prompts
 // ---------------------------------------------------------------------------
 
 export function buildFirstPrompt(
 	conversationText: string,
-	opts: { maxLength?: number } = {},
+	opts: { maxLength?: number; recentTitles?: string[] } = {},
 ): string {
 	const maxLength = opts.maxLength ?? 200;
-	return [
-		"You generate a descriptive title for this conversation so the user can find it later in a session list.",
+	const lines: string[] = [
+		"You generate a title so the user can recognize this conversation at a glance in a session list.",
 		"Rules:",
-		'- Output ONLY the title text. No quotes, no trailing punctuation, no explanation.',
+		'- Output ONLY the title text. No quotes, no parentheses, no trailing punctuation, no explanation.',
 		"- Use the SAME language as the user's first message.",
-		'- Be descriptive, not terse: include the key entity (class, component, or concept), the action, and the goal — not a vague category.',
-		`- Aim for roughly 15-40 characters; never exceed ${maxLength} characters.`,
-		"",
-		"<conversation>",
-		conversationText,
-		"</conversation>",
-	].join("\n");
+		'- Distinctiveness first: the title must tell this session apart from other sessions in the list. Generic labels ("bug fix", "problem analysis", "code review") could describe any session — never use them as the headline.',
+		"- Carry the concrete detail: name the specific module, error, symptom, or business object involved, and include the single most identifying identifier (ticket, order, class, or file name) when there is one. Action verbs (debug, analyze, fix) carry little identifying weight.",
+		`- Keep it clear and readable. Prefer capturing the key point over staying short: when the conversation found a root cause or conclusion, include it (specific field, config, or error). Aim for roughly 15-40 characters; never exceed ${maxLength} characters.`,
+	];
+	appendRecentTitles(lines, opts.recentTitles);
+	lines.push("", "<conversation>", conversationText, "</conversation>");
+	return lines.join("\n");
 }
 
 export function buildAutoPrompt(
 	currentName: string,
 	conversationText: string,
-	opts: { maxLength?: number } = {},
+	opts: { maxLength?: number; recentTitles?: string[] } = {},
 ): string {
 	const maxLength = opts.maxLength ?? 200;
-	return [
+	const hasRecent = (opts.recentTitles ?? []).some((t) => t.trim().length > 0);
+	const lines: string[] = [
 		"You decide whether the session title still matches the conversation.",
 		`- Current title: ${currentName}`,
 		"If the title is still accurate, reply with exactly: KEEP",
-		"If it is inaccurate or too vague now, output a NEW descriptive title.",
+		hasRecent
+			? "If it is inaccurate, outdated, or hard to tell apart from other sessions (check it against <recent_session_titles> below), output a NEW title."
+			: "If it is inaccurate, outdated, or hard to tell apart from other sessions, output a NEW title.",
 		"Rules for a new title:",
-		'- ONLY the title text. No quotes, no trailing punctuation, no explanation.',
+		'- ONLY the title text. No quotes, no parentheses, no trailing punctuation, no explanation.',
 		"- Use the SAME language as the user's first message.",
-		'- Be descriptive, not terse: include the key entity (class, component, or concept), the action, and the goal — not a vague category.',
-		`- Aim for roughly 15-40 characters; never exceed ${maxLength} characters.`,
-		"",
-		"<conversation>",
-		conversationText,
-		"</conversation>",
-	].join("\n");
+		'- Distinctiveness first: the title must tell this session apart from other sessions in the list. Generic labels ("bug fix", "problem analysis", "code review") could describe any session — never use them as the headline.',
+		"- Carry the concrete detail of the current main task: name the specific module, error, symptom, or business object involved, and include the single most identifying identifier (ticket, order, class, or file name) when there is one.",
+		`- Keep it clear and readable. Prefer capturing the key point over staying short: when the conversation found a root cause or conclusion, include it (specific field, config, or error). Aim for roughly 30-55 characters; never exceed ${maxLength} characters.`,
+	];
+	appendRecentTitles(lines, opts.recentTitles);
+	lines.push("", "<conversation>", conversationText, "</conversation>");
+	return lines.join("\n");
 }
+
+const appendRecentTitles = (lines: string[], recentTitles?: string[]): void => {
+	const recent = (recentTitles ?? []).map((t) => t.trim()).filter((t) => t.length > 0);
+	if (recent.length === 0) return;
+	lines.push(
+		"- The <recent_session_titles> list below shows titles already used by other sessions of this project. Your title must be clearly distinguishable from every one of them (different subject, ID, or error) — never a rewording of one. When a listed title already covers the same subject, shift the focus to what THIS session newly found or changed.",
+		"",
+		"<recent_session_titles>",
+		...recent.map((t) => `- ${t}`),
+		"</recent_session_titles>",
+	);
+};
 
 // ---------------------------------------------------------------------------
 // SessionNameConfig + loadConfig
@@ -147,6 +239,18 @@ export function loadConfig(cwd: string, env: Record<string, string | undefined> 
 
 export type ModelAuth = { model: Model<any>; apiKey: string; headers: Record<string, string> | undefined };
 
+/** Registry headers are ProviderHeaders (values may be null); our auth contract is Record<string, string>. */
+export function dropNullHeaders(
+	headers?: Record<string, string | null>,
+	): Record<string, string> | undefined {
+	if (!headers) return undefined;
+	const out: Record<string, string> = {};
+	for (const [k, v] of Object.entries(headers)) {
+		if (typeof v === "string") out[k] = v;
+	}
+	return out;
+}
+
 export async function resolveModelAndAuth(
 	ctx: ExtensionContext,
 	cfg: SessionNameConfig,
@@ -157,7 +261,8 @@ export async function resolveModelAndAuth(
 	if (!model) return null;
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth?.ok || !auth.apiKey) return null;
-	return { model, apiKey: auth.apiKey, headers: auth.headers };
+	// registry headers are ProviderHeaders (values may be null); our auth contract is Record<string, string>.
+	return { model, apiKey: auth.apiKey, headers: dropNullHeaders(auth.headers) };
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +295,17 @@ export async function generateTitle(
 // ---------------------------------------------------------------------------
 // Pi extension entry point
 // ---------------------------------------------------------------------------
+
+const siblingTitles = (ctx: ExtensionContext, excludeNames: string[]): string[] => {
+	try {
+		return collectRecentSessionTitles(ctx.sessionManager.getSessionDir(), {
+			currentSessionFile: ctx.sessionManager.getSessionFile(),
+			excludeNames,
+		});
+	} catch {
+		return [];
+	}
+};
 
 export default function (pi: ExtensionAPI): void {
 	let manuallyLocked = false;
@@ -226,9 +342,11 @@ export default function (pi: ExtensionAPI): void {
 
 			let title: string | null;
 			if (cfg.mode === "first" || !currentName) {
-				title = cleanTitle(await generateTitle(buildFirstPrompt(text, cfg), auth, complete, ctx.signal), cfg.maxLength);
+				const prompt = buildFirstPrompt(text, { maxLength: cfg.maxLength, recentTitles: siblingTitles(ctx, currentName ? [currentName] : []) });
+				title = cleanTitle(await generateTitle(prompt, auth, complete, ctx.signal), cfg.maxLength);
 			} else {
-				const verdict = await generateTitle(buildAutoPrompt(currentName, text, cfg), auth, complete, ctx.signal);
+				const prompt = buildAutoPrompt(currentName, text, { maxLength: cfg.maxLength, recentTitles: siblingTitles(ctx, currentName ? [currentName] : []) });
+				const verdict = await generateTitle(prompt, auth, complete, ctx.signal);
 				title = /^keep$/i.test(verdict.trim()) ? null : cleanTitle(verdict, cfg.maxLength);
 			}
 			if (!title) return;
@@ -278,7 +396,9 @@ export default function (pi: ExtensionAPI): void {
 				return;
 			}
 			try {
-				const title = cleanTitle(await generateTitle(buildFirstPrompt(text, cfg), auth, complete, ctx.signal), cfg.maxLength);
+				const current = pi.getSessionName();
+				const prompt = buildFirstPrompt(text, { maxLength: cfg.maxLength, recentTitles: siblingTitles(ctx, current ? [current] : []) });
+				const title = cleanTitle(await generateTitle(prompt, auth, complete, ctx.signal), cfg.maxLength);
 				if (!title) {
 					ctx.ui.notify("Could not generate a name from the model response", "warning");
 					return;

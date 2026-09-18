@@ -12,7 +12,8 @@ Auto-name [pi](https://pi.dev) sessions with a short LLM-generated title so `--r
 - **Never overwrites manual names** — detects `/name`, `--name`, the resume picker's rename, or any other extension calling `setSessionName`, and locks itself for the rest of the session
 - **`/rename [name]`** — rename the current session on demand. With an argument it sets that name; without, it generates one from the conversation
 - **Language-aware** — titles use the same language as your first message
-- **Descriptive titles** — key entity + action + goal (~15-40 chars), not terse labels
+- **Distinctive titles** — leads with the concrete entity/error/identifier, so similar sessions don't blur together (~15-40 chars)
+- **Conflict-aware** — reads recent sibling session titles from local session storage and injects them into the prompt, so a new title never duplicates or rewords one already in the list
 - **Graceful failure** — model unavailable or no API key? Stays silent, never blocks the session
 
 ## Prerequisites
@@ -48,6 +49,8 @@ ln -s "$(pwd)" ~/.pi/agent/extensions/pi-session-name
 ## Usage
 
 No configuration needed for the default `first` mode. Just install and use pi — your first session will auto-name itself.
+
+> **Tip**: in `first` mode the session is named after the first turn, so if the root cause or key point usually emerges only in later turns, set `"mode": "auto"` — the title then re-evaluates each turn and tracks the conversation's conclusion.
 
 If you want to change behavior, see [Configuration](#configuration).
 
@@ -137,6 +140,8 @@ import {
 	buildAutoPrompt,
 	loadConfig,
 	generateTitle,
+	parseSessionTitle,
+	collectRecentSessionTitles,
 } from "@fyeeme/pi-session-name";
 ```
 

@@ -11,7 +11,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 	CONFIG_DIR_NAME: ".pi",
 }));
 
-import { buildConversationText, cleanTitle, buildFirstPrompt, buildAutoPrompt, loadConfig, resolveModelAndAuth, generateTitle, type SessionEntry } from "../index.ts";
+import { buildConversationText, cleanTitle, buildFirstPrompt, buildAutoPrompt, loadConfig, resolveModelAndAuth, generateTitle, parseSessionTitle, collectRecentSessionTitles, type SessionEntry } from "../index.ts";
 import setup from "../index.ts";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -152,20 +152,100 @@ describe("prompts", () => {
 		expect(p).toContain("Current title: line1\nline2");
 	});
 
-	it("buildFirstPrompt favors descriptive over terse titles", () => {
+	it("buildFirstPrompt favors distinctive, informative titles", () => {
 		const p = buildFirstPrompt(conv, { maxLength: 200 });
-		expect(p).toContain("descriptive");
+		expect(p).toContain("recognize");
+		expect(p).toContain("Distinctiveness first");
 		expect(p).toContain("15-40 characters");
-		expect(p).not.toMatch(/\bshort\b/);
-		expect(p).not.toContain("concise");
+		expect(p).not.toContain("8-24");
 	});
 
-	it("buildAutoPrompt favors descriptive over terse titles", () => {
+	it("buildAutoPrompt favors distinctive, informative titles", () => {
 		const p = buildAutoPrompt("Old", conv, { maxLength: 200 });
-		expect(p).toContain("descriptive");
-		expect(p).toContain("15-40 characters");
-		expect(p).not.toMatch(/\bshort\b/);
-		expect(p).not.toContain("concise");
+		expect(p).toContain("tell apart");
+		expect(p).toContain("Distinctiveness first");
+		expect(p).toContain("30-55 characters");
+		expect(p).not.toContain("8-24");
+	});
+
+	it("buildFirstPrompt embeds recent sibling titles with a conflict rule", () => {
+		const p = buildFirstPrompt(conv, { maxLength: 200, recentTitles: ["金蝶推送失败排查", "fms连接数排查"] });
+		expect(p).toContain("<recent_session_titles>");
+		expect(p).toContain("- 金蝶推送失败排查");
+		expect(p).toContain("clearly distinguishable");
+		expect(p.endsWith("</conversation>")).toBe(true);
+	});
+
+	it("buildAutoPrompt embeds recent sibling titles with a conflict rule", () => {
+		const p = buildAutoPrompt("Old", conv, { maxLength: 200, recentTitles: ["金蝶推送失败排查"] });
+		expect(p).toContain("<recent_session_titles>");
+		expect(p).toContain("- 金蝶推送失败排查");
+		expect(p).toContain("clearly distinguishable");
+	});
+
+	it("prompts omit the sibling block when recentTitles is empty/undefined", () => {
+		expect(buildFirstPrompt(conv, { maxLength: 200 })).not.toContain("recent_session_titles");
+		expect(buildFirstPrompt(conv, { maxLength: 200, recentTitles: [] })).not.toContain("recent_session_titles");
+		expect(buildFirstPrompt(conv, { maxLength: 200, recentTitles: ["  "] })).not.toContain("recent_session_titles");
+		expect(buildAutoPrompt("Old", conv, {})).not.toContain("recent_session_titles");
+	});
+});
+
+describe("parseSessionTitle", () => {
+	it("returns the latest session_info name", () => {
+		const content = [
+			JSON.stringify({ type: "session", id: "s1" }),
+			JSON.stringify({ type: "session_info", name: "first name" }),
+			JSON.stringify({ type: "message", message: { role: "user", content: "hi" } }),
+			JSON.stringify({ type: "session_info", name: "latest name" }),
+		].join("\n");
+		expect(parseSessionTitle(content)).toBe("latest name");
+	});
+
+	it("empty name clears the title (returns undefined)", () => {
+		const content = [
+			JSON.stringify({ type: "session_info", name: "old" }),
+			JSON.stringify({ type: "session_info", name: "" }),
+		].join("\n");
+		expect(parseSessionTitle(content)).toBeUndefined();
+	});
+
+	it("skips malformed lines and returns undefined when no session_info", () => {
+		expect(parseSessionTitle("{ not json\n\"type\":\"session\"}")).toBeUndefined();
+		expect(parseSessionTitle("")).toBeUndefined();
+	});
+});
+
+describe("collectRecentSessionTitles", () => {
+	let dir: string;
+	beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "pisn-titles-")); });
+	afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+	const writeSession = (name: string, titles: string[]) => {
+		const lines = [JSON.stringify({ type: "session", id: name })];
+		for (const t of titles) lines.push(JSON.stringify({ type: "session_info", name: t }));
+		writeFileSync(join(dir, `${name}.jsonl`), lines.join("\n"), "utf8");
+	};
+
+	it("collects newest-first, excludes current file, dedupes, caps maxTitles", () => {
+		writeSession("2026-01-01T00-00-00-000Z_a", ["Title A1"]);
+		writeSession("2026-01-02T00-00-00-000Z_b", ["Title B1"]);
+		writeSession("2026-01-03T00-00-00-000Z_c", ["Title C1"]);
+		writeSession("2026-01-03T12-00-00-000Z_e", ["Title C1"]);
+		writeSession("2026-01-04T00-00-00-000Z_d", ["Title D1"]);
+		const titles = collectRecentSessionTitles(dir, { currentSessionFile: join(dir, "2026-01-04T00-00-00-000Z_d.jsonl"), maxTitles: 2 });
+		expect(titles).toEqual(["Title C1", "Title B1"]);
+	});
+
+	it("excludes explicit excludeNames and keeps going", () => {
+		writeSession("2026-01-01T00-00-00-000Z_a", ["Title A"]);
+		writeSession("2026-01-02T00-00-00-000Z_b", ["Title B"]);
+		const titles = collectRecentSessionTitles(dir, { excludeNames: ["Title B"] });
+		expect(titles).toEqual(["Title A"]);
+	});
+
+	it("returns [] for a missing directory", () => {
+		expect(collectRecentSessionTitles(join(dir, "nope"))).toEqual([]);
 	});
 });
 

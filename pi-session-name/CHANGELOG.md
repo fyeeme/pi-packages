@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-09-17
+
+### Added
+
+- Conflict-aware naming: `collectRecentSessionTitles` / `parseSessionTitle` scan local sibling session files (newest first, 60s TTL cache) and inject the recent titles into both the first-title and auto-rename prompts, so a generated title never duplicates or rewords one already in the session list. The current session's file and its own name are excluded; any storage read failure degrades silently to no list.
+
+### Changed
+
+- Prompt rewrite for distinctiveness: titles must lead with the concrete entity, error, or identifier instead of generic labels ("bug fix", "code review"); parentheses are banned from output; auto-mode titles now aim for 30-55 characters and prefer capturing the conversation's root cause or conclusion over staying short.
+- README tip: in `first` mode the session is named after the first turn — switch to `"mode": "auto"` when the key point usually emerges only in later turns.
+
 ## [1.0.3] - 2026-09-09
 
 ### Changed
