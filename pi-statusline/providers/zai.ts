@@ -60,6 +60,7 @@ export class ZaiUsageProvider implements UsageProvider {
 			const level = quotaData.data?.level ?? "";
 
 			const now = Date.now();
+			let fiveHourTokens = 0;
 			let weeklyTokens = 0;
 			let weeklyResetAt = 0;
 			let weeklyPct = 0;
@@ -83,10 +84,23 @@ export class ZaiUsageProvider implements UsageProvider {
 				weeklyTokens = await this.fetchCycleUsage(origin, headers, cycleStart, now);
 			}
 
+			// 5h rolling window: GLM starts the 5h window at the first request, so
+			// the current window spans [resetAt - 5h, now]. Sum model-usage over it.
+			const tokensResetAt = fiveHourLimit?.nextResetTime ?? 0;
+			if (tokensResetAt > 0) {
+				fiveHourTokens = await this.fetchCycleUsage(
+					origin,
+					headers,
+					tokensResetAt - 5 * 60 * 60 * 1000,
+					now,
+				);
+			}
+
 			return {
 				provider: model.provider,
 				tokensLimitPct: fiveHourLimit?.percentage ?? 0,
-				tokensResetAt: fiveHourLimit?.nextResetTime ?? 0,
+				tokensResetAt,
+				fiveHourTokens,
 				level,
 				weeklyTokens,
 				weeklyResetAt,
@@ -103,18 +117,18 @@ export class ZaiUsageProvider implements UsageProvider {
 		const zai = result as ZaiResult;
 		const parts: string[] = [];
 
-		// 5-hour rolling quota
-		const countdown = formatCountdown(zai.tokensResetAt);
-		parts.push(`Usage ${zai.tokensLimitPct}%(${countdown})`);
+		// 5h 42%(1.2M,1h23m) — 5-hour rolling window: pct(in-window tokens,reset countdown)
+		if (zai.tokensResetAt > 0) {
+			parts.push(`5h ${zai.tokensLimitPct}%(${fmt(zai.fiveHourTokens)},${formatCountdown(zai.tokensResetAt)})`);
+		}
 
-		// Weekly quota
+		// wk 35%(12M,3d4h) — weekly quota; natural-week fallback has no pct → wk 1.2M
 		if (zai.isNaturalWeek) {
 			if (zai.weeklyTokens > 0) {
-				parts.push(`W:${fmt(zai.weeklyTokens)}`);
+				parts.push(`wk ${fmt(zai.weeklyTokens)}`);
 			}
-		} else if (zai.weeklyTokens > 0 || zai.weeklyPct > 0) {
-			const weeklyCountdown = formatWeeklyCountdown(zai.weeklyResetAt);
-			parts.push(`W:${zai.weeklyPct}%(${fmt(zai.weeklyTokens)},${weeklyCountdown})`);
+		} else if (zai.weeklyResetAt > 0) {
+			parts.push(`wk ${zai.weeklyPct}%(${fmt(zai.weeklyTokens)},${formatWeeklyCountdown(zai.weeklyResetAt)})`);
 		}
 
 		return parts.join(" · ");
@@ -125,6 +139,7 @@ export class ZaiUsageProvider implements UsageProvider {
 		const zai = result as ZaiResult;
 		w(`  tokensLimitPct: ${zai.tokensLimitPct}%`);
 		w(`  tokensResetAt: ${new Date(zai.tokensResetAt).toISOString()}`);
+		w(`  fiveHourTokens: ${zai.fiveHourTokens}`);
 		w(`  level: ${zai.level}`);
 		w(`  weeklyTokens: ${zai.weeklyTokens}`);
 		w(`  weeklyPct: ${zai.weeklyPct}%`);

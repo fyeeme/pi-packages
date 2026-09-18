@@ -204,7 +204,7 @@ describe("buildStatLine", () => {
 			noopElapsed,
 			0,
 		);
-		expect(result).toContain("tokens 7.0k(in 5.0k, out 2.0k)");
+		expect(result).toContain("tokens(↑5.0k ↓2.0k)");
 	});
 
 	it("shows cache stats", () => {
@@ -216,7 +216,7 @@ describe("buildStatLine", () => {
 			noopElapsed,
 			0,
 		);
-		expect(result).toContain("cache 1.5k");
+		expect(result).toContain("R1.0k");
 	});
 
 	it("shows cache hit rate when > 0", () => {
@@ -228,7 +228,7 @@ describe("buildStatLine", () => {
 			noopElapsed,
 			0,
 		);
-		expect(result).toContain("cache 1.5k,33.0%");
+		expect(result).toContain("tokens 33.0%(↑3.0k R1.0k)");
 	});
 
 	it("shows cost when no provider result", () => {
@@ -265,7 +265,7 @@ describe("buildStatLine", () => {
 			noopElapsed,
 			0,
 		);
-		expect(result).toContain("43.8%/16k");
+		expect(result).toContain("Ctx 43.8%/16k");
 	});
 
 	it("shows context usage without percent", () => {
@@ -277,7 +277,7 @@ describe("buildStatLine", () => {
 			noopElapsed,
 			0,
 		);
-		expect(result).toContain("?/16k");
+		expect(result).toContain("Ctx ?/16k");
 	});
 
 	it("shows elapsed time and TPS", () => {

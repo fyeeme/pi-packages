@@ -78,22 +78,17 @@ export function buildStatLine(
 ): string {
 	const mods: string[] = [];
 
-	// tokens 566k(in 29k, out 22k, cache 515k,45.2%)
+	// tokens 45.2%(↑29k ↓22k R515k)
 	{
 		const tok: string[] = [];
-		if (stats.input) tok.push(`in ${fmt(stats.input)}`);
-		if (stats.output) tok.push(`out ${fmt(stats.output)}`);
-		const cache = stats.cacheRead + stats.cacheWrite;
-		if (cache) {
-			const cacheStr = stats.hitRate > 0
-				? `cache ${fmt(cache)},${(stats.hitRate * 100).toFixed(1)}%`
-				: `cache ${fmt(cache)}`;
-			tok.push(cacheStr);
-		}
-		if (tok.length > 0 && stats.total) {
-			mods.push(`tokens ${fmt(stats.total)}(${tok.join(", ")})`);
-		} else if (tok.length > 0) {
-			mods.push(tok.join(", "));
+		if (stats.input) tok.push(`↑${fmt(stats.input)}`);
+		if (stats.output) tok.push(`↓${fmt(stats.output)}`);
+		if (stats.cacheRead) tok.push(`R${fmt(stats.cacheRead)}`);
+		if (tok.length > 0) {
+			const pct = stats.hitRate > 0 ? ` ${(stats.hitRate * 100).toFixed(1)}%` : "";
+			mods.push(`tokens${pct}(${tok.join(" ")})`);
+		} else if (stats.total) {
+			mods.push(`tokens ${fmt(stats.total)}`);
 		}
 	}
 
@@ -111,13 +106,13 @@ export function buildStatLine(
 		}
 	}
 
-	// context: 45.2%/16k or ?/16k
+	// Ctx: 45.2%/16k or ?/16k
 	if (contextUsage) {
 		const w = fmt(contextUsage.contextWindow);
 		mods.push(
 			contextUsage.percent !== null
-				? `${contextUsage.percent.toFixed(1)}%/${w}`
-				: `?/${w}`,
+				? `Ctx ${contextUsage.percent.toFixed(1)}%/${w}`
+				: `Ctx ?/${w}`,
 		);
 	}
 

@@ -136,6 +136,7 @@ describe("ZaiUsageProvider", () => {
 			const zai = result as ZaiResult;
 			expect(zai.tokensLimitPct).toBe(50);
 			expect(zai.tokensResetAt).toBe(fiveHourReset);
+			expect(zai.fiveHourTokens).toBe(500_000);
 			expect(zai.weeklyPct).toBe(12);
 			expect(zai.weeklyResetAt).toBe(weeklyReset);
 			expect(zai.weeklyTokens).toBe(500_000);
@@ -237,11 +238,12 @@ describe("ZaiUsageProvider", () => {
 		const now = Date.now();
 		const oneHour = 60 * 60 * 1000;
 
-		it("shows API weekly quota format: percentage + tokens + countdown", () => {
+		it("shows API weekly quota format: pct(in-window tokens,reset countdown)", () => {
 			const result: NonNullable<ProviderUsageResult> = {
 				provider: "zai",
 				tokensLimitPct: 50,
 				tokensResetAt: now + 2 * oneHour,
+				fiveHourTokens: 300_000,
 				level: "pro",
 				weeklyTokens: 500_000,
 				weeklyResetAt: now + 3 * 24 * oneHour,
@@ -250,17 +252,17 @@ describe("ZaiUsageProvider", () => {
 			};
 
 			const out = provider.formatForFooter(result, 0, "$");
-			expect(out).toMatch(/Usage 50%\(\d+h\d+m\)/);
-			expect(out).toMatch(/W:12%\(/);
-			expect(out).toMatch(/500k/);
+			expect(out).toMatch(/5h 50%\(300k,\d+h\d+m\)/);
+			expect(out).toMatch(/wk 12%\(500k,\d+d\d+h\)/);
 			expect(out).toContain(" · ");
 		});
 
-		it("shows natural week format: W:tokens", () => {
+		it("shows natural week format: wk tokens", () => {
 			const result: NonNullable<ProviderUsageResult> = {
 				provider: "zai",
 				tokensLimitPct: 0,
 				tokensResetAt: now + 2 * oneHour,
+				fiveHourTokens: 0,
 				level: "pro",
 				weeklyTokens: 42_000,
 				weeklyResetAt: now + 2 * 24 * oneHour,
@@ -269,11 +271,11 @@ describe("ZaiUsageProvider", () => {
 			};
 
 			const out = provider.formatForFooter(result, 0, "$");
-			expect(out).toMatch(/Usage 0%\(\d+h\d+m\)/);
-			expect(out).toContain("W:42k");
+			expect(out).toMatch(/5h 0%\(0,\d+h\d+m\)/);
+			expect(out).toContain("wk 42k");
 			expect(out).not.toContain("7d:");
-			// natural-week format has no percentage/countdown after W:
-			expect(out).not.toMatch(/W:\d+%/);
+			// natural-week format has no percentage/countdown after wk
+			expect(out).not.toMatch(/wk \d+%/);
 		});
 
 		it("hides natural week when weeklyTokens is 0", () => {
@@ -281,6 +283,7 @@ describe("ZaiUsageProvider", () => {
 				provider: "zai",
 				tokensLimitPct: 0,
 				tokensResetAt: now + oneHour,
+				fiveHourTokens: 0,
 				level: "pro",
 				weeklyTokens: 0,
 				weeklyResetAt: 0,
@@ -290,7 +293,7 @@ describe("ZaiUsageProvider", () => {
 
 			const out = provider.formatForFooter(result, 0, "$");
 			expect(out).not.toContain("7d:");
-			expect(out).not.toContain("W:");
+			expect(out).not.toContain("wk ");
 		});
 
 		it("returns empty for non-zai provider", () => {

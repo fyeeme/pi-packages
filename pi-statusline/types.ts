@@ -33,6 +33,8 @@ export type ZaiResult = {
 	provider: "zai" | "zai-coding-cn";
 	tokensLimitPct: number;
 	tokensResetAt: number;
+	/** tokens used within the current 5-hour window (0 when unknown) */
+	fiveHourTokens: number;
 	level: string;
 	weeklyTokens: number;
 	weeklyResetAt: number;
