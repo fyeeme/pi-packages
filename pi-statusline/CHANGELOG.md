@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Compact token segment: `tokens 78.9%(↑in ↓out Rcache)` replaces `tokens total(in, out, cache,hit%)`. Cache hit rate moves to the front; the total and cache-write numbers are no longer displayed.
+- ZAI quota segments made symmetric and labeled: `5h 42%(1.2M,1h23m) · wk 35%(12M,3d4h)` replaces `Usage 42%(1h23m) · W:35%(1.2M,3d4h)`. Both windows now show in-window token usage (the 5h window is summed via the model-usage API over `[resetAt - 5h, now]`); the natural-week fallback stays `wk 1.2M`. The context segment gains a `Ctx` prefix (`Ctx 45.2%/64k`).
+
 ## [1.2.4] - 2026-09-10
 
 ### Changed

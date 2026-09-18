@@ -9,7 +9,7 @@ A rich custom status bar for [pi](https://pi.dev) that replaces the default foot
 
 - **Provider-aware usage** — special support for DeepSeek and GLM/ZAI (see [Provider Support](#provider-support))
 - **DeepSeek peak/off-peak pricing** — session cost follows DeepSeek's 2026-08-17 peak/off-peak billing (peak 9:00-12:00 / 14:00-18:00 Beijing time on weekdays; weekends are off-peak all day since 2026-08-23), priced per-message by timestamp, with a live `peak`/`off-peak` indicator in the footer (see [DeepSeek](#deepseek))
-- **Token usage**: input, output, cache read/write, total per session, with cache hit rate
+- **Token usage**: compact `tokens 78.9%(↑in ↓out Rcache)` segment with cache hit rate
 - **Cost**: cumulative session cost with currency auto-detection (¥ for DeepSeek/CNY, $ otherwise)
 - **Context window**: usage percentage and size
 - **Timing**: elapsed time + tokens/sec for last response
@@ -62,12 +62,12 @@ Shows **5-hour rolling quota** and **weekly quota** (or natural-week usage as fa
 
 | Segment | Example | Source |
 |---------|---------|--------|
-| 5h quota | `Usage 42%(1h23m)` | `GET /api/monitor/usage/quota/limit` (`unit:3`) |
-| Weekly quota | `W:35%(1.2M,3d4h)` | `quota/limit` (`unit:6`) + `model-usage` API |
-| Natural week | `W:1.2M` | `model-usage` API (Mon 00:00 local → now) |
+| 5h quota | `5h 42%(1.2M,1h23m)` | `quota/limit` (`unit:3`) + `model-usage` API |
+| Weekly quota | `wk 35%(12M,3d4h)` | `quota/limit` (`unit:6`) + `model-usage` API |
+| Natural week | `wk 1.2M` | `model-usage` API (Mon 00:00 local → now) |
 
-- **5-hour rolling window**: percentage used + countdown to reset
-- **Weekly quota**: if the plan exposes a `unit:6` weekly limit, shows percentage, tokens, and reset countdown; otherwise falls back to real usage for the current natural week (host local timezone)
+- **5-hour rolling window**: percentage used, in-window token usage, countdown to reset
+- **Weekly quota**: if the plan exposes a `unit:6` weekly limit, shows percentage, in-week token usage, and reset countdown; otherwise falls back to real usage for the current natural week (host local timezone)
 - **Account level**: also fetched (visible in `/status-debug`)
 - Supports both `zai` (`api.z.ai`) and `zai-coding-cn` (`open.bigmodel.cn`) endpoints
 
@@ -121,7 +121,7 @@ See the Pi Packages guide on [pi.dev](https://pi.dev) for the full list of sourc
 
 ```
 ~/projects/my-repo (main)                    deepseek-v4-pro · xhigh
-tokens 65k(in 12k, out 8k, cache 45k) · ¥0.12/50.00 · 7d:1.2M · off-peak · 45.2%/64k · 2m30s 38.2tok/s
+tokens 78.9%(↑12k ↓8k R45k) · ¥0.12/50.00 · 7d:1.2M · off-peak · Ctx 45.2%/64k · 2m30s 38.2tok/s
 ```
 
 **Line 1**: cwd + git branch (left) | model + thinking level (right)
@@ -132,7 +132,7 @@ tokens 65k(in 12k, out 8k, cache 45k) · ¥0.12/50.00 · 7d:1.2M · off-peak · 
 
 ```
 ~/projects/my-repo (main)                       glm-4.6 · high
-tokens 65k(in 12k, out 8k, cache 45k) · Usage 42%(1h23m) · W:35%(1.2M,3d4h) · 45.2%/64k · 2m30s 38.2tok/s
+tokens 78.9%(↑12k ↓8k R45k) · 5h 42%(1.2M,1h23m) · wk 35%(12M,3d4h) · Ctx 45.2%/64k · 2m30s 38.2tok/s
 ```
 
 ## Environment Variables
