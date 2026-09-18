@@ -97,6 +97,7 @@ const goalModeContextPrompt = readFileSync(
 interface EntryMessageLike {
 	role?: string;
 	stopReason?: string;
+	errorMessage?: string;
 	usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } | undefined;
 }
 
@@ -340,6 +341,23 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		await exitGoalMode({ reason: "paused" });
 	}
 
+	/** A provider/agent error ended the run (borrowed from mitsuhiko/agent-stuff
+	 *  goal.ts): pause the active goal instead of letting scheduleContinuation
+	 *  fire into a likely retry loop, and classify the failure for the user.
+	 *  Usage/rate/quota errors read differently from generic faults. */
+	async function pauseOnRunError(messages: unknown[]): Promise<void> {
+		if (!goalState?.enabled || goalState.goal.status !== "active") return;
+		const errorMessage = lastAssistantErrorMessage(messages) ?? "";
+		const usageLimited = /\b(usage|rate|quota|limit)\b/i.test(errorMessage);
+		await runtime.pauseGoal();
+		notify(
+			usageLimited
+				? "Goal paused: the last turn hit provider usage/rate limits. /goal resume when ready."
+				: "Goal paused: the last turn ended with an error. /goal resume to continue.",
+			"error",
+		);
+	}
+
 	async function dropGoal(): Promise<void> {
 		if (!goalState) {
 			notify("No goal to drop.", "warning");
@@ -408,7 +426,9 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		if (!prompt) return;
 		continuationInFlight = true;
 		pi.sendMessage(
-			{ customType: "goal-continuation", content: prompt, display: false },
+			// details.goalId keys context pruning (see the "context" handler below):
+			// only the newest continuation of the CURRENTLY active goal survives.
+			{ customType: "goal-continuation", content: prompt, display: false, details: { goalId: goalState.goal.id } },
 			{ triggerTurn: true, deliverAs: "followUp" },
 		);
 	}
@@ -425,6 +445,11 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		// fall back to the process cwd.
 		runEvaluator: (request, opts) =>
 			runGoalEvaluator(request, { cwd: opts.cwd ?? currentCtx?.cwd ?? process.cwd(), signal: opts.signal }),
+		// Mid-run activation (tool create/resume): inject the goal context into
+		// the CURRENT run as a steer — before_agent_start only covers the next run.
+		onActivated: async () => {
+			if (currentCtx && !currentCtx.isIdle()) await sendGoalModeContext("steer");
+		},
 	};
 	pi.registerTool(createGoalTool(goalToolDeps));
 
@@ -501,11 +526,16 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		const restored = restoreGoalFromEntries(branch);
 		if (!restored) {
 			goalState = undefined;
-			// omp sdk.ts excludes the goal tool from the initial set; mirror that
-			// when this session has no goal to manage.
-			const active = pi.getActiveTools();
-			if (active.includes("goal")) {
-				pi.setActiveTools(active.filter((name) => name !== "goal"));
+			// omp sdk.ts excludes the goal tool from the initial set; mirror that in
+			// TUI where /goal and /guided-goal re-arm it. In non-interactive modes
+			// (print/json/rpc) no slash command exists, so removing the tool would
+			// leave the model unable to create a goal at all (found via live
+			// goal-mode testing): keep it active there.
+			if (ctx.mode === "tui") {
+				const active = pi.getActiveTools();
+				if (active.includes("goal")) {
+					pi.setActiveTools(active.filter((name) => name !== "goal"));
+				}
 			}
 			updateStatus();
 			return;
@@ -563,15 +593,51 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		};
 	});
 
+	// Context hygiene (borrowed from mitsuhiko/agent-stuff goal.ts): hidden goal
+	// messages otherwise accumulate one per run/continuation and burn context
+	// every LLM call. Keep only the newest goal-mode-context and
+	// goal-budget-limit, plus the newest continuation stamped for the currently
+	// active goal id; stale ones (including all continuations once no goal is
+	// active) are dropped from the model's view, not from the transcript.
+	pi.on("context", (event) => {
+		const activeGoalId = goalState?.enabled && goalState.goal.status === "active" ? goalState.goal.id : undefined;
+		let lastContext = -1;
+		let lastBudget = -1;
+		let lastContinuation = -1;
+		for (let i = 0; i < event.messages.length; i++) {
+			const msg = event.messages[i] as
+				| { role?: string; customType?: string; details?: { goalId?: string } }
+				| undefined;
+			if (msg?.role !== "custom") continue;
+			if (msg.customType === "goal-mode-context") lastContext = i;
+			else if (msg.customType === "goal-budget-limit") lastBudget = i;
+			else if (msg.customType === "goal-continuation" && activeGoalId !== undefined && msg.details?.goalId === activeGoalId) {
+				lastContinuation = i;
+			}
+		}
+		if (lastContext === -1 && lastBudget === -1 && lastContinuation === -1) return undefined;
+		return {
+			messages: event.messages.filter((message, index) => {
+				const msg = message as { role?: string; customType?: string } | undefined;
+				if (msg?.role !== "custom") return true;
+				if (msg.customType === "goal-mode-context") return index === lastContext;
+				if (msg.customType === "goal-budget-limit") return index === lastBudget;
+				if (msg.customType === "goal-continuation") return index === lastContinuation;
+				return true;
+			}),
+		};
+	});
+
 	pi.on("agent_end", async (event, ctx) => {
 		currentCtx = ctx;
 		// omp separates onAgentEnd (session) from continuation scheduling
 		// (interactive-mode); both subscribe to the same end-of-run moment.
-		const aborted = lastAssistantStopReason(event.messages) === "aborted";
-		if (aborted) {
+		const stopReason = lastAssistantStopReason(event.messages);
+		if (stopReason === "aborted") {
 			await runtime.onTaskAborted({ reason: "interrupted" });
 		} else {
 			await runtime.onAgentEnd({ currentUsage: currentUsage(ctx) });
+			if (stopReason === "error") await pauseOnRunError(event.messages);
 		}
 
 		if (continuationInFlight) {
@@ -661,6 +727,14 @@ function lastAssistantStopReason(messages: unknown[]): string | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i] as EntryMessageLike | undefined;
 		if (message?.role === "assistant") return message.stopReason;
+	}
+	return undefined;
+}
+
+function lastAssistantErrorMessage(messages: unknown[]): string | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i] as EntryMessageLike | undefined;
+		if (message?.role === "assistant") return message.errorMessage;
 	}
 	return undefined;
 }

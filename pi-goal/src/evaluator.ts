@@ -34,8 +34,16 @@ const evaluatorCompletePrompt = readFileSync(path.join(promptsDir, "evaluator-co
 const evaluatorImpossiblePrompt = readFileSync(path.join(promptsDir, "evaluator-impossible.md"), "utf8");
 
 /** Hard cap on one evaluator run — the grounded check may run test suites,
- *  so this is deliberately generous; anything longer has failed. */
-export const EVALUATOR_TIMEOUT_MS = 300_000;
+ *  so this is deliberately generous; anything longer has failed. Each LLM
+ *  call on slow providers can take 20s+, and the evaluator is a multi-step
+ *  agent (inspect repo, run checks, emit JSON), so the default needs real
+ *  headroom. Override with GOAL_EVALUATOR_TIMEOUT_MS. */
+export const EVALUATOR_TIMEOUT_MS = 600_000;
+
+function evaluatorTimeout(): number {
+	const raw = Number.parseInt(process.env.GOAL_EVALUATOR_TIMEOUT_MS ?? "", 10);
+	return Number.isInteger(raw) && raw > 0 ? raw : EVALUATOR_TIMEOUT_MS;
+}
 
 /** Argv-safety caps (kernel MAX_ARG_STRLEN ≈ 128KB; these keep the prompt
  *  argument far under it even for verbose objectives/audits). */
@@ -118,6 +126,16 @@ export function buildEvaluatorPrompt(request: GoalEvaluatorRequest): string {
 	});
 }
 
+/** Build the evaluator argv: a one-shot headless run. Lean flags matter here:
+ *  without them the nested pi loads the user's full extension set — including
+ *  any OTHER goal extension, whose active-goal system prompt would pollute the
+ *  very evaluator that is supposed to judge the goal independently — and its
+ *  startup cost pushes long verification runs over the timeout (observed
+ *  live: 300s timeout hit while the evaluator was still working). */
+function evaluatorInvocation(prompt: string): { command: string; args: string[] } {
+	return getPiInvocation(["-p", "--no-session", "--no-extensions", "--no-skills", prompt]);
+}
+
 /** Extract the first balanced JSON object from evaluator output. Handles the
  *  clean case, code-fenced output, and prose-wrapped JSON; anything else is
  *  unparseable. Never throws. */
@@ -181,10 +199,10 @@ export async function runGoalEvaluator(
 ): Promise<GoalEvaluatorOutcome> {
 	const prompt = buildEvaluatorPrompt(request);
 	const spawn = opts.spawn ?? defaultSpawn;
-	const timeoutMs = opts.timeoutMs ?? EVALUATOR_TIMEOUT_MS;
+	const timeoutMs = opts.timeoutMs ?? evaluatorTimeout();
 	let stdout: string;
 	try {
-		stdout = await spawn(getPiInvocation(["-p", "--no-session", prompt]), {
+		stdout = await spawn(evaluatorInvocation(prompt), {
 			cwd: opts.cwd,
 			timeoutMs,
 			signal: opts.signal,

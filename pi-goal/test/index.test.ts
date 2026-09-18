@@ -36,6 +36,7 @@ interface FakeHost {
 		customType: string;
 		content: string;
 		display: boolean;
+		details?: unknown;
 		options?: { deliverAs?: string; triggerTurn?: boolean };
 	}>;
 	sentUserMessages: Array<{ content: string; options?: { deliverAs?: string } }>;
@@ -114,7 +115,10 @@ function fakeHost(): FakeHost {
 	return host;
 }
 
-function createContext(host: FakeHost, overrides: { entries?: unknown[]; pending?: boolean; idle?: boolean } = {}) {
+function createContext(
+	host: FakeHost,
+	overrides: { entries?: unknown[]; pending?: boolean; idle?: boolean; mode?: string } = {},
+) {
 	return {
 		ui: {
 			notify: (text: string) => {
@@ -130,7 +134,7 @@ function createContext(host: FakeHost, overrides: { entries?: unknown[]; pending
 			editor: async () => undefined,
 		},
 		hasUI: true,
-		mode: "tui",
+		mode: overrides.mode ?? "tui",
 		cwd: "/tmp",
 		isIdle: () => overrides.idle ?? true,
 		hasPendingMessages: () => overrides.pending ?? false,
@@ -222,6 +226,14 @@ describe("pi-goal extension wiring", () => {
 		expect(host.activeTools).toContain("read");
 	});
 
+	it("session_start keeps the goal tool in non-interactive modes (no slash commands there)", async () => {
+		const host = fakeHost();
+		defaultExport(host.pi);
+		const ctx = createContext(host, { mode: "print" });
+		await fire(host, "session_start", { type: "session_start", reason: "startup" }, ctx);
+		expect(host.activeTools).toContain("goal");
+	});
+
 	it("session_start restores a persisted active goal, re-adds the tool, then pauses it (omp onThreadResumed)", async () => {
 		const host = fakeHost();
 		defaultExport(host.pi);
@@ -295,6 +307,9 @@ describe("pi-goal extension wiring", () => {
 		expect(continuation).toBeDefined();
 		expect(continuation?.display).toBe(false);
 		expect(continuation?.options).toMatchObject({ triggerTurn: true, deliverAs: "followUp" });
+		// details.goalId keys the context-pruning handler.
+		const goalId = (host.entries.find((e) => e.customType === GOAL_STATE_ENTRY_TYPE)?.data as { goal: Goal }).goal.id;
+		expect(continuation?.details).toMatchObject({ goalId });
 	});
 
 	it("suppresses the next continuation when a continuation turn produced no tool calls", async () => {
@@ -631,5 +646,78 @@ describe("pi-goal extension wiring", () => {
 		expect(component.text).toContain("Goal completed: Ship it");
 		expect(component.text).toContain("6K (no budget) tokens");
 		expect(component.text).toContain("20s");
+	});
+
+	it("pauses the goal instead of continuing when the run ends with a provider error", async () => {
+		const host = fakeHost();
+		defaultExport(host.pi);
+		await fire(host, "session_start", { type: "session_start", reason: "startup" });
+		await host.commands.goal!.handler("Do the thing", createContext(host));
+		host.sentMessages.length = 0;
+
+		await fire(host, "agent_start", { type: "agent_start" });
+		await fire(host, "agent_end", {
+			type: "agent_end",
+			messages: [
+				{ role: "assistant", stopReason: "error", errorMessage: "429 rate limit exceeded", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+			],
+		});
+
+		// Paused and persisted, with a classified notice; no continuation queued.
+		const pauseEntry = [...host.entries].reverse().find((e) => e.customType === GOAL_STATE_ENTRY_TYPE);
+		expect(pauseEntry?.data).toMatchObject({ enabled: false, goal: { status: "paused" } });
+		expect(host.notifications.some((n) => n.includes("rate limits"))).toBe(true);
+		expect(host.sentMessages.filter((m) => m.customType === "goal-continuation")).toHaveLength(0);
+	});
+
+	it("pauses with a generic notice on non-usage errors", async () => {
+		const host = fakeHost();
+		defaultExport(host.pi);
+		await fire(host, "session_start", { type: "session_start", reason: "startup" });
+		await host.commands.goal!.handler("Do the thing", createContext(host));
+
+		await fire(host, "agent_start", { type: "agent_start" });
+		await fire(host, "agent_end", {
+			type: "agent_end",
+			messages: [
+				{ role: "assistant", stopReason: "error", errorMessage: "socket hang up", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+			],
+		});
+
+		expect(host.notifications.some((n) => n.includes("ended with an error"))).toBe(true);
+	});
+
+	it("context pruning keeps only the newest goal messages and drops stale continuations", async () => {
+		const host = fakeHost();
+		defaultExport(host.pi);
+		await fire(host, "session_start", { type: "session_start", reason: "startup" });
+		await host.commands.goal!.handler("Do the thing", createContext(host));
+		const goalId = (host.entries.find((e) => e.customType === GOAL_STATE_ENTRY_TYPE)?.data as { goal: Goal }).goal.id;
+
+		const custom = (customType: string, details?: unknown) => ({ role: "custom", customType, display: false, details });
+		const messages = [
+			{ role: "user", content: "hi" },
+			custom("goal-mode-context"), // stale context
+			custom("goal-continuation", { goalId: "old-goal" }), // stale goal id
+			custom("goal-budget-limit"),
+			custom("goal-mode-context"), // newest context: kept
+			custom("goal-continuation", { goalId }), // newest for the active goal: kept
+			{ role: "assistant", content: "working" },
+			custom("goal-continuation", { goalId: "old-goal" }), // another stale: dropped
+		];
+
+		const handler = host.handlers.get("context")?.[0]!;
+		const result = (await handler({ type: "context", messages }, createContext(host))) as { messages: unknown[] };
+		const kept = result.messages.filter((m) => (m as { role?: string }).role === "custom");
+		expect(kept.map((m) => (m as { customType: string }).customType)).toEqual([
+			"goal-budget-limit",
+			"goal-mode-context",
+			"goal-continuation",
+		]);
+
+		// Once no goal is active, every continuation is dropped.
+		await host.commands.goal!.handler("drop", createContext(host));
+		const result2 = (await handler({ type: "context", messages }, createContext(host))) as { messages: unknown[] };
+		expect(result2.messages.filter((m) => (m as { customType?: string }).customType === "goal-continuation")).toHaveLength(0);
 	});
 });

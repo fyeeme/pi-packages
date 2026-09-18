@@ -127,6 +127,11 @@ export interface GoalToolDeps {
 	/** Independent completion/impossibility evaluator (src/evaluator.ts).
 	 *  Gates `complete` and adjudicates `impossible`. */
 	runEvaluator: GoalEvaluatorFn;
+	/** Called after the tool ACTIVATES a goal mid-run (create/resume). The
+	 *  before_agent_start injection only fires on the next agent run, so
+	 *  without this hook the run that created the goal never sees the goal
+	 *  context prompt at all (observed live in print mode). */
+	onActivated?: () => Promise<void>;
 }
 
 function describeEvaluatorVerdict(verdict: string): string {
@@ -172,12 +177,14 @@ export function createGoalTool(deps: GoalToolDeps): ToolDefinition<typeof GoalPa
 			if (params.op === "create") {
 				const created = await runtime.createGoal(validateCreateParams(params));
 				response = buildGoalToolResponse(created.goal);
+				await deps.onActivated?.();
 			} else if (params.op === "get") {
 				const state = deps.getState();
 				response = buildGoalToolResponse(state?.goal ?? null);
 			} else if (params.op === "resume") {
 				const resumed = await runtime.resumeGoal();
 				response = buildGoalToolResponse(resumed.goal);
+				await deps.onActivated?.();
 			} else if (params.op === "drop") {
 				const dropped = await runtime.dropGoal();
 				response = buildGoalToolResponse(dropped ?? null);

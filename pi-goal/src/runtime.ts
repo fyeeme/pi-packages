@@ -128,6 +128,25 @@ export function completionBudgetReport(goal: Goal): string | null {
 	return `Goal achieved. Report final budget usage to the user: ${parts.join("; ")}.`;
 }
 
+/** Objective length cap. The objective is re-injected into context on every
+ *  continuation and passed to the evaluator subprocess, so an oversized one
+ *  silently burns budget every turn. Borrowed from mitsuhiko/agent-stuff
+ *  goal.ts (MAX_OBJECTIVE_CHARS). */
+export const MAX_OBJECTIVE_CHARS = 4_000;
+
+function charCount(value: string): number {
+	return [...value].length;
+}
+
+function validateObjective(objective: string): void {
+	const count = charCount(objective);
+	if (count > MAX_OBJECTIVE_CHARS) {
+		throw new Error(
+			`Goal objective is too long: ${count.toLocaleString()} characters. Limit: ${MAX_OBJECTIVE_CHARS.toLocaleString()} characters. Put longer instructions in a file and reference that file in the objective.`,
+		);
+	}
+}
+
 function validateTokenBudget(tokenBudget: number | undefined): void {
 	if (tokenBudget !== undefined && (!Number.isInteger(tokenBudget) || tokenBudget <= 0)) {
 		throw new Error("goal token_budget must be a positive integer when provided");
@@ -408,6 +427,7 @@ export class GoalRuntime {
 	async createGoal(input: { objective: string; tokenBudget?: number }): Promise<GoalModeState> {
 		const objective = input.objective.trim();
 		if (!objective) throw new Error("objective is required when op=create");
+		validateObjective(objective);
 		validateTokenBudget(input.tokenBudget);
 		return await this.#withAccounting(async () => {
 			const existing = this.#host.getState();
@@ -425,6 +445,7 @@ export class GoalRuntime {
 	async replaceGoal(input: { objective: string; tokenBudget?: number }): Promise<GoalModeState> {
 		const objective = input.objective.trim();
 		if (!objective) throw new Error("objective is required when op=replace");
+		validateObjective(objective);
 		validateTokenBudget(input.tokenBudget);
 		return await this.#withAccounting(async () => {
 			const existing = this.#host.getState();

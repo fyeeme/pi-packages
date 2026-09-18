@@ -15,7 +15,6 @@ import {
 	runGoalEvaluator,
 	type EvaluatorSpawn,
 } from "../src/evaluator.ts";
-
 function spawnReturning(stdout: string): { spawn: EvaluatorSpawn; calls: { args: string[]; cwd: string }[] } {
 	const calls: { args: string[]; cwd: string }[] = [];
 	return {
@@ -30,6 +29,38 @@ function spawnReturning(stdout: string): { spawn: EvaluatorSpawn; calls: { args:
 const COMPLETE_REQUEST = { mode: "complete" as const, objective: "Ship it", claim: "ran the tests; all green" };
 const IMPOSSIBLE_REQUEST = { mode: "impossible" as const, objective: "Ship it", claim: "no network access" };
 const RUN_OPTS = { cwd: "/tmp/repo" };
+
+describe("evaluator subprocess invocation", () => {
+	it("runs lean: no extensions, no skills (a nested goal extension would pollute the judge)", async () => {
+		const run = spawnReturning('{"ok": true}');
+		await runGoalEvaluator(COMPLETE_REQUEST, { ...RUN_OPTS, spawn: run.spawn });
+		const { args } = run.calls[0]!;
+		expect(args).toContain("--no-extensions");
+		expect(args).toContain("--no-skills");
+		// Prompt stays last (argv-safety caps rely on it).
+		expect(args.indexOf("--no-skills")).toBeLessThan(args.length - 1);
+	});
+
+	it("honors GOAL_EVALUATOR_TIMEOUT_MS over the default", async () => {
+		const run = spawnReturning('{"ok": true}');
+		const timeouts: number[] = [];
+		const previous = process.env.GOAL_EVALUATOR_TIMEOUT_MS;
+		process.env.GOAL_EVALUATOR_TIMEOUT_MS = "12345";
+		try {
+			await runGoalEvaluator(COMPLETE_REQUEST, {
+				...RUN_OPTS,
+				spawn: async (invocation, opts) => {
+					timeouts.push(opts.timeoutMs);
+					return run.spawn(invocation, opts);
+				},
+			});
+		} finally {
+			if (previous === undefined) delete process.env.GOAL_EVALUATOR_TIMEOUT_MS;
+			else process.env.GOAL_EVALUATOR_TIMEOUT_MS = previous;
+		}
+		expect(timeouts).toEqual([12_345]);
+	});
+});
 
 describe("extractJsonObject", () => {
 	it("parses a clean JSON object", () => {

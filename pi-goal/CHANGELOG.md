@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- Objective length cap (`MAX_OBJECTIVE_CHARS`, 4,000 code points) enforced by the runtime on `create` and `replace` — the objective is re-injected into context on every continuation and passed to the evaluator subprocess, so an oversized one silently burns budget every turn; the error guides long instructions into a referenced file. Counting is code-point-based, not UTF-16 units. (Borrowed from mitsuhiko/agent-stuff `extensions/goal.ts`.)
+
+### Fixed
+
+- Print/json/rpc modes could never create a goal: `session_start` removed the `goal` tool from the active set when no goal existed (omp sdk.ts parity), but non-interactive modes have no `/goal` or `/guided-goal` command to re-arm it — leaving the model unable to start a goal at all (found via live goal-mode testing). The tool is now only removed in TUI mode.
+- The run that creates/resumes a goal via the tool never saw the goal context prompt: `before_agent_start` injection only fires on the next agent run, and the command-path steer was not wired to the tool path (found via live goal-mode testing). The tool now fires an `onActivated` hook so the host injects the goal context into the current run as a steer.
+- The evaluator subprocess ran with full extension discovery: any other installed goal extension (with an active-goal system prompt) would pollute the judge that is supposed to be independent, and the startup overhead contributed to live 300s timeouts. It now runs lean (`--no-extensions --no-skills`), the default timeout is raised to 600s, and `GOAL_EVALUATOR_TIMEOUT_MS` overrides it.
+
+### Changed
+
+- Context hygiene: hidden goal messages no longer accumulate in the LLM's view. A `context` handler keeps only the newest `goal-mode-context` and `goal-budget-limit` messages plus the newest `goal-continuation` stamped for the currently active goal id (`details.goalId`); stale ones — including all continuations once no goal is active — are dropped from the model's view, not from the transcript. (Borrowed from mitsuhiko/agent-stuff `extensions/goal.ts`.)
+- Run-error handling: when a run ends with an assistant `stopReason: "error"`, the active goal now pauses (persisted) instead of letting the continuation loop fire into a likely retry loop, with a classified notice — provider usage/rate/quota/limit errors read differently from generic faults. Abort behavior is unchanged. (Borrowed from mitsuhiko/agent-stuff `extensions/goal.ts`.)
+
 ## [1.0.2] - 2026-09-16
 
 ### Changed

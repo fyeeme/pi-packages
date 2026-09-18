@@ -90,8 +90,14 @@ function stubEvaluator(outcome: GoalEvaluatorOutcome) {
 function createTestTool(
 	harness: ReturnType<typeof createRuntimeHarness>,
 	evaluator: (request: GoalEvaluatorRequest, opts: { cwd?: string }) => Promise<GoalEvaluatorOutcome>,
+	onActivated?: () => Promise<void>,
 ) {
-	return createGoalTool({ getRuntime: () => harness.runtime, getState: harness.getState, runEvaluator: evaluator });
+	return createGoalTool({
+		getRuntime: () => harness.runtime,
+		getState: harness.getState,
+		runEvaluator: evaluator,
+		onActivated,
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +105,25 @@ function createTestTool(
 // ---------------------------------------------------------------------------
 
 describe("goal tool", () => {
+	it("onActivated hook fires on create and resume (mid-run context injection)", async () => {
+		const harness = createRuntimeHarness();
+		const activations: string[] = [];
+		const tool = createTestTool(
+			harness,
+			async () => ({ status: "confirmed", reason: "ok" }),
+			async () => {
+				activations.push("activated");
+			},
+		);
+		await executeTool(tool, { op: "create", objective: "Ship it" });
+		expect(activations).toHaveLength(1);
+		await executeTool(tool, { op: "resume" });
+		expect(activations).toHaveLength(2);
+		// get does not re-activate.
+		await executeTool(tool, { op: "get" });
+		expect(activations).toHaveLength(2);
+	});
+
 	it("create starts a goal and returns the objective/status text", async () => {
 		const harness = createRuntimeHarness();
 		const tool = createTestTool(harness, async () => ({ status: "confirmed", reason: "verified" }));

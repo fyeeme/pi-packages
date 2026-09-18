@@ -468,4 +468,22 @@ describe("goal runtime", () => {
 		const second = await harness.runtime.createGoal({ objective: "Two" });
 		expect(first.goal.id).not.toBe(second.goal.id);
 	});
+
+	it("rejects objectives beyond the character cap on create and replace", async () => {
+		const harness = createHarness();
+		const oversized = "x".repeat(4_001);
+		await expect(harness.runtime.createGoal({ objective: oversized })).rejects.toThrow(/too long.*4,000/s);
+		// Boundary: exactly at the cap is fine.
+		await harness.runtime.createGoal({ objective: "x".repeat(4_000) });
+		// Replace path enforces the same cap.
+		await expect(harness.runtime.replaceGoal({ objective: oversized })).rejects.toThrow(/too long/);
+	});
+
+	it("counts characters as code points, not UTF-16 units", async () => {
+		const harness = createHarness();
+		// Astral emoji: 1 code point, 2 UTF-16 units. 2_001 emoji is 4_002 UTF-16
+		// units (a naive .length cap would reject it) but 2_001 code points: kept.
+		await expect(harness.runtime.createGoal({ objective: "😀".repeat(2_001) })).resolves.toBeDefined();
+		await expect(harness.runtime.createGoal({ objective: "😀".repeat(4_001) })).rejects.toThrow(/too long/);
+	});
 });
