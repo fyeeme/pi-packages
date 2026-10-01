@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+## [1.1.2] - 2026-10-01
+
+### Changed
+
+- Peer dependency floor raised to `@earendil-works/pi-coding-agent >= 0.99.0`; dev toolchain pinned to 0.99.2 (typecheck and tests pass against 0.99.2 unchanged).
+
 ## [1.1.1] - 2026-09-09
 
 ### Changed
