@@ -200,6 +200,10 @@ export default function ompAskExtension(pi: ExtensionAPI): void {
 		name: "ask",
 		label: "Ask",
 		description: ASK_DESCRIPTION,
+		// pi 0.99: model-only — declared to the model, unreachable from codemode
+		// scripts / nested tool execution (spec: ask-user-exposure). No
+		// outputSchema: model-only tools have no programmatic consumer.
+		exposure: "model-only",
 		promptSnippet: "Ask the user a clarifying question",
 		promptGuidelines: [
 			"Use ask only after exhausting repo conventions, configs, and docs; reserve it for decisions whose options have materially different tradeoffs.",

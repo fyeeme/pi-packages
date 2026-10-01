@@ -175,6 +175,12 @@ describe("ask tool registration", () => {
 		expect(createFakePi().tools.has("ask")).toBe(true);
 	});
 
+	it("registers ask as model-only with no outputSchema (pi 0.99 exposure)", () => {
+		const tool = createFakePi().tools.get("ask") as unknown as { exposure?: string; outputSchema?: unknown };
+		expect(tool.exposure).toBe("model-only");
+		expect(tool.outputSchema).toBeUndefined();
+	});
+
 	it("hides the tool on session_start without UI", async () => {
 		const pi = createFakePi();
 		await pi.handlers.get("session_start")![0]!({}, { hasUI: false });
