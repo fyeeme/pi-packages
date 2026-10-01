@@ -1,6 +1,6 @@
 {
 	"name": "@fyeeme/pi-session-name",
-	"version": "1.0.4",
+	"version": "1.0.5",
 	"description": "Auto-name pi sessions with a short LLM-generated title so --resume lists are easy to scan. Supports first (once) and auto (content-aware rename) modes; never overwrites manual names.",
 	"type": "module",
 	"license": "MIT",
@@ -43,12 +43,12 @@
 		"typecheck": "tsc"
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-coding-agent": ">=0.84.1",
-		"@earendil-works/pi-ai": ">=0.84.1"
+		"@earendil-works/pi-coding-agent": ">=0.99.0",
+		"@earendil-works/pi-ai": ">=0.99.0"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-coding-agent": "0.84.1",
-		"@earendil-works/pi-ai": "0.84.1",
+		"@earendil-works/pi-coding-agent": "0.99.2",
+		"@earendil-works/pi-ai": "0.99.2",
 		"@types/node": "22.19.19",
 		"typescript": "5.9.3",
 		"vitest": "3.2.7"

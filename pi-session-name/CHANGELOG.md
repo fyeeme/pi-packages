@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-10-01
+
+### Removed
+
+- **BREAKING**: the sibling-session title dedup is gone — the extension no longer scans local session files for other sessions' names, and prompts no longer embed a `<recent_session_titles>` block. Removed the exported `parseSessionTitle()` and `collectRecentSessionTitles()` helpers, the `recentTitles` option from all prompt builders, and `classifyKeep()`'s `recentTitles` parameter (classifier state drops `recentSessionTitles`). Prompts keep their general distinctiveness rules, so titles still lead with the concrete entity/error/identifier.
+- **BREAKING**: the custom title-model override is gone — titles are always generated with the current session model (`ctx.model`). Removed the `model` field from `session-name.json`, the `PI_SESSION_NAME_MODEL_PROVIDER` / `PI_SESSION_NAME_MODEL_ID` environment variables, and the exported `resolveModel()` helper (its getAvailableOfType fallback chain went with it). Auto mode's classifier-based KEEP/NEW verdict is unaffected.
+
+### Added
+
+- Creation-time prefix: every set title becomes `yyyy-mm-dd hh:mm - title` (local timezone, parsed from the session file name). The resume picker sorts by last-modified, so editing an old session made its age invisible and it could get lost; the prefix keeps the original creation time visible. Opt out with `PI_SESSION_NAME_TIMESTAMP=false` or `"appendCreationTime": false` in `.pi/agent/session-name.json`.
+- Prompt-style switch: `prompt: "concise" | "editorial"` (env `PI_SESSION_NAME_PROMPT`). `concise` (default) is the deepseek-harness system prompt verbatim with a 512-token budget; `editorial` adds pi's distinctiveness/concrete-detail rules with a 1024-token budget — measured A/B on 50 local sessions: concise 96% yield / p50 5.1 s, editorial denser titles / ~30% slower.
+- New `mode: "follow"` (env `PI_SESSION_NAME_MODE=follow`): every settled turn regenerates the title unconditionally — the deepseek-harness `all-prompts` cadence — so the title tracks the conversation as its real subject emerges instead of freezing on an early-turn snapshot. Unlike `first`/`auto`, `follow` also keeps tracking a resumed session's inherited title (treated as the last revision, not a pin); `/rename` still pins either way.
+- Title-hardening practices adapted from deepseek-harness's `session-title` package: (1) terminal- and spoof-safe title sanitization — ANSI/OSC/CSI/ESC escapes, C0/C1 control characters, and zero-width/bidi directional controls are stripped before acceptance, and truncation is code-point-safe (never splits a surrogate pair); (2) the conversation is JSON-framed in the prompt (`JSON.stringify` of the selected messages), so untrusted user text cannot forge structural delimiters like a fake `</conversation>` or `Assistant:` turn; (3) title generation caps the auxiliary call at `maxTokens: 512`, bounding runaway output; (4) prompt length targets are language-aware (CJK characters vs. non-CJK words).
+- Auto mode's KEEP/NEW verdict now runs on a classifier model when the host has one (pi 0.99 `ModelRuntime.classify()`, bool question): a KEEP verdict skips the generation call entirely, and a NEW verdict generates the replacement through a rules-only prompt. Without a classifier — or when the classifier call fails — the original single-verdict `complete()` path runs unchanged.
+
+### Changed
+
+- **BREAKING**: the config file moved from `.pi/session-name.json` to `.pi/agent/session-name.json`.
+- **BREAKING**: the title pipeline is now aligned 1:1 with deepseek-harness's `session-title` architecture wherever the pi extension host allows: (1) requests carry only **human messages** (assistant/system no longer enter a title prompt) in a **system/user split** — the system instruction is deepseek-harness's exact wording (plain text, no Markdown/XML/code/terminal codes, ~6 words / ~18 CJK chars) and the user payload is the JSON-framed message array; (2) `maxLength` is now a **UTF-8 byte budget** (200 bytes ≈ 200 ASCII chars or ~66 CJK chars, `truncateTitleUtf8` semantics) instead of a character count; (3) generation has a 20 s deadline composed with Esc/abort, and any failure (error, abort, timeout, non-`stop` finish, empty output) falls back to a **deterministic first-message title** (`fallbackSessionTitle`, zero LLM) instead of leaving the session untitled; (4) input carries a 16 KiB UTF-8 budget that narrows from the oldest non-first message.
+- **BREAKING**: the default `mode` is now `"follow"` — every settled turn regenerates the title so it tracks the conversation's real subject instead of freezing on an early-turn snapshot (and across resumes: an inherited title is treated as the last revision). Set `mode: "first"` (or `PI_SESSION_NAME_MODE=first`) to keep the old one-shot behavior; `"auto"` remains available.
+- ~~Model resolution accepts a provider-only `model` config~~ (superseded: the custom-model override was removed — see Removed above; title generation now reads `ctx.model` directly.)
+- Peer dependency floor raised to `@earendil-works/pi-coding-agent >= 0.99.0`; dev toolchain pinned to 0.99.2.
+
 ## [1.0.4] - 2026-09-17
 
 ### Added
