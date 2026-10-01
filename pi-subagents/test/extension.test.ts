@@ -114,6 +114,20 @@ function registeredKeys(setWidget: ReturnType<typeof vi.fn>): string[] {
 		.map((call) => call[0] as string);
 }
 
+describe("tool metadata (pi 0.99)", () => {
+	it("subagent tool declares the subagents namespace and spawn annotations", async () => {
+		const { subagentTool } = await import("../src/tools/subagent.ts");
+		expect(subagentTool.namespace).toMatchObject({ name: "subagents" });
+		expect(typeof subagentTool.namespace?.instructions).toBe("string");
+		expect(subagentTool.annotations).toEqual({
+			readOnlyHint: false,
+			destructiveHint: true,
+			idempotentHint: false,
+			openWorldHint: true,
+		});
+	});
+});
+
 describe("extension lifecycle", () => {
 	it("session_start registers the below-editor fleet surface (the single UI)", () => {
 		const pi = fakePi();

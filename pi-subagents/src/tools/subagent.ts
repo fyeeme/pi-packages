@@ -649,6 +649,23 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 	].join(" "),
 	promptSnippet: "subagent — delegate to specialized agents (single/parallel)",
 	parameters: SubagentParams,
+	// pi 0.99 metadata (design D6): namespace groups the tool under one heading
+	// in codemode listings (describeNamespace() reads `instructions`);
+	// annotations declare the spawn-subprocess reality for permission gates —
+	// open world (arbitrary commands/env), potentially destructive (writes),
+	// not read-only, not idempotent.
+	namespace: {
+		name: "subagents",
+		description: "Delegation to specialized pi subprocess agents with isolated context",
+		instructions:
+			"Each subagent call spawns a real `pi` child process with its own context window; tasks run concurrently under maxConcurrency. Prefer parallel batches of small, independently-checkable tasks over single do-everything agents. Agent names come from discoverAgents() (bundled scout/planner/reviewer/worker plus user and project dirs); an unknown name fails that task only. outputSchema + schemaMode: strict turns each task's final answer into machine-checkable JSON.",
+	},
+	annotations: {
+		readOnlyHint: false,
+		destructiveHint: true,
+		idempotentHint: false,
+		openWorldHint: true,
+	},
 
 	async execute(_toolCallId, params, signal, onUpdate, ctx) {
 		if (params.maxTurns !== undefined && (!Number.isInteger(params.maxTurns) || params.maxTurns <= 0)) {

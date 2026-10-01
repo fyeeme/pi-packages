@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-10-01
+
+### Changed
+
+- The `subagent` tool now declares pi 0.99 metadata: a `namespace` (`subagents`, with dispatch-core usage instructions surfaced through `describeNamespace()`) and MCP-style `annotations` (open-world, potentially destructive, not read-only/idempotent) so permission gates and codemode listings see the spawn-subprocess reality. Dispatch, concurrency, and the recursion guard are unchanged.
+- Peer dependency floor raised to `@earendil-works/pi-coding-agent >= 0.99.0`; dev toolchain pinned to 0.99.2.
+
+
 ## [2.1.1] - 2026-09-09
 
 ### Fixed
