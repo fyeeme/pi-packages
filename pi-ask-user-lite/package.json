@@ -1,6 +1,6 @@
 {
 	"name": "@fyeeme/pi-ask-user-lite",
-	"version": "2.0.2",
+	"version": "2.0.3",
 	"description": "Structured ask_user tool for pi — lets the LLM surface clarifying questions with options, multi-select, recommended defaults, and free-form Other input.",
 	"type": "module",
 	"license": "MIT",
@@ -43,13 +43,13 @@
 		"typecheck": "tsc"
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-coding-agent": ">=0.84.1",
-		"@earendil-works/pi-tui": ">=0.84.1",
+		"@earendil-works/pi-coding-agent": ">=0.99.0",
+		"@earendil-works/pi-tui": ">=0.99.0",
 		"typebox": ">=1.0.0"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-coding-agent": "0.84.1",
-		"@earendil-works/pi-tui": "0.84.1",
+		"@earendil-works/pi-coding-agent": "0.99.2",
+		"@earendil-works/pi-tui": "0.99.2",
 		"@types/node": "22.19.19",
 		"typebox": "1.1.38",
 		"typescript": "5.9.3",

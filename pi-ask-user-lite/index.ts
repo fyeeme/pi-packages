@@ -15,7 +15,7 @@
  * `/tree` inspection.
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionUIContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionToolContext, ExtensionUIContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -761,7 +761,12 @@ const askUserTool: ToolDefinition<typeof AskParamsSchema, AskUserDetails> = {
 			"Ask the user one or more clarifying questions with selectable options. " +
 			"Use when choices have materially different tradeoffs the user must decide. " +
 			"The user can always provide free-form input via an automatic 'Other' option.",
-		promptSnippet: "Ask the user structured questions with options during execution",
+		// pi 0.99: model-only — declared to the model, unreachable from codemode
+	// scripts / nested tool execution (ask-the-user is a model-level decision;
+	// spec: ask-user-exposure). No outputSchema: model-only tools have no
+	// programmatic consumer of structuredContent.
+	exposure: "model-only",
+	promptSnippet: "Ask the user structured questions with options during execution",
 		promptGuidelines: [
 			"Use ask_user only after exhausting repo conventions, configs, and docs; reserve it for decisions whose options have materially different tradeoffs.",
 		],
@@ -968,7 +973,10 @@ async function runAskDemo(ctx: ExtensionCommandContext): Promise<void> {
 	const run = async (label: string, params: AskParams): Promise<string> => {
 		ctx.ui.notify(`ask-demo ${label} — follow the dialog instructions`, "info");
 		try {
-			const result = await askUserTool.execute(`demo-${label}`, params, undefined, undefined, ctx);
+			// pi 0.99 split tool and command contexts into sibling branches; the demo
+			// only exercises ExtensionContext members (ui/abort), so the cast is safe.
+			const toolCtx = ctx as unknown as ExtensionToolContext;
+			const result = await askUserTool.execute(`demo-${label}`, params, undefined, undefined, toolCtx);
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 			ctx.ui.notify(`ask-demo ${label} → ${text.split("\n").filter(Boolean).join(" | ").slice(0, 200)}`, "info");
 			return text;

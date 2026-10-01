@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-10-01
+
+### Changed
+
+- `ask_user` now registers with pi 0.99 `exposure: "model-only"`: declared to the model, unreachable from codemode scripts and nested tool execution (ask-the-user is a model-level decision). No `outputSchema` is declared — model-only tools have no programmatic consumer of structured results. Model-facing behavior is unchanged.
+- Peer dependency floor raised to `@earendil-works/pi-coding-agent >= 0.99.0`; dev toolchain pinned to 0.99.2.
+
 ## [2.0.2] - 2026-09-09
 
 ### Fixed

@@ -69,9 +69,17 @@ interface ToolResult {
 
 /** Load the tool definition exactly the way pi would. */
 function loadTool(): {
+	exposure?: string;
+	outputSchema?: unknown;
 	execute: (id: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: unknown) => Promise<ToolResult>;
 } {
-	let registered: { execute: (id: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: unknown) => Promise<ToolResult> } | undefined;
+	let registered:
+		| {
+				exposure?: string;
+				outputSchema?: unknown;
+				execute: (id: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: unknown) => Promise<ToolResult>;
+		  }
+		| undefined;
 	const fakePi = {
 		registerCommand: vi.fn(),
 		registerTool: vi.fn((tool: never) => {
@@ -90,6 +98,14 @@ function makeCtx(ui: ReturnType<typeof makeUi>) {
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
+
+describe("tool registration (pi 0.99 exposure)", () => {
+	it("registers ask_user as model-only with no outputSchema", () => {
+		const tool = loadTool();
+		expect(tool.exposure).toBe("model-only");
+		expect(tool.outputSchema).toBeUndefined();
+	});
+});
 
 describe("autoSelectionForQuestion", () => {
 	it("picks the recommended option on timeout", () => {
