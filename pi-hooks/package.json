@@ -1,54 +1,54 @@
 {
-  "name": "@fyeeme/pi-hooks",
-  "version": "1.0.5",
-  "description": "Claude Code-compatible hooks runner for pi. Reads hooks config (priority: ~/.pi/agent/hooks.json, then project .pi/hooks.json) and maps SessionStart, PreToolUse, and Stop events to pi lifecycle events.",
-  "type": "module",
-  "license": "MIT",
-  "author": "fyeeme",
-  "publishConfig": {
-    "access": "public"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/fyeeme/pi-packages"
-  },
-  "bugs": {
-    "url": "https://github.com/fyeeme/pi-packages/issues"
-  },
-  "homepage": "https://github.com/fyeeme/pi-packages#readme",
-  "engines": {
-    "node": ">=18"
-  },
-  "keywords": [
-    "pi-package",
-    "pi",
-    "hooks",
-    "claude-code",
-    "serena",
-    "automation",
-    "lifecycle"
-  ],
-  "files": [
-    "index.ts",
-    "README.md",
-    "LICENSE",
-    "CHANGELOG.md"
-  ],
-  "pi": {
-    "extensions": [
-      "./index.ts"
-    ]
-  },
-  "scripts": {
-    "test": "vitest --run",
-    "typecheck": "tsc"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.84.1"
-  },
-  "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.1",
-    "@types/node": "22.19.19",
-    "typescript": "5.9.3"
-  }
+	"name": "@fyeeme/pi-hooks",
+	"version": "1.0.6",
+	"description": "Claude Code-compatible hooks runner for pi. Reads hooks config (priority: ~/.pi/agent/hook.json, then project .pi/hook.json) and maps SessionStart, PreToolUse, and Stop events to pi lifecycle events.",
+	"type": "module",
+	"license": "MIT",
+	"author": "fyeeme",
+	"publishConfig": {
+		"access": "public"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/fyeeme/pi-packages"
+	},
+	"bugs": {
+		"url": "https://github.com/fyeeme/pi-packages/issues"
+	},
+	"homepage": "https://github.com/fyeeme/pi-packages#readme",
+	"engines": {
+		"node": ">=18"
+	},
+	"keywords": [
+		"pi-package",
+		"pi",
+		"hooks",
+		"claude-code",
+		"serena",
+		"automation",
+		"lifecycle"
+	],
+	"files": [
+		"index.ts",
+		"README.md",
+		"LICENSE",
+		"CHANGELOG.md"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"scripts": {
+		"test": "vitest --run",
+		"typecheck": "tsc"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.99.0"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "0.99.2",
+		"@types/node": "22.19.19",
+		"typescript": "5.9.3"
+	}
 }

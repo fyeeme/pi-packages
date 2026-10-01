@@ -7,9 +7,9 @@
  * least one hook wins; a valid-but-hookless file falls through to the next
  * candidate instead of silently disabling everything below it):
  *   1. PI_HOOKS_CONFIG env (exclusive single source when set)
- *   2. ~/.pi/agent/hooks.json   (user-global, via getAgentDir())
- *   3. <cwd>/.pi/hooks.json     (project-local)
- *   4. ~/.pi/hooks.json         (legacy home location)
+ *   2. ~/.pi/agent/hook.json   (user-global, via getAgentDir())
+ *   3. <cwd>/.pi/hook.json     (project-local)
+ *   4. ~/.pi/hook.json         (legacy home location)
  *
  * and maps:
  *   SessionStart  → session_start        (source = mapped reason)
@@ -167,9 +167,9 @@ export function loadConfig(cwd: string): HooksConfig | null {
 	const candidates = envPath
 		? [envPath]
 		: [
-				join(getAgentDir(), "hooks.json"), // ~/.pi/agent/hooks.json — user-global, top priority
-			join(cwd, CONFIG_DIR_NAME, "hooks.json"), // project-local
-			join(homedir(), CONFIG_DIR_NAME, "hooks.json"), // legacy home
+				join(getAgentDir(), "hook.json"), // ~/.pi/agent/hook.json — user-global, top priority
+			join(cwd, CONFIG_DIR_NAME, "hook.json"), // project-local
+			join(homedir(), CONFIG_DIR_NAME, "hook.json"), // legacy home
 			];
 
 	// First valid config that defines hooks wins. A candidate that parses but

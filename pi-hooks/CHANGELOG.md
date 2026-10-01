@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-10-01
+
+### Changed
+
+- Peer dependency floor raised to `@earendil-works/pi-coding-agent >= 0.99.0`; dev toolchain pinned to 0.99.2 (typecheck and tests pass against 0.99.2 unchanged).
+
+### Breaking Changes
+
+- The hooks config file is now `hook.json` (was `hooks.json`), in all three locations: `~/.pi/agent/hook.json` (user-global), `<project>/.pi/hook.json`, and the home-directory fallback `~/.pi/hook.json`. Rename your existing config file; `PI_HOOKS_CONFIG` is unaffected.
+
+### Fixed
+
+- README: pi registers MCP tools as `mcp__<server>__<tool>` (same as Claude Code), not `<server>_<tool>` — fixed the matcher guidance and the Serena example config (`serena_.*` → `mcp__serena__.*`); a wrong matcher silently never matched, disabling `auto-approve`.
+
+### Added
+
+- Ship `pi.yml`, a pi-adapted Serena context (based on upstream `claude-code.yml`): symbol-first steering via `serena start-mcp-server --context pi`, plus trimming of the six Serena tools that duplicate pi built-ins. See README "Recommended: steer at the context level, not only via hooks".
+- Document the `denyAsContext` per-hook flag (shipped in 1.0.4) in the README protocol section.
+
 ## [1.0.5] - 2026-09-16
 
 ### Fixed

@@ -296,10 +296,10 @@ describe("loadConfig", () => {
 		expect(config?.hooks.Stop).toHaveLength(1);
 	});
 
-	it("reads .pi/hooks.json from the project cwd", async () => {
+	it("reads .pi/hook.json from the project cwd", async () => {
 		await mkdir(join(workDir, ".pi"), { recursive: true });
 		await writeFile(
-			join(workDir, ".pi", "hooks.json"),
+			join(workDir, ".pi", "hook.json"),
 			JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo pre" }] }] } }),
 			"utf8",
 		);
@@ -309,16 +309,16 @@ describe("loadConfig", () => {
 		expect(config?.hooks.PreToolUse?.[0]?.matcher).toBe("Bash");
 	});
 
-	it("reads ~/.pi/agent/hooks.json with priority over the project config", async () => {
+	it("reads ~/.pi/agent/hook.json with priority over the project config", async () => {
 		await mkdir(join(homeDir, ".pi", "agent"), { recursive: true });
 		await writeFile(
-			join(homeDir, ".pi", "agent", "hooks.json"),
+			join(homeDir, ".pi", "agent", "hook.json"),
 			JSON.stringify({ hooks: { SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "echo global" }] }] } }),
 			"utf8",
 		);
 		await mkdir(join(workDir, ".pi"), { recursive: true });
 		await writeFile(
-			join(workDir, ".pi", "hooks.json"),
+			join(workDir, ".pi", "hook.json"),
 			JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo pre" }] }] } }),
 			"utf8",
 		);
@@ -333,13 +333,13 @@ describe("loadConfig", () => {
 		// It must not shadow a usable project config.
 		await mkdir(join(homeDir, ".pi", "agent"), { recursive: true });
 		await writeFile(
-			join(homeDir, ".pi", "agent", "hooks.json"),
+			join(homeDir, ".pi", "agent", "hook.json"),
 			JSON.stringify({ session_start: [{ command: "serena-hooks activate" }] }),
 			"utf8",
 		);
 		await mkdir(join(workDir, ".pi"), { recursive: true });
 		await writeFile(
-			join(workDir, ".pi", "hooks.json"),
+			join(workDir, ".pi", "hook.json"),
 			JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo pre" }] }] } }),
 			"utf8",
 		);
@@ -348,10 +348,10 @@ describe("loadConfig", () => {
 		expect(config?.hooks.PreToolUse?.[0]?.matcher).toBe("Bash");
 	});
 
-	it("falls back to the legacy ~/.pi/hooks.json when no higher-priority config defines hooks", async () => {
+	it("falls back to the legacy ~/.pi/hook.json when no higher-priority config defines hooks", async () => {
 		await mkdir(join(homeDir, ".pi"), { recursive: true });
 		await writeFile(
-			join(homeDir, ".pi", "hooks.json"),
+			join(homeDir, ".pi", "hook.json"),
 			JSON.stringify({ hooks: { Stop: [{ matcher: "", hooks: [{ type: "command", command: "echo stop" }] }] } }),
 			"utf8",
 		);
@@ -362,7 +362,7 @@ describe("loadConfig", () => {
 
 	it("returns the hookless-but-valid config when no candidate defines hooks", async () => {
 		await mkdir(join(workDir, ".pi"), { recursive: true });
-		await writeFile(join(workDir, ".pi", "hooks.json"), JSON.stringify({}), "utf8");
+		await writeFile(join(workDir, ".pi", "hook.json"), JSON.stringify({}), "utf8");
 
 		const config = loadConfig(workDir);
 		expect(config).not.toBeNull();
