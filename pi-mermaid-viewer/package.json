@@ -1,52 +1,52 @@
 {
-  "name": "@fyeeme/pi-mermaid-viewer",
-  "version": "1.0.0",
-  "description": "Render Mermaid diagrams from the conversation in the browser.",
-  "type": "module",
-  "license": "MIT",
-  "author": "fyeeme",
-  "publishConfig": {
-    "access": "public"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/fyeeme/pi-packages"
-  },
-  "bugs": {
-    "url": "https://github.com/fyeeme/pi-packages/issues"
-  },
-  "homepage": "https://github.com/fyeeme/pi-packages#readme",
-  "engines": {
-    "node": ">=18"
-  },
-  "keywords": [
-    "pi-package",
-    "pi",
-    "mermaid",
-    "diagram",
-    "viewer"
-  ],
-  "files": [
-    "index.ts",
-    "README.md",
-    "LICENSE",
-    "CHANGELOG.md"
-  ],
-  "pi": {
-    "extensions": [
-      "./index.ts"
-    ]
-  },
-  "scripts": {
-    "test": "vitest --run",
-    "typecheck": "tsc"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.84.1"
-  },
-  "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.1",
-    "@types/node": "22.19.19",
-    "typescript": "5.9.3"
-  }
+	"name": "@fyeeme/pi-mermaid-viewer",
+	"version": "1.0.1",
+	"description": "Render Mermaid diagrams from the conversation in the browser.",
+	"type": "module",
+	"license": "MIT",
+	"author": "fyeeme",
+	"publishConfig": {
+		"access": "public"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/fyeeme/pi-packages"
+	},
+	"bugs": {
+		"url": "https://github.com/fyeeme/pi-packages/issues"
+	},
+	"homepage": "https://github.com/fyeeme/pi-packages#readme",
+	"engines": {
+		"node": ">=18"
+	},
+	"keywords": [
+		"pi-package",
+		"pi",
+		"mermaid",
+		"diagram",
+		"viewer"
+	],
+	"files": [
+		"index.ts",
+		"README.md",
+		"LICENSE",
+		"CHANGELOG.md"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"scripts": {
+		"test": "vitest --run",
+		"typecheck": "tsc"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.99.0"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "0.99.2",
+		"@types/node": "22.19.19",
+		"typescript": "5.9.3"
+	}
 }
