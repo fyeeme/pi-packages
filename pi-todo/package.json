@@ -1,6 +1,6 @@
 {
 	"name": "@fyeeme/pi-todo",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"description": "Phased todo list tool for pi — nine operations (init/start/done/rm/drop/block/unblock/append/view) over phase/task state persisted with the session, a /todo command, and a todo_updated event bus broadcast for other extensions.",
 	"type": "module",
 	"license": "MIT",
@@ -47,15 +47,16 @@
 		"typecheck": "tsc"
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-coding-agent": ">=0.84.1",
-		"@earendil-works/pi-tui": ">=0.84.1",
+		"@earendil-works/pi-coding-agent": ">=0.99.0",
+		"@earendil-works/pi-tui": ">=0.99.0",
 		"typebox": ">=1.0.0"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-coding-agent": "0.84.1",
-		"@earendil-works/pi-tui": "0.84.1",
+		"@earendil-works/pi-coding-agent": "0.99.2",
+		"@earendil-works/pi-tui": "0.99.2",
 		"@types/node": "22.19.19",
 		"typescript": "5.9.3",
-		"vitest": "3.2.7"
+		"vitest": "3.2.7",
+		"typebox": "1.3.27"
 	}
 }
