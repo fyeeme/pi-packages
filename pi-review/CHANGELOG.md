@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-10-01
+
+### Added
+
+- `review_report` now declares an `outputSchema` and returns `structuredContent` (pi 0.99 tool-orchestration API): codemode scripts and other programmatic callers receive the structured findings report instead of the rendered text. The payload is the same object written to `.pi/review/*.json` (single source of truth — file consumers are unchanged); empty findings remain a normal result, and a file-sink failure still returns the structured payload.
+
+### Changed
+
+- Peer dependency floor raised to `@earendil-works/pi-coding-agent >= 0.99.0`; dev toolchain pinned to 0.99.2.
 ## [2.1.0] - 2026-09-16
 
 ### Added

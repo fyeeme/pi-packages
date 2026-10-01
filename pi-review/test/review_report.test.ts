@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Value } from "typebox/value";
@@ -21,6 +21,8 @@ import { reviewReportTool } from "../src/tools/review_report.ts";
 // vi.mock erases defineTool's type wrapping, so cast to a minimal call shape.
 type ExecuteResult = {
 	content: Array<{ type: string; text: string }>;
+	structuredContent?: Record<string, unknown>;
+	isError?: boolean;
 	details: { level: string; findingsCount: number; outFile: string | null; reportId: string | null };
 };
 const execute = (
@@ -392,5 +394,84 @@ describe("review_report tool", () => {
 		expect(prepare({ level: "low", findings: [] })).toMatchObject({ level: "low", findings: [] });
 		const notObject = prepare("junk");
 		expect(notObject).toBe("junk");
+	});
+
+	// --- structuredContent(codemode/程序化消费契约, spec: review-structured-output) ---
+
+	it("structuredContent is value-identical to the written JSON (incl. cleansing)", async () => {
+		const res = await execute(
+			"sc_1",
+			{
+				level: "high",
+				target: "git diff main",
+				report_id: "review-42",
+				findings: [
+					{
+						file: "a.ts",
+						line: 3,
+						category: "correctness",
+						verdict: "CONFIRMED",
+						summary: "bug",
+						failure_scenario: "崩溃",
+						outcome: "fully_achieved", // 非法五档→归一化 skipped+附注
+					},
+				],
+			},
+			undefined,
+			undefined,
+			{ cwd },
+		);
+
+		const outDir = join(cwd, ".pi", "review");
+		const json = JSON.parse(readFileSync(join(outDir, readdirSync(outDir)[0]!), "utf8")) as Record<
+				string,
+				unknown
+		>;
+		// 同一对象两个出口:磁盘 JSON 与 structuredContent 逐字段相等(含归一化后的 outcome 与 note)
+		expect(res.structuredContent).toEqual(json);
+		const scFindings = (res.structuredContent?.findings ?? []) as Array<Record<string, unknown>>;
+		expect(scFindings[0]).toMatchObject({ outcome: "skipped", note: '（outcome "fully_achieved" 非法，已归一化为 skipped）' });
+		expect(res.structuredContent?.reportId).toBe("review-42");
+	});
+
+	it("structuredContent validates against the declared outputSchema", () => {
+		const schema = (reviewReportTool as unknown as { outputSchema: unknown }).outputSchema as never;
+		expect(schema).toBeDefined();
+		const sample = {
+			level: "low",
+			reportId: null,
+			target: null,
+			filesChanged: null,
+			fannedOut: null,
+			generatedAt: new Date().toISOString(),
+			findings: [{ file: "a.ts", line: 1, category: "correctness", summary: "s", failure_scenario: "f" }],
+		};
+		expect(Value.Check(schema, sample)).toBe(true);
+	});
+
+	it("empty findings → structuredContent.findings empty, not an error", async () => {
+		const res = await execute("sc_2", { level: "low", findings: [] }, undefined, undefined, { cwd });
+		expect(res.isError).not.toBe(true);
+		expect(res.structuredContent?.findings).toEqual([]);
+		expect(res.structuredContent?.level).toBe("low");
+	});
+
+	it("file-sink failure still returns structuredContent", async () => {
+		// 预置 .pi/review 为普通文件 → mkdir recursive 失败 → 落盘失败但结构化输出不受影响
+		mkdirSync(join(cwd, ".pi"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "review"), "not a directory");
+		const res = await execute(
+			"sc_3",
+			{
+				level: "medium",
+				findings: [{ file: "x.ts", category: "reuse", summary: "s", failure_scenario: "f" }],
+			},
+			undefined,
+			undefined,
+			{ cwd },
+		);
+		expect(res.content[0]!.text).toContain("结构化落盘失败");
+		expect(res.details.outFile).toBeNull();
+		expect((res.structuredContent?.findings as unknown[]).length).toBe(1);
 	});
 });

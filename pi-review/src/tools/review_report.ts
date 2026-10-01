@@ -99,6 +99,31 @@ const ReviewReportParams = Type.Object({
 	),
 });
 
+/**
+ * 结果 schema——与落盘 `.pi/review/*.json` 对象同构(design D2 单一事实源):
+ * `structuredContent` 与磁盘 JSON 消费方(codemode 脚本 vs CI/--fix)观察同值。
+ * 字段单一来源:复用 FindingParams.properties(入参与出参同形,仅追加 note)。
+ */
+const FindingOutput = Type.Object({
+	...FindingParams.properties,
+	/** normalize 附注(非法 outcome 归一化说明),仅详情渲染用。 */
+	note: Type.Optional(Type.String()),
+});
+
+const ReviewReportOutput = Type.Object({
+	level: Level,
+	reportId: Type.Union([Type.String(), Type.Null()]),
+	target: Type.Union([Type.String(), Type.Null()]),
+	filesChanged: Type.Union([Type.Number(), Type.Null()]),
+	fannedOut: Type.Union([Type.Boolean(), Type.Null()]),
+	generatedAt: Type.String(),
+	findings: Type.Array(FindingOutput),
+});
+
+/** Static 派生类型:reportData 的类型即出参 schema,类型层单一事实源(消除断言)。 */
+type FindingOut = Static<typeof FindingOutput>;
+type ReviewReportOut = Static<typeof ReviewReportOutput>;
+
 interface ReviewReportDetails {
 	level: string;
 	findingsCount: number;
@@ -162,26 +187,13 @@ function normalizeFindings(findings: LooseFinding[]): { findings: LooseFinding[]
 
 // --- render -----------------------------------------------------------------
 
-interface FindingInput {
-	file: string;
-	line?: number;
-	category: string;
-	verdict?: string;
-	priority?: string;
-	short_summary?: string;
-	summary: string;
-	failure_scenario: string;
-	outcome?: string;
-	/** normalize 附注（如非法 outcome 归一化说明），仅渲染进详情块。 */
-	note?: string;
-}
 interface ReportInput {
 	level: string;
 	target?: string;
 	files_changed?: number;
 	fanned_out?: boolean;
 	reportId?: string;
-	findings: FindingInput[];
+	findings: FindingOut[];
 }
 
 function fmtLoc(f: { file: string; line?: number }): string {
@@ -247,6 +259,9 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 		"Use `review_report` only when the code-review skill instructs reporting findings; otherwise follow the active output format.",
 	],
 	parameters: ReviewReportParams,
+	// codemode 脚本/程序化调用方拿到 structuredContent(与磁盘 JSON 同构)而非文本;
+	// 模型侧行为(content/renderResult/落盘)不变。
+	outputSchema: ReviewReportOutput,
 
 	// 主防御：schema 校验之前清洗非法值（模型路径下校验失败即 throw、工具不执行，
 	// 因此 execute 内的防御对模型不可达）。返回符合 schema 的对象——非法 verdict
@@ -268,7 +283,38 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 		const { findings: cleaned, notes } = normalizeFindings(
 			(params.findings ?? []) as unknown as LooseFinding[],
 		);
-		const findings: FindingInput[] = cleaned.map((f, i) => ({ ...f, note: notes.get(i) }));
+		// 仅含已赋值字段的 finding:显式 undefined 键会让磁盘 JSON(serialize 丢弃)与
+		// structuredContent(原样返回)键集分叉;条件赋值保证两个视图逐键一致。
+		const findings: FindingOut[] = cleaned.map((f, i) => {
+			const note = notes.get(i);
+			const out: FindingOut = {
+				file: f.file,
+				category: f.category,
+				summary: f.summary,
+				failure_scenario: f.failure_scenario,
+			};
+			if (f.line !== undefined) out.line = f.line;
+			// 值域由 sanitizeFinding/normalizeFindings 保证(非法值已剔除/归一化),枚举收窄安全。
+			if (f.verdict !== undefined) out.verdict = f.verdict as FindingOut["verdict"];
+			if (f.priority !== undefined) out.priority = f.priority as FindingOut["priority"];
+			if (f.short_summary !== undefined) out.short_summary = f.short_summary;
+			if (f.outcome !== undefined) out.outcome = f.outcome as FindingOut["outcome"];
+			if (note !== undefined) out.note = note;
+			return out;
+		});
+
+		// 单一事实源(design D2):同一对象写盘 + 作 structuredContent;类型即出参
+		// schema 的 Static 派生,无需断言。
+		const now = new Date();
+		const reportData: ReviewReportOut = {
+			level: params.level,
+			reportId: params.report_id ?? null,
+			target: params.target ?? null,
+			filesChanged: params.files_changed ?? null,
+			fannedOut: params.fanned_out ?? null,
+			generatedAt: now.toISOString(),
+			findings,
+		};
 
 		const report = renderReport({
 			level: params.level,
@@ -281,7 +327,6 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 
 		let outFile: string | null = null;
 		let writeError: string | null = null;
-		const now = new Date();
 		try {
 			const dir = path.join(ctx.cwd, CONFIG_DIR_NAME, "review");
 			await fs.promises.mkdir(dir, { recursive: true });
@@ -290,19 +335,7 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 			const fp = path.join(dir, `${ts}-${safeId}.json`);
 			await fs.promises.writeFile(
 				fp,
-				JSON.stringify(
-					{
-						level: params.level,
-						reportId: params.report_id ?? null,
-						target: params.target ?? null,
-						filesChanged: params.files_changed ?? null,
-						fannedOut: params.fanned_out ?? null,
-						generatedAt: now.toISOString(),
-						findings,
-					},
-					null,
-					2,
-				),
+				JSON.stringify(reportData, null, 2),
 				{ encoding: "utf-8", mode: 0o600 },
 			);
 			outFile = fp;
@@ -322,6 +355,7 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 		};
 		return {
 			content: [{ type: "text" as const, text: report + tail }],
+			structuredContent: reportData,
 			details,
 		};
 	},
