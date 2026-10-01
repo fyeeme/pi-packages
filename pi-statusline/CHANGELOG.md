@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-10-01
+
+### Changed
+
+- Peer dependency floor raised to `@earendil-works/pi-coding-agent >= 0.99.0`; dev toolchain pinned to 0.99.2. Theme audit: colors already go through semantic tokens in the footer render callback — no change needed for pi 0.99's system theme.
+
+
 ## [1.2.5] - 2026-09-18
 
 ### Changed
