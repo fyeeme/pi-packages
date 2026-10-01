@@ -19,7 +19,7 @@ import { BudgetPool } from "../budget/index.ts";
 import { Journal, type RunManifest } from "../cache/index.ts";
 import type { AgentLifecycleListeners } from "../lifecycle.ts";
 import { generateRunId } from "../state/index.ts";
-import type { Budget, RunResult, WorkflowDefinition } from "../types.ts";
+import type { Budget, ClassifyHook, RunResult, WorkflowDefinition } from "../types.ts";
 import {
 	createSpawnRegistry,
 	spawnAgent,
@@ -73,6 +73,11 @@ export interface RunWorkflowOptions {
 	/** A6: policy gate invoked before the first dispatch. Return { allow: false,
 	 *  reason } to deny the run with a policy-gate error. */
 	readonly policyGate?: (workflow: WorkflowDefinition) => { readonly allow: boolean; readonly reason?: string } | Promise<{ readonly allow: boolean; readonly reason?: string }>;
+	/** pi 0.99 classifier hook for classify_route steps: when provided and a
+	 *  classifier model is available, route categories come from
+	 *  ModelRuntime.classify() instead of a spawned classification agent;
+	 *  unavailability and failures fall back to the agent path. */
+	readonly classify?: ClassifyHook;
 }
 
 export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunResult> {
@@ -136,6 +141,7 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunResult> 
 		maxPromptBytes: opts.maxPromptBytes ?? DEFAULT_MAX_PROMPT_BYTES,
 		degradedStepIds: new Set(),
 		allowChildRecursion: opts.allowChildRecursion ?? false,
+		classify: opts.classify,
 		dispatched: 0,
 	};
 

@@ -180,6 +180,9 @@ defineWorkflow({
 // results: { candidates, winner, judges: [{winner, reason}] }
 
 // Classify input, then run the matching route's sub-steps.
+// On pi 0.99+ hosts with a classifier model, the category comes from
+// ModelRuntime.classify() (no classification subprocess); without one, an
+// agent answers the classification. The step result records which path ran.
 defineWorkflow({
 	name: "route",
 	steps: [
@@ -195,7 +198,7 @@ defineWorkflow({
 		},
 	],
 });
-// results: { category, matched, route: StepResult[], routeStatus }
+// results: { category, matched, route: StepResult[], routeStatus, path }
 ```
 
 Judge/classifier JSON is parsed leniently (LLMs return `"true"`/`"0"` as strings); route nesting is depth-capped to catch cycles.
@@ -314,7 +317,7 @@ const result = await runWorkflow({ workflow: wf, cwd: tempDir, now: 1000, dispat
 | `loop_until` | `prompt(ctx,i)`, `until(ctx,i)`, `maxIterations?` | array of per-iteration outputs |
 | `adversarial` | `produce`, `rubric[]`, `judges?`, `minPass?` | `{ candidate, passed, passCount, judges }` |
 | `tournament` | `candidates`, `judges`, `produce` | `{ candidates, winner, judges }` |
-| `classify_route` | `classifier`, `routes: Record<cat, Step[]>`, `fallback?` | `{ category, matched, route, routeStatus }` |
+| `classify_route` | `classifier`, `routes: Record<cat, Step[]>`, `fallback?` | `{ category, matched, route, routeStatus, path }` |
 | `sub_workflow` | `workflow: WorkflowDefinition`, `input?`, `inheritBudget?` | `{ steps, status, workflowName, error }` |
 | `loop_until_dry` | `agent(item, i)`, `keyOf?`, `merge?`, `maxRounds?`, `dryThreshold?` | array of discovered items |
 

@@ -20,6 +20,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import piSubagents from "@fyeeme/pi-subagents";
 import { defineWorkflow, runWorkflow } from "./src/index.ts";
+import { createClassifyHook } from "./src/classifier-hook.ts";
 import type { Budget, StepContext, StepDefinition, WorkflowDefinition } from "./src/types.ts";
 import { WorkflowError } from "./src/errors.ts";
 import { discoverWorkflowLibrary, loadLibraryWorkflow } from "./src/library.ts";
@@ -80,7 +81,7 @@ const StepSchema = Type.Union([
 	Type.Object({
 		id: Type.String(),
 		type: Type.Literal("classify_route"),
-		prompt: Type.String({ description: "Classifier prompt; agent should reply {category: \"...\"}" }),
+		prompt: Type.String({ description: "Classification prompt; routing runs on a classifier model when the host has one (pi 0.99), otherwise an agent replies with JSON {category: \"...\"}" }),
 		routes: Type.Record(
 			Type.String(),
 			Type.Array(Type.Object({ id: Type.String(), prompt: Type.String(), model: Type.Optional(Type.String()) })),
@@ -413,6 +414,9 @@ export default function (pi: ExtensionAPI): void {
 					cwd: params.cwd ?? ctx.cwd,
 					now: params.now ?? Date.now(),
 					signal,
+					// pi 0.99 classifier routing: classify_route prefers ModelRuntime.classify()
+					// when a classifier model is available; otherwise the agent path runs.
+					classify: createClassifyHook(ctx.modelRegistry),
 				});
 
 				const lines = [

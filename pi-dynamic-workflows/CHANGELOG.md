@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-10-01
+
+### Added
+
+- `classify_route` classifier routing (pi 0.99): when the host has a classifier model with working credentials, the route category comes from `ModelRuntime.classify()` (choice over the route names, no classification subprocess); a missing classifier or a failing call falls back to the existing agent path. Step-declared `model` is honored when it resolves to a classifier-type model. The step result gains `path: "classifier" | "agent"`, and classifier token usage is merged into the step stats.
+
+### Changed
+
+- Peer dependency floor raised to `@earendil-works/pi-coding-agent >= 0.99.0`; dev toolchain pinned to 0.99.2.
+
 ## [2.0.1] - 2026-09-09
 
 ### Fixed

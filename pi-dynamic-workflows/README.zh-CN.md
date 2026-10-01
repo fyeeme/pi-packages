@@ -185,7 +185,7 @@ defineWorkflow({
 		},
 	],
 });
-// results: { category, matched, route: StepResult[], routeStatus }
+// results: { category, matched, route: StepResult[], routeStatus, path }
 ```
 
 评判/分类的 JSON 采用宽松解析（LLM 常把 `"true"`/`"0"` 当字符串返回）；路由嵌套有深度上限以防循环。

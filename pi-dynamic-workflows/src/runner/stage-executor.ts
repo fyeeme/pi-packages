@@ -35,6 +35,7 @@ import type {
 	AgentCallSpec,
 	AgentOpts,
 	AgentStep,
+	ClassifyHook,
 	ClassifyRouteStep,
 	CodeStep,
 	LoopUntilDryStep,
@@ -81,6 +82,9 @@ export interface StepExecContext {
 	budgetPolicy: "throw" | "null";
 	/** A6: max resolved-prompt byte size; oversize throws a size-limit error. */
 	maxPromptBytes: number;
+	/** pi 0.99 classifier hook for classify_route (undefined → agent path only).
+	 *  See ClassifyHook / spec workflow-classifier-routing. */
+	readonly classify?: ClassifyHook;
 	/** A3: step ids that degraded to null under the "null" policy this run. */
 	degradedStepIds: Set<string>;
 	/** Recursion opt-in propagated to every spawned workflow sub-agent: when
@@ -555,28 +559,63 @@ async function execTournament(step: TournamentStep, ctx: StepContext, exec: Step
 async function execClassifyRoute(step: ClassifyRouteStep, ctx: StepContext, exec: StepExecContext): Promise<StepResult> {
 	const start = Date.now();
 	const classifyPrompt = await resolvePrompt(step.classifier, ctx);
-	const classify = await dispatchAgentCall(`${step.id}#classify`, classifyPrompt, step.classifier, exec);
-	if (!classify.ok) {
-		return stepResult(
-			step.id,
-			"classify_route",
-			classify.aborted ? "skipped" : "failed",
-			undefined,
-			withDuration(classify.stats, start),
-			undefined,
-			classify.aborted ? undefined : "dispatch-error",
-		);
+
+	// pi 0.99 classifier path first (spec: workflow-classifier-routing): when a
+	// classifier hook is available and answers, the category comes from its
+	// ranked choice and no classification subprocess is spawned. Unavailable or
+	// failing hook → the original agent path, unchanged (fallback contract).
+	let classifyPath: "classifier" | "agent" = "agent";
+	let category = "";
+	let classifyStats: StepStats = zeroStats;
+	if (exec.classify) {
+		try {
+			const hookResult = await exec.classify(classifyPrompt, Object.keys(step.routes), step.classifier.model);
+			if (hookResult) {
+				classifyPath = "classifier";
+				category = parseCategoryStr(hookResult.category);
+				const u = hookResult.usage;
+				classifyStats = {
+					tokens: u ? u.totalTokens : 0,
+					cost: u ? u.cost : 0,
+					durationMs: 0,
+					agents: 0,
+					failures: 0,
+					usage: u
+						? { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite }
+						: undefined,
+				};
+			}
+		} catch {
+			// classifier call failed → agent fallback (spec: Fallback to the agent path)
+		}
 	}
 
-	// A3: a degraded classifier (budget exhausted under the "null" policy)
-	// returns value null — the step degrades to a null result per the README
-	// contract; do not fabricate a route run from an empty category.
-	if (classify.value === null) {
-		return stepResult(step.id, "classify_route", "done", null, withDuration(classify.stats, start));
+	if (classifyPath === "agent") {
+		const classify = await dispatchAgentCall(`${step.id}#classify`, classifyPrompt, step.classifier, exec);
+		if (!classify.ok) {
+			return stepResult(
+				step.id,
+				"classify_route",
+				classify.aborted ? "skipped" : "failed",
+				undefined,
+				withDuration(classify.stats, start),
+				undefined,
+				classify.aborted ? undefined : "dispatch-error",
+			);
+		}
+
+		// A3: a degraded classifier (budget exhausted under the "null" policy)
+		// returns value null — the step degrades to a null result per the README
+		// contract; do not fabricate a route run from an empty category.
+		if (classify.value === null) {
+			return stepResult(step.id, "classify_route", "done", null, withDuration(classify.stats, start));
+		}
+
+		const parsed = parseFirstJson(classify.value ?? "") as { category?: unknown } | undefined;
+		category = parseCategoryStr(parsed?.category);
+		classifyStats = classify.stats;
 	}
 
-	const parsed = parseFirstJson(classify.value ?? "") as { category?: unknown } | undefined;
-	const category = parseCategoryStr(parsed?.category);
 	const routeSteps = step.routes[category] ?? step.fallback ?? [];
 
 	exec.depth++;
@@ -592,8 +631,8 @@ async function execClassifyRoute(step: ClassifyRouteStep, ctx: StepContext, exec
 		step.id,
 		"classify_route",
 		status,
-		{ category, matched: category in step.routes, route: sub.steps, routeStatus: sub.status },
-		withDuration(addStats(classify.stats, aggregateStats(sub.steps.map((s) => s.stats), 0)), start),
+		{ category, matched: category in step.routes, route: sub.steps, routeStatus: sub.status, path: classifyPath },
+		withDuration(addStats(classifyStats, aggregateStats(sub.steps.map((s) => s.stats), 0)), start),
 		undefined,
 		sub.errorCategory,
 	);

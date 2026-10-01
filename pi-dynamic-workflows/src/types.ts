@@ -49,6 +49,36 @@ export interface Budget {
 // Step statistics + result
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// classify_route classifier hook (pi 0.99 ModelRuntime.classify)
+// ---------------------------------------------------------------------------
+
+/** Result of a successful classifier-path classification for classify_route.
+ *  `category` is the classifier's chosen route name (may be undeclared — the
+ *  runner resolves it through fallback sub-steps exactly like the agent path). */
+export interface ClassifyHookResult {
+	readonly category: string;
+	/** Classifier token usage for truthful step stats; omit when unknown. */
+	readonly usage?: {
+		readonly input: number;
+		readonly output: number;
+		readonly cacheRead: number;
+		readonly cacheWrite: number;
+		readonly totalTokens: number;
+		readonly cost: number;
+	};
+}
+
+/** Optional classifier hook injected by the extension entry (spec:
+ *  workflow-classifier-routing). Returns undefined when no classifier model is
+ *  available; a throw also falls back to the agent path. Route sub-steps still
+ *  run as agent dispatches either way. */
+export type ClassifyHook = (
+	prompt: string,
+	routeNames: readonly string[],
+	model?: string,
+) => Promise<ClassifyHookResult | undefined>;
+
 export interface StepStats {
 	readonly tokens: number;
 	readonly cost: number;
