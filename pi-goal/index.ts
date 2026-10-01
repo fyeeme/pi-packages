@@ -27,12 +27,18 @@
  *   goal_updated session event             → pi.events.emit("goal_updated")
  *   sendHiddenMessage (budget steer)       → pi.sendMessage display:false
  *   prompt-time prependMessages goal context
- *                                          → before_agent_start message
- *                                            injection (hidden custom message)
+ *                                          → context_with_system per-request
+ *                                            injection (0.87.0): survives
+ *                                            compaction, supersedes transcript
+ *                                            copies instead of accumulating
  *   #scheduleGoalContinuation 800ms TUI timer
- *                                          → followUp delivery + triggerTurn
- *                                            (editor-empty guard dropped: pi
- *                                            extensions cannot read the editor)
+ *                                          → agent_before_settle actionable
+ *                                            boundary (0.87.0):
+ *                                            { entries: [continuation draft],
+ *                                              continue: true } — exactly one
+ *                                            next provider request; sendMessage
+ *                                            fallback kept for continuations
+ *                                            withheld after settlement
  *   setActiveToolsByName                   → pi.setActiveTools
  *   status-line segment                    → ctx.ui.setStatus("goal", ...)
  *   settings goal.enabled / continuationModes / statusInFooter
@@ -59,7 +65,12 @@
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+	ContextEditEntryDraft,
+	ExtensionAPI,
+	ExtensionContext,
+	SessionBoundaryDraft,
+} from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import {
 	createGoalCommand,
@@ -105,6 +116,34 @@ interface EntryUsageLike {
 	usage?: EntryMessageLike["usage"];
 }
 
+/** Budget slimming drafts (opt-in via PI_GOAL_SLIM_ON_BUDGET=1, attached once
+ *  per goal at the budget-limited flip): omit toolResult entries that precede
+ *  the newest real user message from future provider context via append-only
+ *  context-edit drafts — superseded turns' work products. Raw history, usage
+ *  and UI history stay untouched (context_edit contract). Pure: returns the
+ *  drafts; the settle boundary attaches them. */
+export function contextSlimDrafts(branch: unknown[]): ContextEditEntryDraft[] {
+	const drafts: ContextEditEntryDraft[] = [];
+	let keepFrom = -1;
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i] as { type?: string; message?: { role?: string } } | undefined;
+		if (entry?.type === "message" && entry.message?.role === "user") {
+			keepFrom = i;
+			break;
+		}
+	}
+	if (keepFrom <= 0) return drafts;
+	const seen = new Set<string>();
+	for (let i = 0; i < keepFrom; i++) {
+		const entry = branch[i] as { type?: string; id?: string; message?: { role?: string } } | undefined;
+		if (entry?.type !== "message" || entry.message?.role !== "toolResult") continue;
+		if (!entry.id || seen.has(entry.id)) continue;
+		seen.add(entry.id);
+		drafts.push({ type: "context_edit", targetId: entry.id, replacement: null });
+	}
+	return drafts;
+}
+
 export default function piGoalExtension(pi: ExtensionAPI): void {
 	// ------------------------------------------------------------------
 	// Closure state (omp session fields)
@@ -126,6 +165,10 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 	/** A blocking ctx.ui dialog is open (ui_prompt_start/end). While open, no
 	 *  continuation may fire: the modal would hide a turn starting behind it. */
 	let uiPromptOpen = false;
+	/** Goal id whose budget-limited flip already armed context slimming. */
+	let slimmedBudgetGoalId: string | undefined;
+	/** Context-slimming drafts pending attachment at the next settle boundary. */
+	let pendingSlim = false;
 
 	// ------------------------------------------------------------------
 	// Usage accounting (mirror of pi getSessionStats().tokens sums)
@@ -257,6 +300,14 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		goalState = state;
+		if (
+			state?.goal.status === "budget-limited" &&
+			process.env.PI_GOAL_SLIM_ON_BUDGET === "1" &&
+			slimmedBudgetGoalId !== state.goal.id
+		) {
+			slimmedBudgetGoalId = state.goal.id;
+			pendingSlim = true;
+		}
 		if (!state?.enabled) {
 			continuationInFlight = false;
 		}
@@ -416,7 +467,9 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		return renderTemplate(goalModeContextPrompt, { goalContext: content, todoContext });
 	}
 
-	/** omp #scheduleGoalContinuation (TUI timer replaced by followUp delivery). */
+	/** omp #scheduleGoalContinuation. Post-settlement fallback path only: the
+	 *  primary continuation decision lives in the agent_before_settle boundary
+	 *  below (0.87.0). */
 	function scheduleContinuation(): void {
 		if (!goalState?.enabled || goalState.goal.status !== "active") return;
 		if (suppressNextContinuation) return;
@@ -431,6 +484,26 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			{ customType: "goal-continuation", content: prompt, display: false, details: { goalId: goalState.goal.id } },
 			{ triggerTurn: true, deliverAs: "followUp" },
 		);
+	}
+
+	/** omp #scheduleGoalContinuation decision chain, settled into a draft:
+	 *  guards pass → one custom_message draft carrying the continuation
+	 *  prompt (details.goalId keys context pruning). */
+	function continuationDraft(ctx: ExtensionContext): SessionBoundaryDraft | undefined {
+		if (!goalState?.enabled || goalState.goal.status !== "active") return undefined;
+		if (suppressNextContinuation) return undefined;
+		if (uiPromptOpen) return undefined; // modal open: never start a turn behind it
+		if (ctx.hasPendingMessages()) return undefined;
+		const prompt = runtime.buildContinuationPrompt();
+		if (!prompt) return undefined;
+		continuationInFlight = true;
+		return {
+			type: "custom_message",
+			customType: "goal-continuation",
+			content: prompt,
+			display: false,
+			details: { goalId: goalState.goal.id },
+		};
 	}
 
 	// ------------------------------------------------------------------
@@ -584,13 +657,25 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	pi.on("before_agent_start", (_event, ctx) => {
+	// Goal context injection (0.87.0 context_with_system): runs after `context`
+	// handlers on the full transcript including system messages; the result is
+	// sent verbatim. Per-request injection survives compaction (re-applied every
+	// call) and the fresh copy supersedes any steer-injected transcript copies.
+	pi.on("context_with_system", (event, ctx) => {
 		currentCtx = ctx;
 		const content = buildGoalModeMessage();
 		if (!content) return undefined;
-		return {
-			message: { customType: "goal-mode-context", content, display: false },
-		};
+		const messages = event.messages.filter((message) => {
+			const msg = message as { role?: string; customType?: string } | undefined;
+			return !(msg?.role === "custom" && msg.customType === "goal-mode-context");
+		});
+		messages.push({
+			role: "custom",
+			customType: "goal-mode-context",
+			content,
+			display: false,
+		} as (typeof event.messages)[number]);
+		return { messages };
 	});
 
 	// Context hygiene (borrowed from mitsuhiko/agent-stuff goal.ts): hidden goal
@@ -649,7 +734,31 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		updateStatus();
-		scheduleContinuation();
+	});
+
+	// omp #scheduleGoalContinuation migrated to the 0.87.0 actionable boundary:
+	// at settle time decide ONCE whether exactly one more provider request
+	// should run, attaching the continuation prompt as a custom_message draft.
+	// No timer, no followUp scheduling — pi owns the request. Guards mirror the
+	// old scheduleContinuation chain; continuations withheld after settlement
+	// (modal closed late, budget set while idle) still recover via the
+	// sendMessage fallback in scheduleContinuation().
+	pi.on("agent_before_settle", (_event, ctx) => {
+		currentCtx = ctx;
+		// Context slimming (opt-in): attach pending context_edit drafts first —
+		// they persist even when the continuation itself is withheld.
+		const drafts: SessionBoundaryDraft[] = [];
+		if (pendingSlim) {
+			pendingSlim = false;
+			drafts.push(...contextSlimDrafts(ctx.sessionManager.getBranch()));
+		}
+		const continuation = continuationDraft(ctx);
+		if (continuation) drafts.push(continuation);
+		if (drafts.length === 0) return undefined;
+		// Absent `continue` = no opinion on auto-continuation (budget-limited
+		// goals settle without one); `continue: true` guarantees exactly one
+		// next provider request.
+		return continuation !== undefined ? { entries: drafts, continue: true } : { entries: drafts };
 	});
 
 	pi.on("turn_end", (_event, ctx) => {

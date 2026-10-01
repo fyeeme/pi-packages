@@ -152,6 +152,19 @@ async function fire(host: FakeHost, event: string, payload: unknown, ctx?: unkno
 	}
 }
 
+/** Fire agent_before_settle and return its boundary result. */
+function fireBeforeSettle(
+	host: FakeHost,
+	ctx?: unknown,
+): { continue?: boolean; entries?: Array<{ type: string; customType?: string; details?: unknown }> } | undefined {
+	const list = host.handlers.get("agent_before_settle") ?? [];
+	let result: unknown;
+	for (const handler of list) {
+		result = handler({ type: "agent_before_settle" }, ctx ?? createContext(host));
+	}
+	return result as { continue?: boolean; entries?: Array<{ type: string; customType?: string; details?: unknown }> } | undefined;
+}
+
 function fireBus(host: FakeHost, channel: string, data: unknown): void {
 	for (const handler of host.busHandlers.get(channel) ?? []) {
 		handler(data);
@@ -268,30 +281,52 @@ describe("pi-goal extension wiring", () => {
 		expect(host.statuses.get("goal")).toBe("🎯 Goal 0");
 	});
 
-	it("before_agent_start injects the hidden goal-mode-context message only while a goal is active", async () => {
+	it("context_with_system injects the goal-mode-context message only while a goal is active", async () => {
 		const host = fakeHost();
 		defaultExport(host.pi);
 		await fire(host, "session_start", { type: "session_start", reason: "startup" });
 
-		let result: unknown;
-		const handler = host.handlers.get("before_agent_start")?.[0];
-		result = await handler!({ prompt: "hi", systemPrompt: "" }, createContext(host));
+		const handler = host.handlers.get("context_with_system")?.[0]!;
+		const transcript = [{ role: "user", content: "hi" }];
+		let result = (await handler({ type: "context_with_system", messages: transcript }, createContext(host))) as
+			| { messages: Array<{ customType?: string; content?: string }> }
+			| undefined;
 		expect(result).toBeUndefined();
 
 		await host.commands.goal!.handler("Do the thing", createContext(host));
-		result = await handler!({ prompt: "hi", systemPrompt: "" }, createContext(host));
-		expect(result).toMatchObject({ message: { customType: "goal-mode-context", display: false } });
-		const content = (result as { message: { content: string } }).message.content;
-		expect(content).toContain("<goal_context>");
-		expect(content).toContain("Do the thing");
+		result = (await handler({ type: "context_with_system", messages: transcript }, createContext(host))) as
+			| { messages: Array<{ customType?: string; content?: string }> }
+			| undefined;
+		const contexts = result!.messages.filter((m) => m.customType === "goal-mode-context");
+		expect(contexts).toHaveLength(1);
+		expect(contexts[0]?.content).toContain("<goal_context>");
+		expect(contexts[0]?.content).toContain("Do the thing");
 	});
 
-	it("agent_end schedules a continuation when the goal is still active", async () => {
+	it("context_with_system supersedes steer-injected transcript copies (single fresh context)", async () => {
 		const host = fakeHost();
 		defaultExport(host.pi);
 		await fire(host, "session_start", { type: "session_start", reason: "startup" });
 		await host.commands.goal!.handler("Do the thing", createContext(host));
-		host.sentMessages.length = 0;
+
+		const handler = host.handlers.get("context_with_system")?.[0]!;
+		const transcript = [
+			{ role: "user", content: "hi" },
+			{ role: "custom", customType: "goal-mode-context", content: "stale copy", display: false },
+		];
+		const result = (await handler({ type: "context_with_system", messages: transcript }, createContext(host))) as {
+			messages: Array<{ customType?: string; content?: string }>;
+		};
+		const contexts = result.messages.filter((m) => m.customType === "goal-mode-context");
+		expect(contexts).toHaveLength(1);
+		expect(contexts[0]?.content).not.toBe("stale copy");
+	});
+
+	it("agent_before_settle continues exactly one request when the goal is still active", async () => {
+		const host = fakeHost();
+		defaultExport(host.pi);
+		await fire(host, "session_start", { type: "session_start", reason: "startup" });
+		await host.commands.goal!.handler("Do the thing", createContext(host));
 
 		await fire(host, "agent_start", { type: "agent_start" });
 		await fire(host, "tool_execution_end", {
@@ -303,13 +338,16 @@ describe("pi-goal extension wiring", () => {
 		});
 		await fire(host, "agent_end", { type: "agent_end", messages: [assistantMessage("toolUse")] });
 
-		const continuation = host.sentMessages.find((m) => m.customType === "goal-continuation");
-		expect(continuation).toBeDefined();
-		expect(continuation?.display).toBe(false);
-		expect(continuation?.options).toMatchObject({ triggerTurn: true, deliverAs: "followUp" });
+		const result = fireBeforeSettle(host);
+		expect(result?.continue).toBe(true);
+		// The continuation prompt rides as a custom_message draft.
+		const draft = result?.entries?.[0];
+		expect(draft).toMatchObject({ type: "custom_message", customType: "goal-continuation", display: false });
 		// details.goalId keys the context-pruning handler.
 		const goalId = (host.entries.find((e) => e.customType === GOAL_STATE_ENTRY_TYPE)?.data as { goal: Goal }).goal.id;
-		expect(continuation?.details).toMatchObject({ goalId });
+		expect(draft?.details).toMatchObject({ goalId });
+		// The boundary path sends no followUp message.
+		expect(host.sentMessages.filter((m) => m.customType === "goal-continuation")).toHaveLength(0);
 	});
 
 	it("suppresses the next continuation when a continuation turn produced no tool calls", async () => {
@@ -317,18 +355,16 @@ describe("pi-goal extension wiring", () => {
 		defaultExport(host.pi);
 		await fire(host, "session_start", { type: "session_start", reason: "startup" });
 		await host.commands.goal!.handler("Do the thing", createContext(host));
-		host.sentMessages.length = 0;
 
 		// Continuation turn: agent replies with no tool calls.
 		await fire(host, "agent_start", { type: "agent_start" });
 		await fire(host, "agent_end", { type: "agent_end", messages: [assistantMessage("stop")] });
-		expect(host.sentMessages.filter((m) => m.customType === "goal-continuation")).toHaveLength(1);
+		expect(fireBeforeSettle(host)?.continue).toBe(true);
 
-		// That turn's end marks suppression: the following end schedules nothing.
-		host.sentMessages.length = 0;
+		// That turn's end marks suppression: the following settle continues nothing.
 		await fire(host, "agent_start", { type: "agent_start" });
 		await fire(host, "agent_end", { type: "agent_end", messages: [assistantMessage("stop")] });
-		expect(host.sentMessages.filter((m) => m.customType === "goal-continuation")).toHaveLength(0);
+		expect(fireBeforeSettle(host)?.continue).toBeUndefined();
 
 		// A real user message re-arms the loop.
 		await fire(host, "message_start", { type: "message_start", message: { role: "user" } });
@@ -340,9 +376,8 @@ describe("pi-goal extension wiring", () => {
 			result: {},
 			isError: false,
 		});
-		host.sentMessages.length = 0;
 		await fire(host, "agent_end", { type: "agent_end", messages: [assistantMessage("stop")] });
-		expect(host.sentMessages.filter((m) => m.customType === "goal-continuation")).toHaveLength(1);
+		expect(fireBeforeSettle(host)?.continue).toBe(true);
 	});
 
 	it("interrupt aborts pause the goal instead of continuing", async () => {
@@ -355,7 +390,7 @@ describe("pi-goal extension wiring", () => {
 		await fire(host, "agent_start", { type: "agent_start" });
 		await fire(host, "agent_end", { type: "agent_end", messages: [assistantMessage("aborted")] });
 
-		expect(host.sentMessages.filter((m) => m.customType === "goal-continuation")).toHaveLength(0);
+		expect(fireBeforeSettle(host)?.continue).toBeUndefined();
 		// omp footer segment: pause icon + usage.
 		expect(host.statuses.get("goal")).toBe("⏸ Goal 0");
 		const pauseEntry = [...host.entries].reverse().find((e) => e.customType === GOAL_STATE_ENTRY_TYPE);
@@ -380,7 +415,7 @@ describe("pi-goal extension wiring", () => {
 		expect(host.entries.some((e) => e.customType === GOAL_CLEARED_ENTRY_TYPE)).toBe(true);
 		expect(host.notifications).toContain("Goal mode completed.");
 		expect(host.statuses.has("goal")).toBe(false);
-		expect(host.sentMessages.filter((m) => m.customType === "goal-continuation")).toHaveLength(0);
+		expect(fireBeforeSettle(host)?.continue).toBeUndefined();
 	});
 
 	it("budget-limit steering sends one hidden steer message when usage crosses the budget", async () => {
@@ -443,6 +478,96 @@ describe("pi-goal extension wiring", () => {
 		expect(host.sentMessages.filter((m) => m.customType === "goal-budget-limit")).toHaveLength(0);
 	});
 
+	it("budget flip attaches context-slimming drafts when PI_GOAL_SLIM_ON_BUDGET=1", async () => {
+		const host = fakeHost();
+		defaultExport(host.pi);
+		await fire(host, "session_start", { type: "session_start", reason: "startup" });
+		await host.commands.goal!.handler("Do the thing", createContext(host));
+		await host.commands.goal!.handler("budget 10", createContext(host));
+
+		const entries: unknown[] = [
+			{ type: "message", id: "t-old", message: { role: "toolResult" } },
+			{ type: "message", id: "u1", message: { role: "user" } },
+			{ type: "message", id: "t-new", message: { role: "toolResult" } },
+		];
+		const ctx = createContext(host, { entries });
+
+		vi.stubEnv("PI_GOAL_SLIM_ON_BUDGET", "1");
+		await fire(host, "turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 }, ctx);
+		entries.push({
+			type: "message",
+			id: "m1",
+			message: { role: "assistant", stopReason: "toolUse", usage: { input: 25, output: 0, cacheRead: 0, cacheWrite: 0 } },
+		});
+		await fire(host, "tool_execution_end", {
+			type: "tool_execution_end",
+			toolCallId: "t1",
+			toolName: "read",
+			result: {},
+			isError: false,
+		}, ctx);
+
+		// Budget flip arms slimming; the boundary attaches the drafts.
+		// Budget-limited goals stop auto-continuing (omp semantics), so the
+		// boundary persists the edits without a next request.
+		const result = fireBeforeSettle(host, ctx);
+		expect(result?.continue).toBeUndefined();
+		const edits = (result?.entries ?? []).filter((e) => e.type === "context_edit");
+		expect(edits).toEqual([{ type: "context_edit", targetId: "t-old", replacement: null }]);
+
+		// Once per goal: the next settle carries no further slimming drafts.
+		entries.push({
+			type: "message",
+			id: "m2",
+			message: { role: "assistant", stopReason: "toolUse", usage: { input: 50, output: 0, cacheRead: 0, cacheWrite: 0 } },
+		});
+		await fire(host, "tool_execution_end", {
+			type: "tool_execution_end",
+			toolCallId: "t2",
+			toolName: "read",
+			result: {},
+			isError: false,
+		}, ctx);
+		expect(fireBeforeSettle(host, ctx)).toBeUndefined();
+		vi.unstubAllEnvs();
+	});
+
+	it("context slimming stays off by default (opt-in via PI_GOAL_SLIM_ON_BUDGET)", async () => {
+		const host = fakeHost();
+		defaultExport(host.pi);
+		await fire(host, "session_start", { type: "session_start", reason: "startup" });
+		await host.commands.goal!.handler("Do the thing", createContext(host));
+		await host.commands.goal!.handler("budget 10", createContext(host));
+
+		const entries: unknown[] = [
+			{ type: "message", id: "t-old", message: { role: "toolResult" } },
+			{ type: "message", id: "u1", message: { role: "user" } },
+			{ type: "message", id: "t-new", message: { role: "toolResult" } },
+		];
+		const ctx = createContext(host, { entries });
+
+		// Explicitly opt out (order-independent against leaking stubs).
+		vi.stubEnv("PI_GOAL_SLIM_ON_BUDGET", "");
+		await fire(host, "turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 }, ctx);
+		entries.push({
+			type: "message",
+			id: "m1",
+			message: { role: "assistant", stopReason: "toolUse", usage: { input: 25, output: 0, cacheRead: 0, cacheWrite: 0 } },
+		});
+		await fire(host, "tool_execution_end", {
+			type: "tool_execution_end",
+			toolCallId: "t1",
+			toolName: "read",
+			result: {},
+			isError: false,
+		}, ctx);
+
+		// Budget flip steers but arms no slimming drafts; budget-limited goals
+		// do not auto-continue, so the boundary settles empty.
+		expect(fireBeforeSettle(host, ctx)).toBeUndefined();
+		vi.unstubAllEnvs();
+	});
+
 	it("/guided-goal queues a hidden interview kickoff", async () => {
 		const host = fakeHost();
 		defaultExport(host.pi);
@@ -503,7 +628,8 @@ describe("pi-goal extension wiring", () => {
 
 		await fire(host, "agent_start", { type: "agent_start" });
 		await fire(host, "agent_end", { type: "agent_end", messages: [assistantMessage("stop")] });
-		expect(host.sentMessages.filter((m) => m.customType === "goal-continuation")).toHaveLength(0);
+		// Modal open at settle: the boundary withholds the continuation.
+		expect(fireBeforeSettle(host)?.continue).toBeUndefined();
 
 		// Dialog closes while idle: the withheld continuation is scheduled now.
 		const idleCtx = createContext(host, { idle: true });
@@ -532,7 +658,8 @@ describe("pi-goal extension wiring", () => {
 		expect(host.sentMessages.filter((m) => m.customType === "goal-continuation")).toHaveLength(0);
 
 		await fire(host, "agent_end", { type: "agent_end", messages: [assistantMessage("stop")] });
-		expect(host.sentMessages.filter((m) => m.customType === "goal-continuation")).toHaveLength(1);
+		// Modal already closed: the boundary itself continues the run.
+		expect(fireBeforeSettle(host)?.continue).toBe(true);
 	});
 
 	it("refreshes the status on agent_settled (status integrations per docs)", async () => {
@@ -667,7 +794,7 @@ describe("pi-goal extension wiring", () => {
 		const pauseEntry = [...host.entries].reverse().find((e) => e.customType === GOAL_STATE_ENTRY_TYPE);
 		expect(pauseEntry?.data).toMatchObject({ enabled: false, goal: { status: "paused" } });
 		expect(host.notifications.some((n) => n.includes("rate limits"))).toBe(true);
-		expect(host.sentMessages.filter((m) => m.customType === "goal-continuation")).toHaveLength(0);
+		expect(fireBeforeSettle(host)?.continue).toBeUndefined();
 	});
 
 	it("pauses with a generic notice on non-usage errors", async () => {

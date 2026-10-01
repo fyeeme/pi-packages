@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-10-01
+
 ### Added
 
 - Objective length cap (`MAX_OBJECTIVE_CHARS`, 4,000 code points) enforced by the runtime on `create` and `replace` — the objective is re-injected into context on every continuation and passed to the evaluator subprocess, so an oversized one silently burns budget every turn; the error guides long instructions into a referenced file. Counting is code-point-based, not UTF-16 units. (Borrowed from mitsuhiko/agent-stuff `extensions/goal.ts`.)
@@ -16,6 +18,7 @@
 
 - Context hygiene: hidden goal messages no longer accumulate in the LLM's view. A `context` handler keeps only the newest `goal-mode-context` and `goal-budget-limit` messages plus the newest `goal-continuation` stamped for the currently active goal id (`details.goalId`); stale ones — including all continuations once no goal is active — are dropped from the model's view, not from the transcript. (Borrowed from mitsuhiko/agent-stuff `extensions/goal.ts`.)
 - Run-error handling: when a run ends with an assistant `stopReason: "error"`, the active goal now pauses (persisted) instead of letting the continuation loop fire into a likely retry loop, with a classified notice — provider usage/rate/quota/limit errors read differently from generic faults. Abort behavior is unchanged. (Borrowed from mitsuhiko/agent-stuff `extensions/goal.ts`.)
+- Peer dependency floor raised to `@earendil-works/pi-coding-agent >= 0.99.0`; dev toolchain pinned to 0.99.2 (typecheck and tests pass against 0.99.2 unchanged).
 
 ## [1.0.2] - 2026-09-16
 
