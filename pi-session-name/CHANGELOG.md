@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- README drift: default mode is `follow` (not `first`); removed the config example's `model` field (the 1.0.5 model override removal); prerequisites now state pi >= 0.99.0 (classifier APIs); a test title now names the real config path (`.pi/agent/session-name.json`).
+
 ## [1.0.6] - 2026-10-02
 
 ### Changed

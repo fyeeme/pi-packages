@@ -19,7 +19,7 @@ Auto-name [pi](https://pi.dev) sessions with a short LLM-generated title so `--r
 
 ## Prerequisites
 
-- [pi](https://pi.dev) >= 0.87.0 (uses `agent_settled` / `session_info_changed` events and `ctx.modelRegistry.complete()`)
+- [pi](https://pi.dev) >= 0.99.0 (uses `agent_settled` / `session_info_changed` events and `ctx.modelRegistry.complete()` / `classify()`)
 
 ## Installation
 
@@ -49,9 +49,9 @@ ln -s "$(pwd)" ~/.pi/agent/extensions/pi-session-name
 
 ## Usage
 
-No configuration needed for the default `first` mode. Just install and use pi — your first session will auto-name itself.
+No configuration needed for the default `follow` mode. Just install and use pi — the session is named (and re-named) as turns settle, tracking the conversation.
 
-> **Tip**: in `first` mode the session is named after the first turn, so if the root cause or key point usually emerges only in later turns, set `"mode": "auto"` — the title then re-evaluates each turn and tracks the conversation's conclusion.
+> **Tip**: `follow` regenerates the title every turn (one short model call per settled turn). If you only want a one-shot name, set `"mode": "first"` — the session is named after the first turn and never touched again. `"auto"` re-evaluates each turn with a cheap classifier (KEEP/NEW) before paying for a regeneration.
 
 If you want to change behavior, see [Configuration](#configuration).
 
@@ -71,8 +71,7 @@ Create `.pi/agent/session-name.json` in your project root:
 ```json
 {
 	"mode": "auto",
-	"maxLength": 200,
-	"model": { "provider": "openai", "id": "gpt-4o-mini" }
+	"maxLength": 200
 }
 ```
 

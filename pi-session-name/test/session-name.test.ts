@@ -235,7 +235,7 @@ describe("loadConfig", () => {
 		const cfg = loadConfig(dir, {});
 		expect(cfg).toEqual({ mode: "follow", prompt: "concise", enabled: true, appendCreationTime: true, maxLength: 200 });
 	});
-	it("reads .pi/session-name.json", () => {
+	it("reads .pi/agent/session-name.json", () => {
 		mkdirSync(join(dir, ".pi", "agent"), { recursive: true });
 		writeFileSync(join(dir, ".pi", "agent", "session-name.json"), JSON.stringify({ mode: "auto", maxLength: 20 }));
 		const cfg = loadConfig(dir, {});
