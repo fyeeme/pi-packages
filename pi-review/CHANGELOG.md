@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- The on-disk JSON and `structuredContent` top-level keys are now snake_case, matching the input schema: `report_id` / `files_changed` / `fanned_out` / `generated_at` (previously `reportId` / `filesChanged` / `fannedOut` / `generatedAt`). The findings array was already snake_case and is unchanged; `--loop` reads only `findings` and is unaffected. Update external CI consumers that read the old camelCase keys.
+
 ### Changed
 
 - Dead-export cleanup: `BLOCKING_PRIORITIES`, `findGitRoot`, `readScriptsAt`, and `REVIEW_LEVELS` are no longer exported (all had zero external importers; `blockingFindings` now reads the constant instead of hardcoded `"P0"`/`"P1"` literals, removing the dual source of truth). README now states the actual `@fyeeme/pi-subagents` dependency version (2.1.3).

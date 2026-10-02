@@ -94,7 +94,7 @@ const ReviewReportParams = Type.Object({
 	report_id: Type.Optional(
 		Type.String({
 			description:
-				"报告标识（如 review-<ts>）。首次上报生成；fixed-later 再上报传同一 id，消费方按 id 归并，同 id 最新 generatedAt 为最终状态。",
+				"报告标识（如 review-<ts>）。首次上报生成；fixed-later 再上报传同一 id，消费方按 id 归并，同 id 最新 generated_at 为最终状态。",
 		}),
 	),
 });
@@ -112,11 +112,11 @@ const FindingOutput = Type.Object({
 
 const ReviewReportOutput = Type.Object({
 	level: Level,
-	reportId: Type.Union([Type.String(), Type.Null()]),
+	report_id: Type.Union([Type.String(), Type.Null()]),
 	target: Type.Union([Type.String(), Type.Null()]),
-	filesChanged: Type.Union([Type.Number(), Type.Null()]),
-	fannedOut: Type.Union([Type.Boolean(), Type.Null()]),
-	generatedAt: Type.String(),
+	files_changed: Type.Union([Type.Number(), Type.Null()]),
+	fanned_out: Type.Union([Type.Boolean(), Type.Null()]),
+	generated_at: Type.String(),
 	findings: Type.Array(FindingOutput),
 });
 
@@ -308,11 +308,11 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 		const now = new Date();
 		const reportData: ReviewReportOut = {
 			level: params.level,
-			reportId: params.report_id ?? null,
+			report_id: params.report_id ?? null,
 			target: params.target ?? null,
-			filesChanged: params.files_changed ?? null,
-			fannedOut: params.fanned_out ?? null,
-			generatedAt: now.toISOString(),
+			files_changed: params.files_changed ?? null,
+			fanned_out: params.fanned_out ?? null,
+			generated_at: now.toISOString(),
 			findings,
 		};
 

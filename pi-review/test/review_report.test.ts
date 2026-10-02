@@ -102,9 +102,9 @@ describe("review_report tool", () => {
 		const json = JSON.parse(readFileSync(join(outDir, files[0]!), "utf8")) as Record<string, unknown>;
 		expect(json.level).toBe("high");
 		expect(json.target).toBe("git diff HEAD");
-		expect(json.filesChanged).toBe(3);
-		expect(json.fannedOut).toBe(true);
-		expect(typeof json.generatedAt).toBe("string");
+		expect(json.files_changed).toBe(3);
+		expect(json.fanned_out).toBe(true);
+		expect(typeof json.generated_at).toBe("string");
 		const findings = json.findings as Array<Record<string, unknown>>;
 		expect(findings).toHaveLength(2);
 		expect(findings[0]).toMatchObject({ verdict: "CONFIRMED", category: "correctness", line: 10 });
@@ -321,11 +321,11 @@ describe("review_report tool", () => {
 		const outDir = join(cwd, ".pi", "review");
 		const json = JSON.parse(
 			readFileSync(join(outDir, readdirSync(outDir)[0]!), "utf8"),
-		) as { reportId: string | null };
-		expect(json.reportId).toBe("review-2026-08-11");
+		) as { report_id: string | null };
+		expect(json.report_id).toBe("review-2026-08-11");
 		expect(res.details.reportId).toBe("review-2026-08-11");
 
-		// re-report with the same id → separate file, same id, newer generatedAt
+		// re-report with the same id → separate file, same id, newer generated_at
 		const first = readdirSync(outDir).sort()[0]!;
 		await execute(
 			"call_9",
@@ -341,8 +341,8 @@ describe("review_report tool", () => {
 		const files = readdirSync(outDir).sort();
 		expect(files).toHaveLength(2);
 		const second = files.filter((f) => f !== first)[0]!;
-		const secondJson = JSON.parse(readFileSync(join(outDir, second), "utf8")) as { reportId: string | null };
-		expect(secondJson.reportId).toBe("review-2026-08-11");
+		const secondJson = JSON.parse(readFileSync(join(outDir, second), "utf8")) as { report_id: string | null };
+		expect(secondJson.report_id).toBe("review-2026-08-11");
 	});
 
 	it("prepareArguments sanitizes invalid values before schema validation (model path)", () => {
@@ -431,7 +431,7 @@ describe("review_report tool", () => {
 		expect(res.structuredContent).toEqual(json);
 		const scFindings = (res.structuredContent?.findings ?? []) as Array<Record<string, unknown>>;
 		expect(scFindings[0]).toMatchObject({ outcome: "skipped", note: '（outcome "fully_achieved" 非法，已归一化为 skipped）' });
-		expect(res.structuredContent?.reportId).toBe("review-42");
+		expect(res.structuredContent?.report_id).toBe("review-42");
 	});
 
 	it("structuredContent validates against the declared outputSchema", () => {
@@ -439,11 +439,11 @@ describe("review_report tool", () => {
 		expect(schema).toBeDefined();
 		const sample = {
 			level: "low",
-			reportId: null,
+			report_id: null,
 			target: null,
-			filesChanged: null,
-			fannedOut: null,
-			generatedAt: new Date().toISOString(),
+			files_changed: null,
+			fanned_out: null,
+			generated_at: new Date().toISOString(),
 			findings: [{ file: "a.ts", line: 1, category: "correctness", summary: "s", failure_scenario: "f" }],
 		};
 		expect(Value.Check(schema, sample)).toBe(true);
