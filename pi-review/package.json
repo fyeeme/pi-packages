@@ -1,6 +1,6 @@
 {
 	"name": "@fyeeme/pi-review",
-	"version": "2.1.1",
+	"version": "2.1.2",
 	"description": "Review & cleanup assets for pi: /code-review and /code-simplify commands dispatching declarative prompt templates (parallel strategy as frontmatter data) plus review methodology skills and finder/verifier agent definitions. Spawning lives in @fyeeme/pi-subagents; this package registers the review_report findings sink and the generic dispatcher.",
 	"type": "module",
 	"license": "MIT",
@@ -39,7 +39,7 @@
 		"typecheck": "tsc"
 	},
 	"dependencies": {
-		"@fyeeme/pi-subagents": "2.1.1"
+		"@fyeeme/pi-subagents": "2.1.3"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": ">=0.99.0",
@@ -48,10 +48,10 @@
 		"typebox": ">=1.0.0"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-ai": "0.99.2",
-		"@earendil-works/pi-coding-agent": "0.99.2",
-		"@earendil-works/pi-agent-core": "0.99.2",
-		"@earendil-works/pi-tui": "0.99.2",
+		"@earendil-works/pi-ai": "1.0.0",
+		"@earendil-works/pi-coding-agent": "1.0.0",
+		"@earendil-works/pi-agent-core": "1.0.0",
+		"@earendil-works/pi-tui": "1.0.0",
 		"@types/node": "22.19.19",
 		"jiti": "2.7.0",
 		"typebox": "1.1.38",
