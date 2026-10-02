@@ -49,10 +49,11 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 // Constants
 // ============================================================================
 
-/** Template paths for peon.sh discovery. $HOME is resolved at runtime. */
+/** Template paths for peon.sh discovery. $HOME is resolved at runtime.
+ *  (The Homebrew install is resolved separately by tryBrewPrefix — a literal
+ *  `$(brew …)` string would never match under existsSync, so it is not a
+ *  template.) */
 export const PEON_SH_TEMPLATES = [
-	// Homebrew (macOS)
-	"$(brew --prefix peon-ping)/libexec/peon.sh",
 	// curl installer default (Linux/macOS)
 	"$HOME/.claude/hooks/peon-ping/peon.sh",
 	// --openpeon mode (tool-agnostic root)

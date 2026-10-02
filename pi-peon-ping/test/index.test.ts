@@ -68,10 +68,10 @@ describe("resolvePeonShPaths", () => {
 		}
 	});
 
-	it("returns the same number of paths as templates", () => {
-		// brew template has $() which is NOT resolved by resolvePeonShPaths
+	it("returns the same number of paths as templates (no unexpandable entries)", () => {
 		const paths = resolvePeonShPaths();
 		expect(paths).toHaveLength(PEON_SH_TEMPLATES.length);
+		for (const p of paths) expect(p.startsWith("/")).toBe(true);
 	});
 
 	it("last path ends with .ps1 (Windows fallback)", () => {

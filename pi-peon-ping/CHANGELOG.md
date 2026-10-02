@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Removed the never-matching literal `$(brew --prefix peon-ping)/libexec/peon.sh` from the discovery templates — Homebrew is resolved by the dedicated `tryBrewPrefix` probe; the template only ever cost a wasted `existsSync` and misled readers.
+
 ### Fixed
 
 - Doc drift: the event-mapping table and header comment now match the code (`agent_settled` → Stop since 1.1.1, `ui_prompt_start` → PermissionRequest since 1.1.2 — fires on any blocking `ctx.ui` dialog, no third-party ask tool needed); removed a comment-block header left over from the deleted tab-title helper.
