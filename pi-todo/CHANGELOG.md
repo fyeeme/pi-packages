@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Re-blocking a task without a `reason` keeps the existing blocker note — notes refine one way (unset → set → replaced) instead of being wiped by a bare re-block.
+- Declared `@earendil-works/pi-ai` in peer/dev dependencies: `src/tool.ts` imports `StringEnum` from it at runtime (monorepo `check:runtime-deps` gate; parity with the family's peer floor `>=0.99.0`).
+
 ### Changed
 
 - `formatMoreItems` is module-private now (zero external importers); `applyOpsToPhases`'s doc comment names its real caller (the `/todo` command's apply path, not `/todo clear`).

@@ -565,9 +565,11 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntry, errors: string[]): 
 				// reopen completed/abandoned tasks or erase finished progress. An
 				// already-blocked task stays eligible so a later block can refine its
 				// blocker note (e.g. first blocked without a reason, then with one).
+				// A re-block without a reason KEEPS the existing note — refining goes
+				// one way (unset → set → replaced), never wiped by a bare re-block.
 				if (task.status !== "pending" && task.status !== "in_progress" && task.status !== "blocked") continue;
 				task.status = "blocked";
-				task.blocker = reason;
+				if (reason !== undefined || task.blocker === undefined) task.blocker = reason;
 			}
 			return phases;
 		}

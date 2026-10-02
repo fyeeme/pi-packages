@@ -156,6 +156,13 @@ describe("todo state: block and unblock", () => {
 		expect(phases[0].tasks[0]).toEqual({ content: "a1", status: "blocked", blocker: "refined" });
 	});
 
+	it("a bare re-block keeps the existing blocker note (never wipes it)", () => {
+		let phases = phasesWithTasks(["A", "a1"]);
+		({ phases } = applyParams(phases, { op: "block", task: "a1", reason: "waiting on CI" }));
+		({ phases } = applyParams(phases, { op: "block", task: "a1" })); // no reason — keep the note
+		expect(phases[0].tasks[0]).toEqual({ content: "a1", status: "blocked", blocker: "waiting on CI" });
+	});
+
 	it("unblock returns a blocked task to pending and clears the note", () => {
 		const phases: TodoPhase[] = [
 			{
