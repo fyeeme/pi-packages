@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The deprecated `heuristicallyPlan` heuristic planner and `src/planner.ts` (zero runtime callers; the classify keyword produced empty route tables — announced deprecated since 2.0). Public barrel, README §10, and its test describe are gone; outcome-collector tests moved to `test/outcomes.test.ts`.
+
 ### Changed
 
 - Dead-export cleanup: dropped the unused `getPiInvocation` re-export, the unused `AgentAbortMap`/`AgentCallId`/`AgentUsage` type re-exports and the unused `AbortReason` type from `src/agent/dispatch.ts`; removed the duplicate zero-reference `AgentAbortMap` from `src/types.ts` (the pi-subagents barrel remains the single source); `executeStep`/`SequenceOutcome` in `src/runner/stage-executor.ts` are module-private now. README: fixed the stale test count (194, not 108) and a stale `pi-subagent-core` package-name reference in a test header.

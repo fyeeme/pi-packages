@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { collect, filePathCollector, jsonCollector, urlCollector } from "../src/outcomes.ts";
-import { heuristicallyPlan } from "../src/planner.ts";
 
 describe("outcome collectors", () => {
 	it("urlCollector extracts http(s) URLs", () => {
@@ -30,37 +29,5 @@ describe("outcome collectors", () => {
 
 	it("collect honors a custom url pattern", () => {
 		expect(collect({ kind: "url", pattern: /ftp:\/\/[^\s]+/g }, "ftp://h/x and https://y")).toEqual(["ftp://h/x"]);
-	});
-});
-
-describe("heuristicallyPlan — keyword step-type sketch", () => {
-	it("compare → tournament", () => {
-		const wf = heuristicallyPlan("compare three sorting approaches");
-		expect(wf.steps[0].type).toBe("tournament");
-	});
-
-	it("review → adversarial", () => {
-		const wf = heuristicallyPlan("review this patch for correctness");
-		expect(wf.steps[0].type).toBe("adversarial");
-		const step = wf.steps[0] as unknown as { rubric: string[] };
-		expect(step.rubric.length).toBeGreaterThan(0);
-	});
-
-	it("classify → classify_route with empty routes (caller fills)", () => {
-		const wf = heuristicallyPlan("classify the ticket and route it");
-		expect(wf.steps[0].type).toBe("classify_route");
-		expect((wf.steps[0] as unknown as { routes: Record<string, unknown[]> }).routes).toEqual({});
-	});
-
-	it("default → single agent", () => {
-		const wf = heuristicallyPlan("summarize this article");
-		expect(wf.steps[0].type).toBe("agent");
-	});
-
-	it("produced workflow is runnable-shaped (valid StepDefinition union)", () => {
-		const wf = heuristicallyPlan("evaluate the design");
-		// exercises that the emitted shape matches the runner's input contract
-		expect(wf.name).toBe("heuristic");
-		expect(wf.steps).toHaveLength(1);
 	});
 });

@@ -9,7 +9,7 @@
 
 **Deterministic TypeScript workflow orchestration for [pi](https://github.com/earendil-works/pi-mono).**
 
-Define a workflow as a declarative list of typed steps, run it, and get resumable, budget-bounded, abortable execution. Fuses the pi-dynamic-workflows design (10 step primitives + heuristic planner + outcome collectors) with Claude Code's workflow-engine coordination mechanisms (deterministic sandbox, cache-key resume, per-agent abort, dynamic budget, runaway caps).
+Define a workflow as a declarative list of typed steps, run it, and get resumable, budget-bounded, abortable execution. Fuses the pi-dynamic-workflows design (10 step primitives + outcome collectors) with Claude Code's workflow-engine coordination mechanisms (deterministic sandbox, cache-key resume, per-agent abort, dynamic budget, runaway caps).
 
 Languages: **English** | [中文](README.zh-CN.md)
 
@@ -258,18 +258,7 @@ const paths = collect<string[]>({ kind: "file_path" }, agentText);
 
 `url` / `file_path` / `json` are pure functions of text — apply them on any `StepResult.results`.
 
-### 10. Heuristic planner
-
-A keyword sketch that turns a goal into a single-step workflow scaffold (compare → tournament, review → adversarial, classify → classify_route, else agent). A starting point to edit, not a real NL planner:
-
-```ts
-import { heuristicallyPlan } from "@fyeeme/pi-dynamic-workflows/src/index.ts";
-
-const wf = heuristicallyPlan("compare three sorting approaches", { judges: 3 });
-// wf.steps[0].type === "tournament"
-```
-
-### 11. Load a `.ts` workflow file
+### 10. Load a `.ts` workflow file
 
 ```ts
 import { loadWorkflowModule } from "@fyeeme/pi-dynamic-workflows/src/index.ts";
@@ -282,7 +271,7 @@ const wf = mod.workflow;
 
 The loader runs the deterministic AST guard **before** jiti-imports the file — a workflow body that calls `Date.now()` / `Math.random()` / `new Date()` is rejected at load time (those would destabilize cache keys). Note: the guard scans the entry file only; keep workflows single-file or guard imported helpers separately.
 
-### 12. Test without `pi`
+### 11. Test without `pi`
 
 Inject a fake dispatch — no binary, no provider, no tokens. This is exactly how the package's own 194 tests work:
 
@@ -359,7 +348,7 @@ is no longer passed through verbatim (0.1.0 behavior).
 `RunResult = { runId, status, steps: StepResult[], stats: StepStats, journalFile?, error?, errorCategory?, degradedSteps? }`.
 
 ### Also exported
-`defineWorkflow`, `loadWorkflowModule`, `collect` (+ `urlCollector`/`filePathCollector`/`jsonCollector`/`parseFirstJson`), `heuristicallyPlan`, `createSpawnRegistry`/`abortAgent`/`skipAgent`/`retryAgent` (from `sessions/spawn.ts`), and all step/result/context types.
+`defineWorkflow`, `loadWorkflowModule`, `collect` (+ `urlCollector`/`filePathCollector`/`jsonCollector`/`parseFirstJson`), `createSpawnRegistry`/`abortAgent`/`skipAgent`/`retryAgent` (from `sessions/spawn.ts`), and all step/result/context types.
 
 ---
 

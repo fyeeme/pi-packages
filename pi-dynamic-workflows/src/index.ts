@@ -2,7 +2,7 @@
  * Public API barrel for @fyeeme/pi-dynamic-workflows.
  *
  * Import the workflow engine from here:
- *   import { defineWorkflow, runWorkflow, collect, heuristicallyPlan } from "@fyeeme/pi-dynamic-workflows/src/index.ts";
+ *   import { defineWorkflow, runWorkflow, collect } from "@fyeeme/pi-dynamic-workflows/src/index.ts";
  */
 export * from "./types.ts";
 export { runWorkflow, type RunWorkflowOptions } from "./runner/index.ts";
@@ -17,7 +17,6 @@ export {
 	type OutputSpec,
 	type Collector,
 } from "./outcomes.ts";
-export { heuristicallyPlan, type HeuristicPlanOptions } from "./planner.ts";
 export {
 	WorkflowError,
 	isRetryable,
