@@ -56,8 +56,7 @@ export interface GoalToolDetails {
 }
 
 export type GoalRuntimeEvent =
-	| { type: "goal_updated"; goal: Goal | null; state?: GoalModeState }
-	| { type: "goal_continuation_requested"; prompt: string };
+	| { type: "goal_updated"; goal: Goal | null; state?: GoalModeState };
 
 export interface GoalTokenUsage {
 	input: number;
@@ -67,7 +66,6 @@ export interface GoalTokenUsage {
 }
 
 export type GoalBudgetSteering = "allowed" | "suppressed";
-export type GoalTerminalMetricEmission = "emit" | "suppress";
 
 // =============================================================================
 // Guards (session restore)

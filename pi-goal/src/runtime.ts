@@ -238,12 +238,6 @@ export class GoalRuntime {
 		}
 	}
 
-	clearAccounting(): void {
-		this.#turnSnapshot = undefined;
-		this.#clearActiveAccounting();
-		this.#budgetReportedFor = undefined;
-	}
-
 	onTurnStart(turnId: string, baselineUsage: GoalTokenUsage): void {
 		this.#turnSnapshot = { turnId, baselineUsage: { ...baselineUsage } };
 		const state = this.#host.getState();

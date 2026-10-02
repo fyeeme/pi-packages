@@ -7,7 +7,7 @@ Source: [oh-my-pi](https://github.com/can1357/oh-my-pi) (a fork of badlogic/pi-m
 ## What it does
 
 - **`goal` tool** — `create` / `get` / `complete` / `resume` / `impossible` / `drop`. Creating a goal enables goal mode; completing it requires verified evidence of every deliverable (see the evaluator gate below); the runtime refuses double-completes.
-- **Independent evaluator gate (CC 2.1.261 absorption)** — `goal({op:"complete", evidence})` passes the agent's per-deliverable audit to a fresh `pi -p` subprocess that re-verifies the repository itself (it can run the tests — grounded, unlike CC's transcript-only evaluator). Its JSON contract defaults to *insufficient evidence = not met*. A refuted claim keeps the goal active and returns the evaluator's findings; the tool result tells the model to fix the gaps and re-claim with stronger evidence. If the evaluator subprocess cannot run (spawn failure, timeout ≈ 5 min, unparseable output), completion falls back to the omp self-audit behavior, honestly labeled in the result.
+- **Independent evaluator gate (CC 2.1.261 absorption)** — `goal({op:"complete", evidence})` passes the agent's per-deliverable audit to a fresh `pi -p` subprocess that re-verifies the repository itself (it can run the tests — grounded, unlike CC's transcript-only evaluator). Its JSON contract defaults to *insufficient evidence = not met*. A refuted claim keeps the goal active and returns the evaluator's findings; the tool result tells the model to fix the gaps and re-claim with stronger evidence. If the evaluator subprocess cannot run (spawn failure, timeout ≈ 10 min, unparseable output), completion falls back to the omp self-audit behavior, honestly labeled in the result.
 - **`impossible` channel (CC 2.1.261 absorption)** — when the agent believes the goal genuinely cannot be achieved this session, `goal({op:"impossible", reason})` sends the claim to the evaluator, which independently confirms or refutes it ("the claim is evidence, not proof"). Confirmed → the goal pauses (`reason: impossible-confirmed`) and the model must report honestly to the user. Refuted → keep working; after 2 unconfirmed disputes the goal pauses for a human decision (`reason: impossible-disputed`). An unadjudicated claim (evaluator unavailable) changes nothing.
 - **Autonomous continuation** — when the agent yields while the goal is still active, pi-goal re-submits a hidden continuation prompt that restates the objective and the verification checklist, so work continues across turns without user nudges. A continuation turn that produced no tool calls suppresses the next one (no infinite idle loops); a real user message re-arms the loop. While a blocking dialog is open (`/goal` menus, confirmations, or any extension's `ask_user`), continuations are withheld via `ui_prompt_start`/`ui_prompt_end` and resume when the dialog closes.
 - **Budget accounting** — optional `token_budget` per goal. pi-goal counts input + output + cache writes (cache reads are reused prefix, not new work) plus wall-clock seconds. Crossing the budget flips the goal to `budget-limited` and steers the agent once with a wrap-up instruction. Budget exhaustion is explicitly *not* completion.
@@ -50,7 +50,7 @@ Every transition writes a full snapshot entry (`goal-state`, `goal-cleared`, `go
 
 ```bash
 npm install --ignore-scripts
-npm test        # vitest, 118 tests
+npm test        # vitest, 160 tests
 npm run typecheck
 ```
 

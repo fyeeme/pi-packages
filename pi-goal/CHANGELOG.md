@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Removed
+
+- Dead symbols: the never-emitted `goal_continuation_requested` variant of `GoalRuntimeEvent`, the zero-reference `GoalTerminalMetricEmission` type, and the never-called `GoalRuntime.clearAccounting()` method (internal cleanup uses the private `#clearActiveAccounting`).
+
+### Fixed
+
+- README drift: evaluator timeout is 10 min (not ≈ 5), suite size is 160 tests (not 118); package description now lists the `impossible` op.
+
 ## [1.0.5] - 2026-10-02
 
 ### Changed
