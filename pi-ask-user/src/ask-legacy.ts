@@ -108,7 +108,7 @@ function composeSignals(a: AbortSignal | undefined, b: AbortSignal | undefined):
 
 /** omp utils untilAborted: resolve `undefined` when the signal fires first,
  *  otherwise pass the wrapped promise's outcome through untouched. */
-function untilAborted<T>(signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T | undefined> {
+export function untilAborted<T>(signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T | undefined> {
 	if (!signal) return run();
 	if (signal.aborted) return Promise.resolve(undefined);
 	return new Promise<T | undefined>((resolve, reject) => {

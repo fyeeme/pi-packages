@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Single source of truth for shared ask plumbing: `index.ts` now uses `untilAborted` from `src/ask-legacy.ts` instead of its own byte-identical `raceWithSignal`; `src/ask-dialog.ts` imports `OTHER_OPTION` and `stripRecommendedSuffix` from `src/ask-legacy.ts` instead of redefining them.
+
 ### Removed
 
 - Dead exports: `matchesKey`/`Key` re-export from `src/compat.ts` (importers use pi-tui directly), `formatKeyHints`, `RECOMMENDED_SUFFIX`, and the `SelectionResult` type are module-private now (zero external importers). Dropped a duplicated file-header comment block in `src/types.ts` and a ghost `note: undefined` field from a legacy-path test assertion (the note subsystem was removed in 2.0.1).

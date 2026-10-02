@@ -42,6 +42,7 @@ import {
 	clipIndicator,
 } from "./compat.ts";
 import { CountdownTimer, type TuiRenderHandle } from "./countdown-timer.ts";
+import { OTHER_OPTION, stripRecommendedSuffix } from "./ask-legacy.ts";
 import { bottomBorder, divider, fit, row, topBorder } from "./overlay-box.ts";import type {
 	ExtensionAskDialogOption,
 	ExtensionAskDialogQuestion,
@@ -49,7 +50,6 @@ import { bottomBorder, divider, fit, row, topBorder } from "./overlay-box.ts";im
 	ExtensionAskDialogSubmitResult,
 } from "./types.ts";
 
-const OTHER_OPTION = "Other (type your own)";
 const SUBMIT_OPTION = "Submit";
 
 /** Fraction of the terminal the dialog may occupy. The box height is fixed
@@ -126,10 +126,6 @@ interface EmbeddedPrompt {
 	state: QuestionState;
 }
 
-function stripRecommendedSuffix(label: string): string {
-	const suffix = " (Recommended)";
-	return label.endsWith(suffix) ? label.slice(0, -suffix.length) : label;
-}
 
 function questionTabLabel(question: ExtensionAskDialogQuestion, index: number): string {
 	const base = question.header?.trim() || question.id || `Q${index + 1}`;

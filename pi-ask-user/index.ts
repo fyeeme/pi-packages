@@ -57,6 +57,7 @@ import {
 	type NavigationControls,
 	type UIContext,
 	uiContextFromExtension,
+	untilAborted,
 } from "./src/ask-legacy.ts";
 import { replaceTabs } from "./src/compat.ts";
 import type {
@@ -293,7 +294,7 @@ export default function ompAskExtension(pi: ExtensionAPI): void {
 							);
 							return dialog;
 						});
-					richResult = signal ? await raceWithSignal(signal, showRichDialog) : await showRichDialog();
+					richResult = await untilAborted(signal, showRichDialog);
 				} catch (error) {
 					if (error instanceof Error && error.name === "AbortError") {
 						ctx.abort();
@@ -558,31 +559,3 @@ export default function ompAskExtension(pi: ExtensionAPI): void {
 
 /** Resolve `undefined` when the signal aborts before the dialog settles;
  *  rejections propagate untouched (omp untilAborted semantics). */
-function raceWithSignal<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T | undefined> {
-	if (signal.aborted) return Promise.resolve(undefined);
-	return new Promise<T | undefined>((resolve, reject) => {
-		let settled = false;
-		const onAbort = (): void => {
-			if (settled) return;
-			settled = true;
-			resolve(undefined);
-		};
-		signal.addEventListener("abort", onAbort, { once: true });
-		run().then(
-			value => {
-				if (settled) return;
-				settled = true;
-				signal.removeEventListener("abort", onAbort);
-				resolve(value);
-			},
-			error => {
-				if (settled) return;
-				settled = true;
-				signal.removeEventListener("abort", onAbort);
-				// Propagate like omp's untilAborted: real host failures must not
-				// surface as a phantom "user cancelled" outcome.
-				reject(error);
-			},
-		);
-	});
-}
