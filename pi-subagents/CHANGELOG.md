@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Security**: headless runs (`pi -p`, no UI) now fail closed on project-local agents — previously they loaded repo-controlled agents with no gate at all (README pitfall #5). The blocked result names both opt-outs: `{"confirmProjectAgents": false}` in `.pi/pi-subagent.json`, or `PI_SUBAGENTS_ALLOW_PROJECT_AGENTS=1` for the run. Interactive confirmation and nested fan-out (children never register the tool) are unchanged.
 - The `subagent` tool now validates the call shape (mode conflicts, the 16-task parallel cap) before the interactive project-agent trust gate, so doomed calls fail fast instead of prompting first.
 
 - Dead code: the pi-subagent-core-era sibling-module re-export block in `src/dispatch.ts` (monitor, settings, and text-extraction symbols — all already exported from `index.ts` via their home modules, with zero deep-import consumers) and two unused imports in `src/tools/subagent.ts` (`NO_OUTPUT_PLACEHOLDER`, `classifyFailure`). No public API change: the package barrel (`index.ts`) still exports every documented symbol.

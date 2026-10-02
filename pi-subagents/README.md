@@ -51,7 +51,7 @@ model: claude-haiku-4-5        # optional; bundled agents omit it (session defau
 System prompt for the agent goes here.
 ```
 
-Locations (later wins on name collision): bundled `<pkg>/agents/`, user `~/.pi/agent/agents/`, project `.pi/agents/` (repo-controlled — interactive sessions ask for confirmation before running project agents unless `confirmProjectAgents: false`; headless runs cannot prompt and proceed without asking).
+Locations (later wins on name collision): bundled `<pkg>/agents/`, user `~/.pi/agent/agents/`, project `.pi/agents/` (repo-controlled — interactive sessions ask for confirmation before running project agents unless `confirmProjectAgents: false`; headless runs cannot prompt and fail closed with an actionable message unless opted out via settings or `PI_SUBAGENTS_ALLOW_PROJECT_AGENTS=1`).
 
 ## Security model
 
@@ -161,7 +161,11 @@ runs (see pitfalls below).
 4. Legacy keys (`widget`, `fleetView`) warn on every settings load, and
    settings are re-read per fan-out — a stale file warns repeatedly.
 5. `confirmProjectAgents` prompts only in interactive sessions; headless
-   `pi -p` runs load project agents with no gate at all.
+   `pi -p` runs fail closed (blocked with the two opt-outs named in the
+   result) unless `confirmProjectAgents: false` is set in
+   `.pi/pi-subagent.json` or `PI_SUBAGENTS_ALLOW_PROJECT_AGENTS=1` is exported
+   for the run. Nested fan-out is unaffected — spawned children never
+   register the `subagent` tool.
 
 ### Migration from 2.0
 

@@ -576,6 +576,74 @@ describe("spec anchors: ids, wire schema, trust gate, frontmatter schema", () =>
 		}
 	});
 
+	it("headless runs fail closed on project agents: no spawn, actionable message", async () => {
+		const dir = mkdtempSync(join(td(), "pi-sa-headless-"));
+		mkdirSync(join(dir, ".pi", "agents"), { recursive: true });
+		writeFileSync(
+			join(dir, ".pi", "agents", "pa.md"),
+			"---\nname: pa\ndescription: project agent\n---\nbody\n",
+		);
+		const hadEnv = "PI_SUBAGENTS_ALLOW_PROJECT_AGENTS" in process.env;
+		const prevEnv = process.env.PI_SUBAGENTS_ALLOW_PROJECT_AGENTS;
+		delete process.env.PI_SUBAGENTS_ALLOW_PROJECT_AGENTS;
+		try {
+			// No hasUI: headless (`pi -p`) shape.
+			const ctx = { cwd: dir } as never;
+		const blocked = await subagentTool.execute!(
+				"call-1",
+				{ agent: "pa", task: "t" } as never,
+				new AbortController().signal,
+				undefined,
+				ctx,
+			);
+			const text = blocked.content[0];
+			expect(text.type === "text" && text.text).toContain("Blocked: project-local agents");
+			expect(text.type === "text" && text.text).toContain("PI_SUBAGENTS_ALLOW_PROJECT_AGENTS=1");
+			expect(spawnMock).not.toHaveBeenCalled();
+
+			// Per-run env override reopens the gate and spawns.
+			process.env.PI_SUBAGENTS_ALLOW_PROJECT_AGENTS = "1";
+			spawnMock.mockImplementation(() => procWithFinalText("<result>ok</result>"));
+			const allowed = await subagentTool.execute!(
+				"call-2",
+				{ agent: "pa", task: "t" } as never,
+				new AbortController().signal,
+				undefined,
+				ctx,
+			);
+			expect(spawnMock).toHaveBeenCalled();
+			expect(allowed.isError).toBeFalsy();
+		} finally {
+			if (hadEnv) process.env.PI_SUBAGENTS_ALLOW_PROJECT_AGENTS = prevEnv;
+			else delete process.env.PI_SUBAGENTS_ALLOW_PROJECT_AGENTS;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("headless runs spawn project agents when the settings file opts out", async () => {
+		const dir = mkdtempSync(join(td(), "pi-sa-headless-opt-"));
+		mkdirSync(join(dir, ".pi", "agents"), { recursive: true });
+		writeFileSync(
+			join(dir, ".pi", "agents", "pa.md"),
+			"---\nname: pa\ndescription: project agent\n---\nbody\n",
+		);
+		writeFileSync(join(dir, ".pi", "pi-subagent.json"), JSON.stringify({ confirmProjectAgents: false }));
+		try {
+			spawnMock.mockImplementation(() => procWithFinalText("<result>ok</result>"));
+			const allowed = await subagentTool.execute!(
+				"call-1",
+				{ agent: "pa", task: "t" } as never,
+				new AbortController().signal,
+				undefined,
+			{ cwd: dir } as never,
+			);
+			expect(spawnMock).toHaveBeenCalled();
+			expect(allowed.isError).toBeFalsy();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("confirmation can be disabled only via the settings file, never the wire", async () => {
 		const dir = mkdtempSync(join(td(), "pi-sa-nogate-"));
 		mkdirSync(join(dir, ".pi", "agents"), { recursive: true });

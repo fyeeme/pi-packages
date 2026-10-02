@@ -808,36 +808,53 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 		if (hasTasks && params.tasks!.length > MAX_PARALLEL_TASKS)
 			throw new Error(`Too many parallel tasks (${params.tasks!.length}). Max is ${MAX_PARALLEL_TASKS}.`);
 
-		// Project-agent trust gate — settings-driven ONLY (the wire schema has
-		// no policy parameters): interactive sessions confirm repo-controlled
-		// agents before any subprocess spawns; headless runs cannot prompt.
-		if (ctx.hasUI && loadCoreSettings(ctx.cwd).confirmProjectAgents !== false) {
-			const requestedAgentNames = new Set<string>();
-			if (params.tasks) for (const t of params.tasks) requestedAgentNames.add(t.agent);
-			if (params.agent) requestedAgentNames.add(params.agent);
+		// Project-agent trust gate — settings/env-driven ONLY (the wire schema has
+		// no policy parameters). Interactive sessions confirm repo-controlled
+		// agents before any subprocess spawns; headless runs (`pi -p`) cannot
+		// prompt, so they fail closed unless explicitly opted out via
+		// {"confirmProjectAgents": false} in .pi/pi-subagent.json or the per-run
+		// PI_SUBAGENTS_ALLOW_PROJECT_AGENTS=1 override.
+		const requestedAgentNames = new Set<string>();
+		if (params.tasks) for (const t of params.tasks) requestedAgentNames.add(t.agent);
+		if (params.agent) requestedAgentNames.add(params.agent);
+		const projectAgentsRequested = Array.from(requestedAgentNames)
+			.map((name) => agents.find((a) => a.name === name))
+			.filter((a): a is AgentConfig => a?.source === "project");
+		const gateArmed =
+			projectAgentsRequested.length > 0 &&
+			loadCoreSettings(ctx.cwd).confirmProjectAgents !== false &&
+			process.env.PI_SUBAGENTS_ALLOW_PROJECT_AGENTS !== "1";
 
-			const projectAgentsRequested = Array.from(requestedAgentNames)
-				.map((name) => agents.find((a) => a.name === name))
-				.filter((a): a is AgentConfig => a?.source === "project");
-
-			if (projectAgentsRequested.length > 0) {
-				const names = projectAgentsRequested.map((a) => a.name).join(", ");
-				const dir = discovery.projectAgentsDir ?? "(unknown)";
-				const ok = await ctx.ui.confirm(
-					"Run project-local agents?",
-					`Agents: ${names}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
-				);
-				if (!ok) {
-					// The gate fires before mode branching; derive the call shape from
-					// the params so a declined parallel fan-out is not reported as single.
-					const mode = hasTasks ? "parallel" : "single";
-					return {
-						content: [{ type: "text", text: "Canceled: project-local agents not approved." }],
-						details: makeDetails(mode)([]),
-						structuredContent: buildEnvelope(mode, []),
-					};
-				}
+		if (gateArmed && ctx.hasUI) {
+			const names = projectAgentsRequested.map((a) => a.name).join(", ");
+			const dir = discovery.projectAgentsDir ?? "(unknown)";
+			const ok = await ctx.ui.confirm(
+				"Run project-local agents?",
+				`Agents: ${names}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
+			);
+			if (!ok) {
+				// The gate fires before mode branching; derive the call shape from
+				// the params so a declined parallel fan-out is not reported as single.
+				const mode = hasTasks ? "parallel" : "single";
+				return {
+					content: [{ type: "text", text: "Canceled: project-local agents not approved." }],
+					details: makeDetails(mode)([]),
+					structuredContent: buildEnvelope(mode, []),
+				};
 			}
+		} else if (gateArmed) {
+			// Headless: fail closed instead of silently loading repo-controlled agents.
+			const mode = hasTasks ? "parallel" : "single";
+			return {
+					content: [
+						{
+							type: "text",
+							text: "Blocked: project-local agents are not trusted in headless runs. Allow them via {\"confirmProjectAgents\": false} in .pi/pi-subagent.json, or set PI_SUBAGENTS_ALLOW_PROJECT_AGENTS=1 for this run.",
+						},
+					],
+				details: makeDetails(mode)([]),
+				structuredContent: buildEnvelope(mode, []),
+			};
 		}
 
 		if (params.tasks && params.tasks.length > 0) {
