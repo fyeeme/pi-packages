@@ -150,18 +150,45 @@ export function quoteBareLabels(code: string): { code: string; fixes: string[] }
 const EMOJI_RE_SRC = "[\\\\p{Emoji_Presentation}\\\\p{Extended_Pictographic}\\\\u{FE0F}\\\\u{200D}]";
 
 // ============================================================================
-// System theme detection (macOS only)
+// System theme detection (macOS / Linux GNOME / Windows)
 // ============================================================================
+
+export function parseGnomeColorScheme(out: string): "dark" | "light" {
+  return out.includes("prefer-dark") ? "dark" : "light";
+}
+
+export function parseWindowsLightTheme(out: string): "dark" | "light" {
+  // "AppsUseLightTheme    REG_DWORD    0x1" → light; 0x0 → dark; missing → light.
+  const m = out.match(/AppsUseLightTheme\s+REG_DWORD\s+0x(\d)/i);
+  return m && m[1] === "0" ? "dark" : "light";
+}
 
 function detectSystemTheme(): "dark" | "light" {
   try {
-    const out = execSync("defaults read -g AppleInterfaceStyle 2>/dev/null")
-      .toString()
-      .trim();
-    return out === "Dark" ? "dark" : "light";
+    if (process.platform === "darwin") {
+      const out = execSync("defaults read -g AppleInterfaceStyle 2>/dev/null")
+        .toString()
+        .trim();
+      return out === "Dark" ? "dark" : "light";
+    }
+    if (process.platform === "linux") {
+      const out = execSync(
+        "gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null",
+      )
+        .toString()
+        .trim();
+      return parseGnomeColorScheme(out);
+    }
+    if (process.platform === "win32") {
+      const out = execSync(
+        'reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize" /v AppsUseLightTheme 2> nul',
+      ).toString();
+      return parseWindowsLightTheme(out);
+    }
   } catch {
-    return "light";
+    /* unknown → light */
   }
+  return "light";
 }
 
 // ============================================================================
@@ -328,7 +355,10 @@ body{font-family:-apple-system,sans-serif;color:#c9d1d9;padding:0;transition:bac
   </div>
 </div>
 <script type="module">
-const DIAGRAMS = ${JSON.stringify(diagrams)};
+const DIAGRAMS = ${JSON.stringify(diagrams)
+  .replace(/</g, "\\u003c")
+  .replace(/\u2028/g, "\\u2028")
+  .replace(/\u2029/g, "\\u2029")};
 const INIT_BG = "${theme}";
 
 let zoomLevel = 100;
@@ -740,7 +770,9 @@ export default function (pi: ExtensionAPI): void {
 
       const theme = detectSystemTheme();
       const html = renderHtml(diagrams, theme);
-      const path = join(tmpdir(), `mermaid-${Date.now()}.html`);
+      // Per-process fixed name: each run overwrites the previous preview
+      // instead of accumulating timestamped files in tmpdir.
+      const path = join(tmpdir(), `pi-mermaid-preview-${process.pid}.html`);
 
       writeFileSync(path, html, "utf-8");
       openInBrowser(path, ctx);

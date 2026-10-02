@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- **Script-tag escape**: the serialized `DIAGRAMS` payload now escapes `<` (plus U+2028/2029) — a diagram whose source contains `</script>` can no longer terminate the page's module script and break the whole preview.
+- **Tmp accumulation**: `/mermaid` writes to a per-process fixed path (`pi-mermaid-preview-<pid>.html`, overwritten each run) instead of leaving a timestamped file behind on every invocation.
+- **Cross-platform theme detection**: Linux (GNOME `gsettings color-scheme`) and Windows (`AppsUseLightTheme` registry) now detect dark mode; previously only macOS was probed and everything else fell back to light.
 - Doc drift: PNG export renders at 3x (scale = 3), not 2x — README and a test title said 2x.
 
 ## [1.0.2] - 2026-10-02

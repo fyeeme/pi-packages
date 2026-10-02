@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { quoteBareLabels, renderHtml, extractMermaidBlocks, labelBlocks } from "../index.ts";
+import { quoteBareLabels, renderHtml, extractMermaidBlocks, labelBlocks, parseGnomeColorScheme, parseWindowsLightTheme } from "../index.ts";
 import type { DiagramData, MermaidBlock } from "../index.ts";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { execFileSync } from "node:child_process";
@@ -1001,5 +1001,36 @@ describe("renderHtml: generated <script> is valid browser JS", () => {
 		const m = html.match(/\.dl-split\{([^}]*)\}/);
 		expect(m, ".dl-split rule not found").toBeTruthy();
 		expect(m![1]).not.toMatch(/overflow:\s*hidden/);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Script-tag escape + cross-platform theme parsing
+// ---------------------------------------------------------------------------
+
+describe("renderHtml: DIAGRAMS payload escapes script-tag terminators", () => {
+	it("a diagram containing </script> cannot terminate the module script early", () => {
+		const html = renderHtml([{ code: "flowchart TD\nA-->B\nclick A callback '</script><img src=x>'", label: "t" }], "dark");
+		// The raw terminator must never appear inside the serialized payload...
+		const payload = html.slice(html.indexOf("const DIAGRAMS = "), html.indexOf("const INIT_BG"));
+		expect(payload).not.toContain("</script>");
+		// ...and must survive as an escaped sequence the browser parses back to text.
+		expect(payload).toContain("\\u003c/script>");
+		// The page still closes exactly one module script after the payload.
+		expect(html.match(/<\/script>/g)?.length).toBe(html.match(/<script/g)?.length);
+	});
+});
+
+describe("cross-platform theme parsing", () => {
+	it("parseGnomeColorScheme: prefer-dark → dark, anything else → light", () => {
+		expect(parseGnomeColorScheme("'prefer-dark'\n")).toBe("dark");
+		expect(parseGnomeColorScheme("'prefer-contrast'\n")).toBe("light");
+		expect(parseGnomeColorScheme("")).toBe("light");
+	});
+
+	it("parseWindowsLightTheme: AppsUseLightTheme 0x0 → dark, 0x1/missing → light", () => {
+		expect(parseWindowsLightTheme("AppsUseLightTheme    REG_DWORD    0x0")).toBe("dark");
+		expect(parseWindowsLightTheme("AppsUseLightTheme    REG_DWORD    0x1")).toBe("light");
+		expect(parseWindowsLightTheme("ERROR: The system was unable to find the specified registry key.")).toBe("light");
 	});
 });
