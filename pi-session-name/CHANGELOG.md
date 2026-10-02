@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Public surface narrowed to the documented API: the implementation moved to `src/core.ts` and `index.ts` now re-exports only README's seven utilities, the types their signatures reference (`PromptStyle`, `SessionEntry`, `TitleRequest`, `SessionNameConfig`), and the default extension factory. Previously every internal helper (20+ symbols) rode the package entry. Verified against the npm registry: the package has no dependents outside this repo. `files` now ships `src/`.
+
 ### Fixed
 
 - README drift: default mode is `follow` (not `first`); removed the config example's `model` field (the 1.0.5 model override removal); prerequisites now state pi >= 0.99.0 (classifier APIs); a test title now names the real config path (`.pi/agent/session-name.json`).

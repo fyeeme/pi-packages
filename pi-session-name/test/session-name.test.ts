@@ -19,7 +19,7 @@ import {
 	classifyKeep,
 	generateTitle,
 	type SessionEntry,
-} from "../index.ts";
+} from "../src/core.ts";
 
 // ---------------------------------------------------------------------------
 // buildTitleMessages — human-only selection with window + budgets
@@ -437,7 +437,7 @@ const completeSequence = (...texts: string[]) => {
 const branch = (texts: string[]) =>
 	texts.map((t, i) => ({ type: "message", message: { role: i % 2 === 0 ? "user" : "assistant", content: t } })) as any;
 
-import { default as setup } from "../index.ts";
+import { sessionNameExtension as setup } from "../src/core.ts";
 
 const CREATION_PREFIX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} - /;
 const stripPrefix = (s: string): string => s.replace(CREATION_PREFIX, "");
