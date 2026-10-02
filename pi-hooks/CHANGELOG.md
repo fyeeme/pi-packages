@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Comment drift: invalid matchers are documented as "matches nothing (warned)" — the old header claimed a literal fallback that the implementation never had; the tool_call wiring note now states groups are filtered by matcher before running.
+
 ## [1.0.7] - 2026-10-02
 
 ### Changed

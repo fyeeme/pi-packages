@@ -22,7 +22,7 @@
  *
  * Compatibility notes (vs Claude Code hooks protocol):
  *   - matchers are **regex** (CC semantics): "" / "*" match all; `Edit|Write`
- *     alternation and `Notebook.*` work. Invalid regex falls back to literal.
+ *     alternation and `Notebook.*` work. Invalid regex matches nothing (warned once).
  *   - PreToolUse `permissionDecision: "deny"` and exit code 2 block the tool
  *     via pi's `{ block: true, reason, terminate: true }`. The tool is always
  *     blocked; `terminate` additionally tries to skip the automatic follow-up
@@ -600,7 +600,8 @@ export default function (pi: ExtensionAPI): void {
 	// tool_call: PreToolUse hooks. Honors deny (permissionDecision/exit 2) by
 	// returning { block: true, reason, terminate: true } (terminate skips the
 	// automatic follow-up LLM call; requires pi >= 0.84.1). additionalContext is
-	// queued for the next context event. All matching groups run, regardless of matcher.
+	// queued for the next context event. Every group whose matcher hits the tool
+	// name runs (parallel, capped at MAX_CONCURRENT).
 	// -------------------------------------------------------------------------
 	pi.on("tool_call", async (event, ctx) => {
 		const cfg = getConfig(ctx.cwd);
