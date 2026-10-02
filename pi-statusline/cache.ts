@@ -21,10 +21,6 @@ export function resetUsageCache(): void {
 	refreshGeneration += 1;
 }
 
-export function getUsageCache(): CacheEntry | null {
-	return usageCache;
-}
-
 export async function refreshUsage(
 	providers: ProviderRegistry,
 	modelRegistry: ExtensionContext["modelRegistry"],

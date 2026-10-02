@@ -50,7 +50,7 @@ DeepSeek now bills in two periods — **peak hours are 9:00-12:00 and 14:00-18:0
 | Segment | Example | Source |
 |---------|---------|--------|
 | Balance | `¥0.12/50.00` | `GET /user/balance` (cached 5 min) |
-| Weekly tokens | `7d:1.2M` | Local session file scan (rolling 7 days) |
+| Weekly tokens | `7d:1.2M` | Local session file scan (current natural week, Monday 00:00 local) |
 
 - Currency auto-detected as `¥` (CNY) from the balance API response
 - Balance is fetched on startup and refreshed in the background; cached for 5 minutes

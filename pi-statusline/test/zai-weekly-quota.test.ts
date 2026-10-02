@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fmt, formatCountdown } from "../footer.ts";
 import { ZaiUsageProvider } from "../providers/zai.ts";
 import type { ProviderUsageResult, ZaiResult } from "../types.ts";
 
@@ -305,54 +304,5 @@ describe("ZaiUsageProvider", () => {
 			};
 			expect(provider.formatForFooter(result, 0, "$")).toBe("");
 		});
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Pure function tests
-// ---------------------------------------------------------------------------
-
-describe("formatCountdown", () => {
-	it("returns '?' for zero resetAt", () => {
-		expect(formatCountdown(0)).toBe("?");
-	});
-
-	it("returns '0m' for past resetAt", () => {
-		expect(formatCountdown(Date.now() - 1000)).toBe("0m");
-	});
-
-	it("returns minutes only for < 1 hour", () => {
-		const resetAt = Date.now() + 30 * 60 * 1000;
-		expect(formatCountdown(resetAt)).toBe("30m");
-	});
-
-	it("returns hours and minutes for >= 1 hour", () => {
-		const resetAt = Date.now() + 150 * 60 * 1000;
-		expect(formatCountdown(resetAt)).toBe("2h30m");
-	});
-});
-
-describe("fmt", () => {
-	it("formats small numbers as-is", () => {
-		expect(fmt(0)).toBe("0");
-		expect(fmt(999)).toBe("999");
-	});
-
-	it("formats 1k–10k with one decimal", () => {
-		expect(fmt(1500)).toBe("1.5k");
-		expect(fmt(9999)).toBe("10.0k");
-	});
-
-	it("formats 10k–1M as rounded k", () => {
-		expect(fmt(42000)).toBe("42k");
-		expect(fmt(500000)).toBe("500k");
-	});
-
-	it("formats 1M–10M with one decimal", () => {
-		expect(fmt(1500000)).toBe("1.5M");
-	});
-
-	it("formats >= 10M as rounded M", () => {
-		expect(fmt(15000000)).toBe("15M");
 	});
 });

@@ -21,7 +21,7 @@ import type { Model, Api } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { PricedUsage, PricingStrategy } from "./types.ts";
 
-export interface DeepSeekPricedUsage extends PricedUsage {}
+interface DeepSeekPricedUsage extends PricedUsage {}
 
 export interface DeepSeekCnyPrice {
 	/** 高峰时段单价（元 / 百万 tokens） */

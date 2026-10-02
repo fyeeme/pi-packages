@@ -62,8 +62,6 @@ export function formatCwd(cwd: string): string {
 	return rel === "" ? "~" : `~${sep}${rel}`;
 }
 
-export { truncateToWidth, visibleWidth };
-
 // ---------------------------------------------------------------------------
 // Footer line builders
 // ---------------------------------------------------------------------------

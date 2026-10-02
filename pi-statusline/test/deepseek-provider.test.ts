@@ -17,7 +17,7 @@ vi.mock("../session-scanner.ts", () => ({
 function mockModelRegistry(apiKey: string | null) {
 	return {
 		getApiKeyForProvider: vi.fn(async () => apiKey),
-		// applyDeepSeekPricingPatch() calls getAll() during fetchUsage; return an
+		// The pricing strategy patch path runs during fetchUsage; return an
 		// empty catalog so the patch no-ops instead of throwing on undefined.
 		getAll: vi.fn(() => [] as any[]),
 	} as any;
