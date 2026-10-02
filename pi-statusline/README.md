@@ -38,8 +38,8 @@ DeepSeek now bills in two periods — **peak hours are 9:00-12:00 and 14:00-18:0
 - **Peak/off-peak indicator** — the footer appends the current period so you always know which rate is in effect: `peak` during weekday 9:00-12:00 / 14:00-18:00 Beijing time, `off-peak` otherwise (including all day on weekends since 2026-08-23):
 
   ```
-  ¥0.12/50.00 · 7d:1.2M · off-peak
-  ¥0.12/50.00 · 7d:1.2M · peak
+  ¥0.12/50.00 · wk:1.2M · off-peak
+  ¥0.12/50.00 · wk:1.2M · peak
   ```
 
 - **Registry pricing patch** — for CNY-billed accounts the model registry cost is aligned to the current period at runtime (and re-aligned automatically when the period flips), so pi's recorded `usage.cost` tracks the period too.
@@ -50,7 +50,7 @@ DeepSeek now bills in two periods — **peak hours are 9:00-12:00 and 14:00-18:0
 | Segment | Example | Source |
 |---------|---------|--------|
 | Balance | `¥0.12/50.00` | `GET /user/balance` (cached 5 min) |
-| Weekly tokens | `7d:1.2M` | Local session file scan (current natural week, Monday 00:00 local) |
+| Weekly tokens | `wk:1.2M` | Local session file scan (current natural week, Monday 00:00 local) |
 
 - Currency auto-detected as `¥` (CNY) from the balance API response
 - Balance is fetched on startup and refreshed in the background; cached for 5 minutes
@@ -121,7 +121,7 @@ See the Pi Packages guide on [pi.dev](https://pi.dev) for the full list of sourc
 
 ```
 ~/projects/my-repo (main)                    deepseek-v4-pro · xhigh
-tokens 78.9%(↑12k ↓8k R45k) · ¥0.12/50.00 · 7d:1.2M · off-peak · Ctx 45.2%/64k · 2m30s 38.2tok/s
+tokens 78.9%(↑12k ↓8k R45k) · ¥0.12/50.00 · wk:1.2M · off-peak · Ctx 45.2%/64k · 2m30s 38.2tok/s
 ```
 
 **Line 1**: cwd + git branch (left) | model + thinking level (right)

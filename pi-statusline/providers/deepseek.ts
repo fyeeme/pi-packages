@@ -64,7 +64,7 @@ export class DeepSeekUsageProvider implements UsageProvider {
 		if (result.provider !== "deepseek") return "";
 		const ds = result as DeepSeekResult;
 		const balance = `${ds.currency === "CNY" ? "¥" : "$"}${ds.totalBalance}`;
-		const weekly = ds.weeklyTokens > 0 ? `7d:${fmt(ds.weeklyTokens)}` : "";
+		const weekly = ds.weeklyTokens > 0 ? `wk:${fmt(ds.weeklyTokens)}` : "";
 		const parts: string[] = [];
 
 		if (sessionCost > 0) {

@@ -291,7 +291,7 @@ describe("DeepSeekUsageProvider", () => {
 			};
 
 			const out = provider.formatForFooter(result, 0, "$");
-			expect(out).toBe("¥100.00 · 7d:42k · off-peak");
+			expect(out).toBe("¥100.00 · wk:42k · off-peak");
 		});
 
 		it("shows session cost, balance, and weekly tokens together", () => {
@@ -303,7 +303,7 @@ describe("DeepSeekUsageProvider", () => {
 			};
 
 			const out = provider.formatForFooter(result, 0.05, "¥");
-			expect(out).toBe("¥0.05/¥100.00 · 7d:42k · off-peak");
+			expect(out).toBe("¥0.05/¥100.00 · wk:42k · off-peak");
 		});
 
 		it("labels current peak period with peak when billed in peak hours", () => {

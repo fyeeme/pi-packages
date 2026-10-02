@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The DeepSeek weekly-token footer segment is labeled `wk:` (matching ZAI), not `7d:` — the scan has always been the current natural week (Monday 00:00 local), never a rolling 7-day window.
+
 ### Removed
 
 - Dead exports and duplicate tests: `getUsageCache()` (zero callers), the `truncateToWidth`/`visibleWidth` re-export from `footer.ts` (importers use pi-tui directly), and the `DeepSeekPricedUsage` export keyword; dropped the `formatCountdown`/`fmt` describe blocks duplicated from `footer.test.ts` at the end of `zai-weekly-quota.test.ts`.

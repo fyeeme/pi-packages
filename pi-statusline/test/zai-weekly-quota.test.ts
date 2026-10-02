@@ -272,7 +272,7 @@ describe("ZaiUsageProvider", () => {
 			const out = provider.formatForFooter(result, 0, "$");
 			expect(out).toMatch(/5h 0%\(0,\d+h\d+m\)/);
 			expect(out).toContain("wk 42k");
-			expect(out).not.toContain("7d:");
+			expect(out).not.toContain("wk:");
 			// natural-week format has no percentage/countdown after wk
 			expect(out).not.toMatch(/wk \d+%/);
 		});
@@ -291,7 +291,7 @@ describe("ZaiUsageProvider", () => {
 			};
 
 			const out = provider.formatForFooter(result, 0, "$");
-			expect(out).not.toContain("7d:");
+			expect(out).not.toContain("wk:");
 			expect(out).not.toContain("wk ");
 		});
 
