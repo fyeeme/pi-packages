@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ChildProcess } from "node:child_process";
 import {
 	abortAgent,
+	consumeUserRetry,
 	createSpawnRegistry,
 	retryAgent,
 	skipAgent,
@@ -78,9 +79,22 @@ describe("retryAgent", () => {
 		expect(onRetry).toHaveBeenCalledWith("y");
 	});
 
-	it("should return false for unknown callId", () => {
+	it("should return false for unknown callId (no intent recorded)", () => {
 		const { registry } = fakeRegistry([]);
 		expect(retryAgent(registry, "ghost")).toBe(false);
+	});
+
+	it("records a retry intent the runner consumes exactly once", () => {
+		const { registry } = fakeRegistry(["y"]);
+		retryAgent(registry, "y");
+		expect(consumeUserRetry(registry, "y")).toBe(true);
+		expect(consumeUserRetry(registry, "y")).toBe(false); // consumed
+		expect(consumeUserRetry(registry, "other")).toBe(false);
+	});
+
+	it("consumeUserRetry is false for registries without intents", () => {
+		const { registry } = fakeRegistry(["y"]);
+		expect(consumeUserRetry(registry, "y")).toBe(false);
 	});
 });
 

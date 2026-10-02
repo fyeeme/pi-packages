@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `retryAgent` is wired: the runner now automatically re-dispatches a user-retried call once — the fresh attempt runs under a `~retry`-suffixed call id (same step attribution, new budget slot, journal result overwrites the aborted attempt). A second retry against the retried call settles as a plain abort. The tool-level `budget` parameter now warns when passed to an inline workflow (it is library-mode only; inline budgets live in `workflow.budget`).
+
 ### Removed
 
 - The deprecated `heuristicallyPlan` heuristic planner and `src/planner.ts` (zero runtime callers; the classify keyword produced empty route tables — announced deprecated since 2.0). Public barrel, README §10, and its test describe are gone; outcome-collector tests moved to `test/outcomes.test.ts`.

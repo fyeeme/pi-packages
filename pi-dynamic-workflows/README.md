@@ -228,7 +228,7 @@ skipAgent(registry, "fan#2");   // aborts only that call; siblings keep running
 const result = await runP;       // status "completed" — the batch finished without item 2
 ```
 
-`abortAgent(registry, callId)` aborts one call and fires `onAgentSkip`; `retryAgent(registry, callId)` aborts one call and fires `onAgentRetry`. **No automatic re-dispatch is wired yet** — the aborted call settles as skipped/failed and the run continues/fails per the step's normal settle semantics; `retryAgent` is a notify-and-abort primitive for external controllers today. Call ids are `${step.id}#${n}` (1-based).
+`abortAgent(registry, callId)` aborts one call and fires `onAgentSkip`; `retryAgent(registry, callId)` aborts one call, fires `onAgentRetry`, and the runner automatically re-dispatches it **once** when it settles — the fresh attempt runs under a `~retry`-suffixed call id (same step attribution, a new budget slot, and its journal result overwrites the aborted attempt's). A second `retryAgent` against the retried call settles as a plain abort. `skipAgent` never re-dispatches. Call ids are `${step.id}#${n}` (1-based).
 
 ### 8. Budget enforcement
 

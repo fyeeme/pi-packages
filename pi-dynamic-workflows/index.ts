@@ -362,6 +362,14 @@ export default function (pi: ExtensionAPI): void {
 			} else {
 				if (!params.workflow)
 					throw new Error('run_workflow: provide either a `workflow` (inline) or `name` with source "library".');
+				// The tool-level `budget` parameter is library-mode only; an inline
+				// workflow carries its budget inside `workflow.budget`. Warn instead
+				// of silently ignoring a likely mistake.
+				if (params.budget !== undefined) {
+					console.warn(
+						"[pi-dynamic-workflows] run_workflow: the `budget` parameter is library-mode only and is ignored for inline workflows — put budget inside `workflow.budget` instead.",
+				);
+				}
 			}
 
 				try {

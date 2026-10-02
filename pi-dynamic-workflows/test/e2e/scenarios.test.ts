@@ -19,7 +19,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defineWorkflow } from "../../src/types.ts";
 import { runWorkflow } from "../../src/runner/index.ts";
-import { createSpawnRegistry, skipAgent } from "../../src/agent/dispatch.ts";
+import { createSpawnRegistry, retryAgent, skipAgent } from "../../src/agent/dispatch.ts";
 import { countingDispatch, makeFakeDispatch } from "./helpers.ts";
 
 let dir: string;
@@ -281,5 +281,42 @@ describe("e2e scenarios", () => {
 			// the child's internal budget error is preserved in the step result.
 			const subErr = res.steps[0].results as { error?: string };
 			expect(subErr.error).toMatch(/budget|exhausted/i);
+		});
+
+		it("13. user retry — retryAgent re-dispatches the aborted call once", async () => {
+			// The first attempt hangs until aborted, exactly like the skip scenario.
+			const { dispatch, calls } = countingDispatch(
+				makeFakeDispatch({
+				hang: new Set(["retry-me#1"]),
+			}),
+		);
+			const wf = defineWorkflow({
+				name: "user-retry",
+				steps: [{ id: "retry-me", type: "agent", prompt: "the task" }],
+			});
+			const registry = createSpawnRegistry();
+			const onRetry = vi.fn();
+			const runP = runWorkflow({
+				workflow: wf,
+				cwd: dir,
+				now: 1000,
+				dispatch,
+				registry,
+				listeners: { onAgentRetry: onRetry },
+			});
+
+			// Wait until the attempt is hung, then request a retry.
+			await vi.waitFor(() => {
+				expect(registry.controllers.size).toBe(1);
+			}, { interval: 10, timeout: 2000 });
+			retryAgent(registry, "retry-me#1", { onAgentRetry: onRetry });
+
+			const result = await runP;
+			expect(result.status).toBe("completed");
+			expect(result.steps[0]!.status).toBe("done");
+			// The fresh attempt produced the value; two dispatches happened.
+			expect(result.steps[0]!.results).toBe("out:the task");
+			expect(calls()).toBe(2);
+			expect(onRetry).toHaveBeenCalledWith("retry-me#1");
 		});
 	});

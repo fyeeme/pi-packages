@@ -51,7 +51,7 @@ import type {
 	TournamentStep,
 } from "../types.ts";
 import type { AgentSpawnOptions, AgentSpawnRegistry, AgentSpawnResult } from "../agent/dispatch.ts";
-import { mapWithConcurrencyLimit } from "../agent/dispatch.ts";
+import { consumeUserRetry, mapWithConcurrencyLimit } from "../agent/dispatch.ts";
 import { stepIdOf } from "../format.ts";
 
 /** Injectable agent dispatch — same shape as spawnAgent. Default = real spawnAgent. */
@@ -258,6 +258,18 @@ const releaseSpawn = guardSpawn(exec, callId, 1);
 			stats: zeroStats,
 			errorCategory: "dispatch-error",
 		};
+	}
+	// User-requested retry (sessions/spawn.ts retryAgent): the aborted attempt
+	// settles only to be re-dispatched once under a `~retry` id — same step
+	// attribution (stepIdOf splits on '#'), a fresh spawn and budget slot, and
+	// a second retryAgent on the retried call is honored as a plain abort (one
+	// automatic re-dispatch per call). The aborted attempt journals a terminal
+	// result so resume never sees an orphan `started`; the retried attempt's
+	// result overwrites it (same cache key, last-wins).
+	if (res.aborted && !callId.includes("~retry") && consumeUserRetry(exec.registry, callId)) {
+		await exec.journal.append({ type: "result", key, at: exec.now, ok: false, value: "user-retry: re-dispatched" });
+		notifyEnd(exec, callId, false, zeroStats);
+		return dispatchAgentCall(`${callId}~retry`, prompt, signature, exec);
 	}
 	applyOutcome(exec, res);
 	const value = finalText(res);
