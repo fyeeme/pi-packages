@@ -2,13 +2,16 @@
 
 ## [Unreleased]
 
-### Removed
-
-- Dead symbols: the never-emitted `goal_continuation_requested` variant of `GoalRuntimeEvent`, the zero-reference `GoalTerminalMetricEmission` type, and the never-called `GoalRuntime.clearAccounting()` method (internal cleanup uses the private `#clearActiveAccounting`).
+### Fixed
 
 ### Fixed
 
+- Context hygiene: the budget-limit steer is now stamped with `details.goalId` and pruned from the model view once its goal is no longer live (completed/dropped/paused or mode exited) — previously the last steer lingered after the goal ended.
 - README drift: evaluator timeout is 10 min (not ≈ 5), suite size is 160 tests (not 118); package description now lists the `impossible` op.
+
+### Removed
+
+- Dead symbols: the never-emitted `goal_continuation_requested` variant of `GoalRuntimeEvent`, the zero-reference `GoalTerminalMetricEmission` type, and the never-called `GoalRuntime.clearAccounting()` method (internal cleanup uses the private `#clearActiveAccounting`).
 
 ## [1.0.5] - 2026-10-02
 

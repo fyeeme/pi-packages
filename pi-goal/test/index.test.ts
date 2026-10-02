@@ -826,9 +826,10 @@ describe("pi-goal extension wiring", () => {
 			{ role: "user", content: "hi" },
 			custom("goal-mode-context"), // stale context
 			custom("goal-continuation", { goalId: "old-goal" }), // stale goal id
-			custom("goal-budget-limit"),
+			custom("goal-budget-limit", { goalId: "old-goal" }), // stale steer: dropped
 			custom("goal-mode-context"), // newest context: kept
 			custom("goal-continuation", { goalId }), // newest for the active goal: kept
+			custom("goal-budget-limit", { goalId }), // steer for the active goal: kept
 			{ role: "assistant", content: "working" },
 			custom("goal-continuation", { goalId: "old-goal" }), // another stale: dropped
 		];
@@ -837,14 +838,15 @@ describe("pi-goal extension wiring", () => {
 		const result = (await handler({ type: "context", messages }, createContext(host))) as { messages: unknown[] };
 		const kept = result.messages.filter((m) => (m as { role?: string }).role === "custom");
 		expect(kept.map((m) => (m as { customType: string }).customType)).toEqual([
-			"goal-budget-limit",
 			"goal-mode-context",
 			"goal-continuation",
+			"goal-budget-limit",
 		]);
 
-		// Once no goal is active, every continuation is dropped.
+		// Once no goal is live, every continuation and budget-limit steer is dropped.
 		await host.commands.goal!.handler("drop", createContext(host));
 		const result2 = (await handler({ type: "context", messages }, createContext(host))) as { messages: unknown[] };
 		expect(result2.messages.filter((m) => (m as { customType?: string }).customType === "goal-continuation")).toHaveLength(0);
+		expect(result2.messages.filter((m) => (m as { customType?: string }).customType === "goal-budget-limit")).toHaveLength(0);
 	});
 });

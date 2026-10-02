@@ -46,6 +46,7 @@ export interface GoalRuntimeHost {
 		customType: string;
 		content: string;
 		deliverAs?: "steer" | "followUp" | "nextTurn";
+		details?: Record<string, unknown>;
 	}): Promise<void>;
 	now?(): number;
 }
@@ -575,6 +576,9 @@ export class GoalRuntime {
 			customType: "goal-budget-limit",
 			content: renderGoalPrompt("budget-limit", goal),
 			deliverAs: "steer",
+			// details.goalId keys context pruning: the steer is dropped from the
+			// model view once this goal is no longer the live one.
+			details: { goalId: goal.id },
 		});
 	}
 }

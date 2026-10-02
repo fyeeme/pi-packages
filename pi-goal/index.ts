@@ -686,6 +686,13 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 	// active) are dropped from the model's view, not from the transcript.
 	pi.on("context", (event) => {
 		const activeGoalId = goalState?.enabled && goalState.goal.status === "active" ? goalState.goal.id : undefined;
+		// The budget-limit steer stays in the model view while the goal that hit
+		// the limit is still live (active or budget-limited); once the goal is
+		// completed/dropped/paused or mode exits, the last steer is pruned too.
+		const steerGoalId =
+			goalState?.enabled && (goalState.goal.status === "active" || goalState.goal.status === "budget-limited")
+				? goalState.goal.id
+				: undefined;
 		let lastContext = -1;
 		let lastBudget = -1;
 		let lastContinuation = -1;
@@ -695,7 +702,9 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				| undefined;
 			if (msg?.role !== "custom") continue;
 			if (msg.customType === "goal-mode-context") lastContext = i;
-			else if (msg.customType === "goal-budget-limit") lastBudget = i;
+			else if (msg.customType === "goal-budget-limit" && steerGoalId !== undefined && msg.details?.goalId === steerGoalId) {
+				lastBudget = i;
+			}
 			else if (msg.customType === "goal-continuation" && activeGoalId !== undefined && msg.details?.goalId === activeGoalId) {
 				lastContinuation = i;
 			}
