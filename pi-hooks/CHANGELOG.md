@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Four CC-compatible events: `PostToolUse` (runs on `tool_result`; stdin carries `tool_name`/`tool_input`/`tool_response`; deny demoted to `[PostToolUse hook]` context), `UserPromptSubmit` (runs on `before_agent_start`; stdin carries `prompt`; deny demoted to context — pi cannot block here), `PreCompact` (runs on `session_before_compact`; matcher sees the `manual`/`auto` trigger; side-effect only), and `SessionEnd` (runs on `session_shutdown` for real ends only: quit → `exit`, new → `clear`; reload/resume/fork run Stop cleanup only). Existing three-event configs behave unchanged.
+- `PI_HOOKS_PERMISSION_MODE` env override for the stdin `permission_mode` field (pi has no CC-style permission modes; default stays `"default"`).
+
 ### Fixed
 
 - Comment drift: invalid matchers are documented as "matches nothing (warned)" — the old header claimed a literal fallback that the implementation never had; the tool_call wiring note now states groups are filtered by matcher before running.

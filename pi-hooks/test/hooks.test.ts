@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { matchTool, normalizeConfig, parseHookOutput, loadConfig, applyDenyAsContext } from "../index.ts";
@@ -84,6 +85,24 @@ describe("normalizeConfig", () => {
 		expect(cfg).not.toBeNull();
 		expect(cfg?.hooks.PreToolUse).toHaveLength(1);
 		expect(cfg?.hooks.Stop).toBeUndefined();
+	});
+
+	it("accepts the extended CC event set (PostToolUse/UserPromptSubmit/PreCompact/SessionEnd)", () => {
+		const group = { matcher: "", hooks: [{ type: "command", command: "echo" }] };
+		const cfg = normalizeConfig({
+			hooks: {
+				PostToolUse: [{ ...group, matcher: "Bash" }],
+				UserPromptSubmit: [group],
+				PreCompact: [{ ...group, matcher: "manual" }],
+				SessionEnd: [{ ...group, matcher: "exit" }],
+				MadeUpEvent: [group], // unknown events still dropped
+			},
+		});
+		expect(cfg?.hooks.PostToolUse?.[0].matcher).toBe("Bash");
+		expect(cfg?.hooks.UserPromptSubmit).toHaveLength(1);
+		expect(cfg?.hooks.PreCompact?.[0].matcher).toBe("manual");
+		expect(cfg?.hooks.SessionEnd?.[0].matcher).toBe("exit");
+		expect((cfg?.hooks as Record<string, unknown>).MadeUpEvent).toBeUndefined();
 	});
 
 	it("drops groups with a missing/non-string matcher (would otherwise match literal 'undefined')", () => {
@@ -506,5 +525,150 @@ describe("hooks extension wiring: ctx.signal", () => {
 		await running;
 		// SIGTERM escalation + SIGKILL grace resolve well under the 30s hook sleep.
 		expect(Date.now() - start).toBeLessThan(10_000);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Extension wiring: extended CC events (PostToolUse / UserPromptSubmit /
+// PreCompact / SessionEnd)
+// ---------------------------------------------------------------------------
+
+describe("hooks extension wiring: extended events", () => {
+	let originalHooksConfig: string | undefined;
+	let workDir = "";
+
+	beforeEach(async () => {
+		originalHooksConfig = process.env.PI_HOOKS_CONFIG;
+		workDir = await mkdtemp(join(tmpdir(), "pi-hooks-ext-"));
+	});
+
+	afterEach(async () => {
+		if (originalHooksConfig === undefined) delete process.env.PI_HOOKS_CONFIG;
+		else process.env.PI_HOOKS_CONFIG = originalHooksConfig;
+		await rm(workDir, { recursive: true, force: true });
+	});
+
+	async function writeRawConfig(hooks: Record<string, unknown>): Promise<void> {
+		const cfgPath = join(workDir, "hooks.json");
+		await writeFile(cfgPath, JSON.stringify({ hooks }), "utf8");
+		process.env.PI_HOOKS_CONFIG = cfgPath;
+	}
+
+	function makeContextReader(handlers: Map<string, Array<(event: unknown, ctx: unknown) => unknown>>): () => string | null {
+		const contextHandlers = handlers.get("context") ?? [];
+		return () => {
+			for (const handler of contextHandlers) {
+				const messages: Array<{ role: string; content: unknown }> = [
+				{ role: "user", content: [{ type: "text", text: "hello" }] },
+				];
+			const res = handler({ messages }, {}) as { messages: Array<{ content: unknown }> } | undefined;
+			const last = res?.messages.at(-1);
+			if (Array.isArray(last?.content)) {
+				const extra = (last!.content as Array<{ type: string; text?: string }>).filter((c) => c.type === "text");
+				if (extra.length > 1) return (extra.at(-1)?.text ?? null);
+			}
+			}
+			return null;
+		};
+	}
+
+	it("PostToolUse: runs on tool_result, feeds tool_name/tool_response via stdin, injects context", async () => {
+		await writeRawConfig({
+			PostToolUse: [
+				{
+					matcher: "bash",
+					hooks: [
+					{
+						type: "command",
+						command:
+							`grep -qE '"tool_name":"bash".*"isError":false' && echo '{"hookSpecificOutput":{"additionalContext":"POST-SAW-STDIN"}}' || echo '{}'`,
+						timeout: 10,
+					},
+				],
+			},
+			],
+		});
+		const { pi, handlers } = hooksFakeHost();
+		defaultExport(pi);
+		const toolResult = (handlers.get("tool_result") ?? [])[0]!;
+		await toolResult(
+			{ type: "tool_result", toolName: "bash", input: { command: "ls" }, content: [{ type: "text", text: "done" }], isError: false },
+			hooksCtx(workDir),
+		);
+		expect(makeContextReader(handlers)()).toContain("POST-SAW-STDIN");
+	});
+
+	it("PostToolUse: matcher filters non-matching tools", async () => {
+		await writeRawConfig({
+			PostToolUse: [
+				{ matcher: "bash", hooks: [{ type: "command", command: `echo '{"hookSpecificOutput":{"additionalContext":"NOPE"}}'`, timeout: 10 }] },
+			],
+		});
+		const { pi, handlers } = hooksFakeHost();
+		defaultExport(pi);
+		const toolResult = (handlers.get("tool_result") ?? [])[0]!;
+		await toolResult(
+			{ type: "tool_result", toolName: "read", input: {}, content: [{ type: "text", text: "x" }], isError: false },
+			hooksCtx(workDir),
+		);
+		expect(makeContextReader(handlers)()).toBeNull();
+	});
+
+	it("UserPromptSubmit: runs on before_agent_start and injects context", async () => {
+		await writeRawConfig({
+			UserPromptSubmit: [
+				{ matcher: "", hooks: [{ type: "command", command: `echo '{"hookSpecificOutput":{"additionalContext":"PROMPT-HOOK"}}'`, timeout: 10 }] },
+			],
+		});
+		const { pi, handlers } = hooksFakeHost();
+		defaultExport(pi);
+		const before = (handlers.get("before_agent_start") ?? [])[0]!;
+		await before({ type: "before_agent_start", prompt: "fix the bug" }, hooksCtx(workDir));
+		expect(makeContextReader(handlers)()).toContain("PROMPT-HOOK");
+	});
+
+	it("PreCompact: trigger mapping — matcher sees manual/auto", async () => {
+		const marker = join(workDir, "precompact-ran");
+		await writeRawConfig({
+			PreCompact: [{ matcher: "auto", hooks: [{ type: "command", command: `touch ${marker}`, timeout: 10 }] }],
+		});
+		const { pi, handlers } = hooksFakeHost();
+		defaultExport(pi);
+		const compact = (handlers.get("session_before_compact") ?? [])[0]!;
+		await compact({ type: "session_before_compact", reason: "threshold", customInstructions: undefined, signal: undefined }, hooksCtx(workDir));
+		expect(existsSync(marker)).toBe(true); // threshold → auto → matcher hits
+	});
+
+	it("PreCompact: non-matching trigger is filtered", async () => {
+		const marker = join(workDir, "precompact-ran");
+		await writeRawConfig({
+			PreCompact: [{ matcher: "manual", hooks: [{ type: "command", command: `touch ${marker}`, timeout: 10 }] }],
+		});
+		const { pi, handlers } = hooksFakeHost();
+		defaultExport(pi);
+		const compact = (handlers.get("session_before_compact") ?? [])[0]!;
+		await compact({ type: "session_before_compact", reason: "threshold", customInstructions: undefined, signal: undefined }, hooksCtx(workDir));
+		expect(existsSync(marker)).toBe(false);
+	});
+
+	it("SessionEnd: fires on quit (reason exit) and new (reason clear), not on reload", async () => {
+		const stopMarker = join(workDir, "stop-ran");
+		const endMarker = join(workDir, "end-ran");
+		await writeRawConfig({
+			Stop: [{ matcher: "", hooks: [{ type: "command", command: `touch ${stopMarker}`, timeout: 10 }] }],
+			SessionEnd: [{ matcher: "", hooks: [{ type: "command", command: `touch ${endMarker}`, timeout: 10 }] }],
+		});
+		const { pi, handlers } = hooksFakeHost();
+		defaultExport(pi);
+		const shutdown = (handlers.get("session_shutdown") ?? [])[0]!;
+		await shutdown({ type: "session_shutdown", reason: "reload" }, hooksCtx(workDir));
+		expect(existsSync(stopMarker)).toBe(true);
+		expect(existsSync(endMarker)).toBe(false); // reload continues the conversation
+
+		await rm(stopMarker, { force: true });
+		await rm(endMarker, { force: true });
+		await shutdown({ type: "session_shutdown", reason: "quit" }, hooksCtx(workDir));
+		expect(existsSync(stopMarker)).toBe(true);
+		expect(existsSync(endMarker)).toBe(true);
 	});
 });

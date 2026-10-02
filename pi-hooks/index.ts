@@ -12,9 +12,13 @@
  *   4. ~/.pi/hook.json         (legacy home location)
  *
  * and maps:
- *   SessionStart  → session_start        (source = mapped reason)
- *   PreToolUse    → tool_call            (can block via {block:true})
- *   Stop          → session_shutdown     (cleanup only; cannot block exit)
+ *   SessionStart    → session_start        (source = mapped reason)
+ *   PreToolUse      → tool_call            (can block via {block:true})
+ *   PostToolUse     → tool_result          (side effects + feedback context)
+ *   UserPromptSubmit→ before_agent_start   (context only; cannot block)
+ *   PreCompact      → session_before_compact (side effects only)
+ *   Stop            → session_shutdown     (cleanup only; cannot block exit)
+ *   SessionEnd      → session_shutdown     (quit/new only — real session ends)
  *
  * All additionalContext — from both SessionStart and PreToolUse — is injected
  * into the last user message via the context event, so the LLM sees and acts on
@@ -32,6 +36,21 @@
  *     no-ops; pi applies its own permission flow.)
  *   - Stop `decision: "block"` is NOT honored — pi's session_shutdown is
  *     notification-only and cannot prevent exit.
+ *   - UserPromptSubmit `decision: "block"`/exit 2 is NOT honored — pi's
+ *     before_agent_start has no blocking result; the reason is demoted to
+ *     additionalContext prefixed with [UserPromptSubmit hook].
+ *   - PostToolUse deny (exit 2 / permissionDecision:"deny") cannot undo a
+ *     finished tool call; the reason is injected as context prefixed with
+ *     [PostToolUse hook] (CC feeds it to the next turn the same way).
+ *   - PreCompact hooks are side-effect only (backups/snapshots); output
+ *     control is ignored. stdin carries trigger (manual|auto) and
+ *     custom_instructions.
+ *   - SessionEnd fires only for quit (reason "exit") and new (reason
+ *     "clear"); reload/resume/fork tear the extension runtime down but the
+ *     conversation continues, so those run Stop cleanup only.
+ *   - permission_mode defaults to "default"; set PI_HOOKS_PERMISSION_MODE to
+ *     expose a different value to hook scripts that branch on it (pi itself
+ *     has no CC-style permission modes).
  *   - per-hook `timeout` (seconds) is honored; default 60s.
  */
 
@@ -67,11 +86,23 @@ interface HooksConfig {
 	hooks: {
 		SessionStart?: HookGroup[];
 		PreToolUse?: HookGroup[];
+		PostToolUse?: HookGroup[];
+		UserPromptSubmit?: HookGroup[];
+		PreCompact?: HookGroup[];
 		Stop?: HookGroup[];
+		SessionEnd?: HookGroup[];
 	};
 }
 
-const HOOK_EVENTS = ["SessionStart", "PreToolUse", "Stop"] as const;
+const HOOK_EVENTS = [
+	"SessionStart",
+	"PreToolUse",
+	"PostToolUse",
+	"UserPromptSubmit",
+	"PreCompact",
+	"Stop",
+	"SessionEnd",
+] as const;
 type HookEventName = (typeof HOOK_EVENTS)[number];
 
 /**
@@ -217,6 +248,13 @@ function getTranscriptPath(ctx: ExtensionContext): string {
 	return ctx.sessionManager.getSessionFile() ?? "";
 }
 
+/** pi has no CC-style permission modes; PI_HOOKS_PERMISSION_MODE lets
+ *  CC-compatible hook scripts that branch on permission_mode observe a
+ *  configured value (default "default"). */
+function getPermissionMode(): string {
+	return process.env.PI_HOOKS_PERMISSION_MODE ?? "default";
+}
+
 function buildStdin(
 	hookEventName: HookEventName,
 	ctx: ExtensionContext,
@@ -226,7 +264,7 @@ function buildStdin(
 		session_id: getSessionId(ctx),
 		transcript_path: getTranscriptPath(ctx),
 		cwd: ctx.cwd,
-		permission_mode: "default",
+		permission_mode: getPermissionMode(),
 		hook_event_name: hookEventName,
 		...extra,
 	};
@@ -622,13 +660,90 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	// -------------------------------------------------------------------------
+	// before_agent_start: UserPromptSubmit hooks. pi has no blocking result at
+	// this boundary, so additionalContext rides the next context event and a
+	// deny is demoted to a prefixed context note (documented deviation).
+	// -------------------------------------------------------------------------
+	pi.on("before_agent_start", async (event, ctx) => {
+		const cfg = getConfig(ctx.cwd);
+		if (!cfg?.hooks.UserPromptSubmit) return;
+		const stdin = buildStdin("UserPromptSubmit", ctx, { prompt: event.prompt });
+		const { contexts, block } = await runGroups(
+			cfg.hooks.UserPromptSubmit,
+			"",
+			ctx.cwd,
+			JSON.stringify(stdin),
+			ctx.signal,
+		);
+		const notes = [...contexts];
+		if (block) notes.push(`[UserPromptSubmit hook] ${block}`);
+		if (notes.length > 0) pendingContexts.push(...notes);
+	});
+
+	// -------------------------------------------------------------------------
+	// tool_result: PostToolUse hooks. The tool already ran — deny cannot undo
+	// it; the reason (CC feeds the next turn the same way) and any
+	// additionalContext are queued for the next context event. stdin carries
+	// tool_response as pi's honest shape: text content parts (+ structured
+	// content when the tool declares an outputSchema) and isError.
+	// -------------------------------------------------------------------------
+	pi.on("tool_result", async (event, ctx) => {
+		const cfg = getConfig(ctx.cwd);
+		if (!cfg?.hooks.PostToolUse) return;
+		const texts = event.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text);
+		const stdin = buildStdin("PostToolUse", ctx, {
+			tool_name: event.toolName,
+			tool_input: event.input ?? {},
+			tool_response: {
+				content: texts,
+				...(event.structuredContent !== undefined ? { structuredContent: event.structuredContent } : {}),
+				isError: event.isError,
+			},
+		});
+		const { contexts, block } = await runGroups(
+			cfg.hooks.PostToolUse,
+			event.toolName,
+			ctx.cwd,
+			JSON.stringify(stdin),
+			ctx.signal,
+		);
+		const notes = [...contexts];
+		if (block) notes.push(`[PostToolUse hook] ${block}`);
+		if (notes.length > 0) pendingContexts.push(...notes);
+	});
+
+	// -------------------------------------------------------------------------
+	// session_before_compact: PreCompact hooks. Side-effect only (backups,
+	// snapshots); output control is not honored. matcher matches the CC
+	// trigger value: "manual" (/compact) or "auto" (threshold/overflow).
+	// -------------------------------------------------------------------------
+	pi.on("session_before_compact", async (event, ctx) => {
+		const cfg = getConfig(ctx.cwd);
+		if (!cfg?.hooks.PreCompact) return;
+		const trigger = event.reason === "manual" ? "manual" : "auto";
+		const stdin = buildStdin("PreCompact", ctx, {
+			trigger,
+			custom_instructions: event.customInstructions ?? "",
+		});
+		await runGroups(cfg.hooks.PreCompact, trigger, ctx.cwd, JSON.stringify(stdin), event.signal);
+	});
+
+	// -------------------------------------------------------------------------
 	// session_shutdown: Stop hooks (cleanup only). CC's Stop `decision: "block"`
 	// is intentionally not honored — pi cannot prevent exit from here.
+	// SessionEnd additionally fires for real session ends only (quit → "exit",
+	// new → "clear"); reload/resume/fork tear the runtime down mid-conversation
+	// and run Stop cleanup only.
 	// -------------------------------------------------------------------------
-	pi.on("session_shutdown", async (_event, ctx) => {
+	pi.on("session_shutdown", async (event, ctx) => {
 		const cfg = getConfig(ctx.cwd);
 		if (!cfg) return;
 		const stdin = buildStdin("Stop", ctx);
 		await runGroups(cfg.hooks.Stop, "", ctx.cwd, JSON.stringify(stdin));
+		if (event.reason === "quit" || event.reason === "new") {
+			const endReason = event.reason === "quit" ? "exit" : "clear";
+			const endStdin = buildStdin("SessionEnd", ctx, { reason: endReason });
+			await runGroups(cfg.hooks.SessionEnd, endReason, ctx.cwd, JSON.stringify(endStdin));
+		}
 	});
 }

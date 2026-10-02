@@ -1,6 +1,6 @@
 # pi-hooks
 
-A Claude Code-compatible hooks runner for [pi](https://pi.dev). Reads your hooks configuration and maps `SessionStart`, `PreToolUse`, and `Stop` events to pi lifecycle events — matching Claude Code's hooks protocol including stdin JSON and stdout `additionalContext` capture.
+A Claude Code-compatible hooks runner for [pi](https://pi.dev). Reads your hooks configuration and maps `SessionStart`, `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `PreCompact`, `Stop`, and `SessionEnd` events to pi lifecycle events — matching Claude Code's hooks protocol including stdin JSON and stdout `additionalContext` capture.
 
 **Config resolution order** (first file that defines at least one hook wins):
 
@@ -108,7 +108,11 @@ Create `~/.pi/agent/hook.json` (user-global, highest file priority — runs in e
 |---|---|---|
 | `SessionStart` | `session_start` | Runs when a session starts, resumes, forks, or switches — **not** on `reload` (a runtime rebind must not re-run hooks mid-session). `matcher` matches the mapped Claude Code source: `startup` (default), `resume` (resume + fork), `clear` (new session); empty matcher matches all. `additionalContext` is injected into the first user message via the `context` event. |
 | `PreToolUse` | `tool_call` | Runs before each tool. `matcher` is a **regex** against the pi tool name. `additionalContext` is injected before the next LLM call. `permissionDecision: "deny"` or exit code 2 blocks the tool (`terminate: true`; in a single-tool / all-terminating batch this also skips the follow-up LLM call — requires pi >= 0.84.1). |
+| `PostToolUse` | `tool_result` | Runs after each tool. `matcher` is a regex against the tool name. stdin carries `tool_name`, `tool_input`, and `tool_response` (pi's shape: text `content` parts, `structuredContent` when the tool declares an outputSchema, `isError`). `additionalContext` is injected before the next LLM call; a deny cannot undo the finished call — its reason is injected as `[PostToolUse hook] …` context (same as CC feeding it to the next turn). |
+| `UserPromptSubmit` | `before_agent_start` | Runs when the user submits a prompt. stdin carries `prompt`. `additionalContext` is injected before the next LLM call. pi has no blocking result at this boundary, so `decision: "block"`/exit 2 is demoted to a `[UserPromptSubmit hook] …` context note. |
+| `PreCompact` | `session_before_compact` | Runs before context compaction. `matcher` matches the trigger: `manual` (/compact) or `auto` (threshold/overflow). stdin carries `trigger` and `custom_instructions`. Side-effect only (backups/snapshots); output control is not honored. |
 | `Stop` | `session_shutdown` | Runs on exit/reload/session switch. Cleanup only — `decision: "block"` is **not** honored (pi cannot prevent exit). Stop hooks are awaited, so a slow hook delays exit up to its `timeout` (default 60s); keep them fast. |
+| `SessionEnd` | `session_shutdown` | Fires for real session ends only: `quit` → reason `exit`, `new` → reason `clear`. `reload`/`resume`/`fork` tear the extension runtime down mid-conversation and run Stop cleanup only. `matcher` matches the mapped reason. |
 
 ## Matcher semantics
 
@@ -128,8 +132,14 @@ Commands receive Claude Code-compatible JSON on stdin (`session_id` is the pi se
 ```json
 { "hook_event_name": "SessionStart", "session_id": "<uuid>", "transcript_path": "/path/to/session.jsonl", "cwd": "/proj", "permission_mode": "default", "source": "startup" }
 { "hook_event_name": "PreToolUse", "session_id": "<uuid>", "transcript_path": "...", "cwd": "/proj", "permission_mode": "default", "tool_name": "bash", "tool_input": {} }
+{ "hook_event_name": "PostToolUse", "session_id": "<uuid>", "transcript_path": "...", "cwd": "/proj", "permission_mode": "default", "tool_name": "bash", "tool_input": {}, "tool_response": { "content": ["done"], "isError": false } }
+{ "hook_event_name": "UserPromptSubmit", "session_id": "<uuid>", "transcript_path": "...", "cwd": "/proj", "permission_mode": "default", "prompt": "fix the bug" }
+{ "hook_event_name": "PreCompact", "session_id": "<uuid>", "transcript_path": "...", "cwd": "/proj", "permission_mode": "default", "trigger": "auto", "custom_instructions": "" }
 { "hook_event_name": "Stop", "session_id": "<uuid>", "transcript_path": "...", "cwd": "/proj", "permission_mode": "default" }
+{ "hook_event_name": "SessionEnd", "session_id": "<uuid>", "transcript_path": "...", "cwd": "/proj", "permission_mode": "default", "reason": "exit" }
 ```
+
+`permission_mode` defaults to `"default"`. pi itself has no CC-style permission modes; set `PI_HOOKS_PERMISSION_MODE` to expose a different value to hook scripts that branch on it (e.g. serena-hooks `auto-approve` checks for a permissive mode).
 
 Commands may return JSON on stdout, or control flow via exit codes:
 
@@ -140,6 +150,7 @@ Commands may return JSON on stdout, or control flow via exit codes:
 
 - exit code **0** with `additionalContext` → context injected.
 - exit code **2** (PreToolUse) **with a JSON deny payload** (`permissionDecision: "deny"`) → tool call blocked (`terminate: true`); reason fed to the model. `terminate` skips the follow-up LLM call only when the denied call is in an all-terminating batch (pi >= 0.84.1, #7715); in a multi-tool batch the block always applies but the agent may continue.
+- exit code **2** (PostToolUse / UserPromptSubmit) → cannot block (the tool already ran / pi has no prompt-blocking result); reason injected as `[<event> hook] …` context.
 - exit code **2** without parseable JSON (e.g. a broken command like `python3` failing to open a script) → treated as a crash, not a deny: warning on stderr, tool call proceeds. This keeps a misconfigured hook from hard-blocking every tool call.
 - exit code **2** (Stop) → ignored (pi cannot block exit).
 - other non-zero → logged, execution continues.
