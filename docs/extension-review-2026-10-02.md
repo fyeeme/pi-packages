@@ -1,6 +1,8 @@
 # packages/extensions 13 包深度评审（2026-10-02）
 
-范围：全部 13 个扩展包。阶段 1（逐包通读源码/测试/README/CHANGELOG）→ 阶段 2（对标差距）→ 阶段 3（瘦身清理，已执行，13 个独立提交，1422 测试全绿）→ 阶段 4（按价值立项，待确认）。
+范围：全部 13 个扩展包。阶段 1（逐包通读源码/测试/README/CHANGELOG）→ 阶段 2（对标差距）→ 阶段 3（瘦身清理，已执行，13 个独立提交）→ 阶段 4（已确认立项 A/B/C/D/E，全部实现，共 5 个提交；发布暂缓）。
+
+执行记录（阶段 4）：E=237c027（移除 heuristicallyPlan，189 测试）；C=b6a6e47（信任门顺序，184 测试）；D=b314112（steer 残留清理，160 测试）；B=64e1f12（超时保留草稿，37 测试）；A=f50a224（pi-hooks 七事件面，43 测试）。发布按用户决定暂缓，各包 CHANGELOG [Unreleased] 已就绪。
 
 依赖拓扑：`pi-subagents`（核心，无依赖）← `pi-review` / `pi-dynamic-workflows`（npm 精确锁 2.1.3）；`pi-todo` →(`todo_updated` 事件 + `todo-phases` 会话条目)→ `pi-goal`；其余 8 包完全独立（grep 验证零交叉引用）。
 
