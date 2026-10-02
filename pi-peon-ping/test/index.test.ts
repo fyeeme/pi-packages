@@ -11,6 +11,7 @@
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { EventEmitter } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { spawn, execFileSync } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -846,6 +847,103 @@ describe("execPeonCli", () => {
 
 		expect(result.stdout).toBe("");
 		expect(result.exitCode).toBe(-1);
+	});
+});
+
+// ============================================================================
+// Command handlers (/peon-ping-toggle, /peon-ping-use)
+// ============================================================================
+
+describe("command handlers", () => {
+	const mkProc = (out: string, code: number | null) => {
+		const proc = new EventEmitter() as EventEmitter & { stdout: EventEmitter };
+		proc.stdout = new EventEmitter();
+		queueMicrotask(() => {
+			proc.stdout.emit("data", Buffer.from(out));
+			proc.emit("close", code);
+		});
+		return proc;
+	};
+
+	function registerCommands(): Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }> {
+		const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
+		const pi = {
+			on: vi.fn(),
+			registerCommand: (name: string, def: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
+				commands.set(name, def);
+			},
+		};
+		peonPingExtension(pi as unknown as ExtensionAPI);
+		return commands;
+	}
+
+	beforeEach(() => {
+		vi.mocked(existsSync).mockReset();
+		vi.mocked(existsSync).mockReturnValue(true); // PEON_SH below passes its existsSync check
+		vi.mocked(spawn).mockReset();
+		vi.mocked(execFileSync).mockReset();
+		process.env.PEON_SH = "/mock/peon.sh";
+	});
+
+	afterEach(() => {
+		delete process.env.PEON_SH;
+	});
+
+	it("toggle runs `peon.sh toggle` and surfaces stdout as info", async () => {
+		vi.mocked(spawn).mockImplementation((() => mkProc("muted", 0)) as unknown as typeof spawn);
+		const commands = registerCommands();
+		const notify = vi.fn();
+		await commands.get("peon-ping-toggle")!.handler("", { ui: { notify } });
+
+		expect(spawn).toHaveBeenCalledWith("bash", ["/mock/peon.sh", "toggle"], expect.anything());
+		expect(notify).toHaveBeenCalledWith("muted", "info");
+	});
+
+	it("toggle reports failure text on non-zero exit", async () => {
+		vi.mocked(spawn).mockImplementation((() => mkProc("", 1)) as unknown as typeof spawn);
+		const commands = registerCommands();
+		const notify = vi.fn();
+		await commands.get("peon-ping-toggle")!.handler("", { ui: { notify } });
+
+		expect(notify).toHaveBeenCalledWith("toggle failed", "error");
+	});
+
+	it("peon-ping-use without a name prints usage and never spawns", async () => {
+		const commands = registerCommands();
+		const notify = vi.fn();
+		await commands.get("peon-ping-use")!.handler("   ", { ui: { notify } });
+
+		expect(notify).toHaveBeenCalledWith("Usage: /peon-ping-use <pack-name>", "warning");
+		expect(spawn).not.toHaveBeenCalled();
+	});
+
+	it("peon-ping-use installs the named pack and confirms", async () => {
+		vi.mocked(spawn).mockImplementation((() => mkProc("", 0)) as unknown as typeof spawn);
+		const commands = registerCommands();
+		const notify = vi.fn();
+		await commands.get("peon-ping-use")!.handler("duck", { ui: { notify } });
+
+		expect(spawn).toHaveBeenCalledWith(
+			"bash",
+			["/mock/peon.sh", "packs", "use", "--install", "duck"],
+			expect.anything(),
+		);
+		expect(notify).toHaveBeenCalledWith("Switched to duck", "info");
+	});
+
+	it("handlers stay silent when peon.sh is not installed", async () => {
+		delete process.env.PEON_SH;
+		vi.mocked(existsSync).mockReturnValue(false);
+		vi.mocked(execFileSync).mockImplementation(() => {
+			throw new Error("no brew");
+		});
+		const commands = registerCommands();
+		const notify = vi.fn();
+		await commands.get("peon-ping-toggle")!.handler("", { ui: { notify } });
+		await commands.get("peon-ping-use")!.handler("duck", { ui: { notify } });
+
+		expect(notify).not.toHaveBeenCalled();
+		expect(spawn).not.toHaveBeenCalled();
 	});
 });
 
