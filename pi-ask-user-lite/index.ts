@@ -278,6 +278,10 @@ function createAskDialog(
 	let settled = false;
 	/** Free-text overlay: "other" captures a custom answer, "note" annotates the current one. */
 	let inputMode: "other" | "note" | null = null;
+	/** Deadline hit while the user was mid-input: expiry is deferred until the
+	 * embedded editor closes so the in-flight answer is kept (parity with
+	 * pi-ask-user's countdown behavior), then the dialog settles as timed-out. */
+	let timeoutExpired = false;
 
 	const settle = (action: DialogAction): void => {
 		if (settled) return;
@@ -294,7 +298,17 @@ function createAskDialog(
 
 	const remainingMs = deadline === undefined ? undefined : Math.max(0, deadline - Date.now());
 	const timerId =
-		remainingMs === undefined ? undefined : setTimeout(() => settle({ kind: "submit", timedOut: true }), remainingMs);
+		remainingMs === undefined
+			? undefined
+			: setTimeout(() => {
+					if (inputMode !== null) {
+						// Mid-typing expiry: defer until the editor closes.
+						timeoutExpired = true;
+						cachedLines = undefined;
+						return;
+					}
+					settle({ kind: "submit", timedOut: true });
+				}, remainingMs);
 	if (typeof timerId === "object" && timerId !== null && "unref" in timerId) timerId.unref();
 
 	const question = () => questions[state.index];
@@ -341,6 +355,7 @@ function createAskDialog(
 		inputMode = null;
 		editor.setText("");
 		cachedLines = undefined;
+		if (timeoutExpired && !settled) settle({ kind: "submit", timedOut: true });
 	}
 
 	function move(delta: number): void {
@@ -508,7 +523,10 @@ function createAskDialog(
 						lines.push(` ${line}`);
 					}
 					lines.push("");
-					wrapWithPrefix(" ", theme.fg("dim", "enter submit - esc back"));
+					wrapWithPrefix(
+						" ",
+						theme.fg("dim", timeoutExpired ? "enter submit - esc back · deadline reached" : "enter submit - esc back"),
+					);
 				} else {
 					lines.push("");
 					const hints = q.multi

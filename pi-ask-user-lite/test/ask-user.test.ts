@@ -468,6 +468,35 @@ describe("ask_user multi-question dialog", () => {
 		}
 	});
 
+	it("deadline hit mid-typing defers expiry: the in-flight answer is kept, only unanswered auto-pick", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(0);
+			const ui = makeUi();
+			const tool = loadTool();
+			const questions: AskQuestion[] = [
+				{ id: "a", question: "First?", options: [{ label: "x" }, { label: "y" }], multi: false },
+				{ id: "b", question: "Second?", options: [{ label: "p" }, { label: "q" }], multi: false, recommended: 1 },
+			];
+			const execution = tool.execute("t1", { questions, timeoutSeconds: 5 }, undefined, undefined, makeCtx(ui));
+			// Open the Other editor on Q1 and be mid-typing when the deadline lands.
+			// (drive()'s promise only resolves when the dialog settles — never await
+			// it mid-dialog.)
+			void ui.drive(["\x1b[B", "\x1b[B", "\r", "my custo"]);
+			await vi.advanceTimersByTimeAsync(5_000);
+			// The dialog survived the deadline; finish the thought and submit.
+			void ui.drive(["m", "\r"]);
+			const result = await execution;
+
+			const first = result.details.results?.[0];
+			expect(first).toMatchObject({ id: "a", customInput: "my custom" });
+			expect(first?.timedOut).toBeUndefined(); // user answer kept, not auto-picked
+			expect(result.details.results?.[1]).toMatchObject({ id: "b", selectedOptions: ["q"], timedOut: true });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("Chat about this row redirects instead of collecting answers", async () => {
 		const ui = makeUi();
 		const tool = loadTool();

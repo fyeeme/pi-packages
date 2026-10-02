@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Deadline hit while typing in the Other/note editor no longer discards the draft: expiry is deferred until the editor closes (the in-flight answer is kept, only still-unanswered questions auto-pick; the input hint shows "deadline reached"), matching pi-ask-user's countdown behavior.
+
 ### Removed
 
 - Dead exports: `numberedLabel` and `formatAnswerValue` are module-private now (tests never imported them; zero external consumers). Dropped an unreachable `?? ""` fallback in the reserved-label check (`label` is a required schema-validated string).
