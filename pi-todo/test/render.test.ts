@@ -49,7 +49,7 @@ describe("todo render: call line (omp renderStatusLine shape)", () => {
 	it("joins multiple meta fragments and counts items", () => {
 		const out = text(
 			renderTodoCall(
-				{ op: "init", phase: "Auth", items: ["a", "b", "c"] } as never,
+				{ op: "init", phase: "Auth", items: ["a", "b", "c"] },
 				identityTheme,
 			),
 		);

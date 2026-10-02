@@ -239,7 +239,7 @@ describe("selectCollapsedTodos matches omp", () => {
 // ---------------------------------------------------------------------------
 
 describe("formatSummary matches omp verbatim", () => {
-	it("renders the empty-read text", () => {
+	it("parses empty markdown to zero phases", () => {
 		expect(markdownToPhases("").phases).toEqual([]);
 	});
 

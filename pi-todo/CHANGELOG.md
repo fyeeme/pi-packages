@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `formatMoreItems` is module-private now (zero external importers); `applyOpsToPhases`'s doc comment names its real caller (the `/todo` command's apply path, not `/todo clear`).
+
+### Fixed
+
+- `TodoRenderArgsPublic` no longer omits `items` — `renderTodoCall` reads `e.items` for the "N items" meta, so the public type now matches the implementation (drops an `as never` cast from a render test). A copy-paste-misplaced omp-alignment test title now describes what it asserts.
+
 ## [1.0.3] - 2026-10-02
 
 ### Changed

@@ -166,7 +166,7 @@ export function pluralize(label: string, count: number): string {
 }
 
 /** omp formatMoreItems (tools/render-utils.ts). */
-export function formatMoreItems(remaining: number, itemType: string): string {
+function formatMoreItems(remaining: number, itemType: string): string {
 	const safeRemaining = Number.isFinite(remaining) ? remaining : 0;
 	return `… ${safeRemaining} more ${pluralize(itemType, safeRemaining)}`;
 }
@@ -621,7 +621,7 @@ export function applyParams(phases: TodoPhase[], params: TodoOpEntry): { phases:
 	return { phases: next, errors };
 }
 
-/** Apply an array of `todo`-style ops to existing phases. Used by /todo clear. */
+/** Apply an array of `todo`-style ops to existing phases (the /todo command's apply path). */
 export function applyOpsToPhases(
 	currentPhases: TodoPhase[],
 	ops: TodoOpEntry[],

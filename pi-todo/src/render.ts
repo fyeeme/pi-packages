@@ -203,12 +203,12 @@ function computeTouchedPhases(
 // Call / result renderers
 // =============================================================================
 
-export type TodoRenderArgsPublic = Omit<TodoRenderOp, "items">;
+export type TodoRenderArgsPublic = TodoRenderOp;
 
 export function renderTodoCall(args: TodoRenderArgsPublic, theme: Theme): Component {
 	// omp renderCall: renderStatusLine({icon:"pending", title:"Todo", meta})
 	// with one meta entry per op: "<op> <task> <phase> N items".
-	const opsList = normalizeTodoArg(args as TodoRenderArgs);
+	const opsList = normalizeTodoArg(args);
 	const ops =
 		opsList.length === 0
 			? ["update"]
