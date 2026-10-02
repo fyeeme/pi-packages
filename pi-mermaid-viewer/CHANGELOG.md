@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-10-02
+
+### Changed
+
+- Dev toolchain pinned to `@earendil-works/pi-coding-agent` 1.0.0 (peer floors unchanged, `>=0.99.0`); typecheck and tests pass against 1.0.0 unchanged.
+
 ## [1.0.1] - 2026-10-01
 
 ### Changed

@@ -1,6 +1,6 @@
 {
 	"name": "@fyeeme/pi-mermaid-viewer",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"description": "Render Mermaid diagrams from the conversation in the browser.",
 	"type": "module",
 	"license": "MIT",
@@ -45,7 +45,7 @@
 		"@earendil-works/pi-coding-agent": ">=0.99.0"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-coding-agent": "0.99.2",
+		"@earendil-works/pi-coding-agent": "1.0.0",
 		"@types/node": "22.19.19",
 		"typescript": "5.9.3"
 	}
