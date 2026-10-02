@@ -534,7 +534,7 @@ async function runSingleAgent(
 		systemPrompt: [agent.systemPrompt, RESULT_CONTRACT_PROMPT, policy.schema ? schemaInstruction(policy.schema) : ""]
 			.filter(Boolean)
 			.join("\n\n"),
-		maxTurns: maxTurns,
+		maxTurns,
 		allowChildRecursion,
 		displayName: agentName,
 		signal,
@@ -797,6 +797,17 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 				results,
 			});
 
+		// Validate the call shape before the interactive trust gate so doomed
+		// calls (mode conflicts, over-limit fan-outs) fail fast instead of
+		// prompting first.
+		if (hasTasks && hasSingle) {
+			throw new Error(
+				"Invalid parameters. Provide exactly one mode: either `agent` + `task` (single) or `tasks` (parallel).",
+			);
+		}
+		if (hasTasks && params.tasks!.length > MAX_PARALLEL_TASKS)
+			throw new Error(`Too many parallel tasks (${params.tasks!.length}). Max is ${MAX_PARALLEL_TASKS}.`);
+
 		// Project-agent trust gate — settings-driven ONLY (the wire schema has
 		// no policy parameters): interactive sessions confirm repo-controlled
 		// agents before any subprocess spawns; headless runs cannot prompt.
@@ -829,16 +840,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 			}
 		}
 
-		if (hasTasks && hasSingle) {
-			throw new Error(
-				"Invalid parameters. Provide exactly one mode: either `agent` + `task` (single) or `tasks` (parallel).",
-			);
-		}
-
 		if (params.tasks && params.tasks.length > 0) {
-			if (params.tasks.length > MAX_PARALLEL_TASKS)
-				throw new Error(`Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`);
-
 			// Track all results for streaming updates.
 			const allResults: SingleResult[] = new Array(params.tasks.length);
 
@@ -982,7 +984,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 		throw new Error(
 			`Invalid parameters. Provide \`agent\` + \`task\` (single mode) or \`tasks\` (parallel). Available agents: ${available}`,
 		);
-		},
+	},
 
 	renderCall(args, theme, _context) {
 		if (args.tasks && args.tasks.length > 0) {

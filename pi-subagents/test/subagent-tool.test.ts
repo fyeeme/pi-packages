@@ -549,6 +549,33 @@ describe("spec anchors: ids, wire schema, trust gate, frontmatter schema", () =>
 		}
 	});
 
+	it("validation beats the trust gate: an over-limit fan-out throws without prompting", async () => {
+		const dir = mkdtempSync(join(td(), "pi-sa-gate-"));
+		mkdirSync(join(dir, ".pi", "agents"), { recursive: true });
+		writeFileSync(
+			join(dir, ".pi", "agents", "pa.md"),
+			"---\nname: pa\ndescription: project agent\n---\nbody\n",
+		);
+		try {
+			const confirm = vi.fn(async () => false);
+			const ctx = { hasUI: true, mode: "tui", cwd: dir, ui: { confirm } } as never;
+			const tasks = Array.from({ length: 17 }, (_, i) => ({ agent: "pa", task: `t-${i}` })); // MAX_PARALLEL_TASKS + 1
+			await expect(
+				subagentTool.execute!(
+					"call-1",
+					{ tasks } as never,
+					new AbortController().signal,
+					undefined,
+					ctx,
+				),
+			).rejects.toThrow(/Too many parallel tasks/);
+			expect(confirm).not.toHaveBeenCalled(); // doomed calls fail fast, no prompt
+			expect(spawnMock).not.toHaveBeenCalled();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("confirmation can be disabled only via the settings file, never the wire", async () => {
 		const dir = mkdtempSync(join(td(), "pi-sa-nogate-"));
 		mkdirSync(join(dir, ".pi", "agents"), { recursive: true });

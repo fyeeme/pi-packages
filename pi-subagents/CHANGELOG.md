@@ -7,9 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Removed
+### Changed
+
+- The `subagent` tool now validates the call shape (mode conflicts, the 16-task parallel cap) before the interactive project-agent trust gate, so doomed calls fail fast instead of prompting first.
 
 - Dead code: the pi-subagent-core-era sibling-module re-export block in `src/dispatch.ts` (monitor, settings, and text-extraction symbols — all already exported from `index.ts` via their home modules, with zero deep-import consumers) and two unused imports in `src/tools/subagent.ts` (`NO_OUTPUT_PLACEHOLDER`, `classifyFailure`). No public API change: the package barrel (`index.ts`) still exports every documented symbol.
+- Dead code: `formatFleetElapsed` / `formatFleetTokens` in `src/ui/shared.ts` (zero references across the family after the fleet renderer moved to its own formatting).
+
+### Fixed
+
+- Flaky test: the stable-id assertion in `dispatch.test.ts` now accepts the `-N` uniquification suffix (a second draw of the same AdjectiveNoun base within one test process is legal, not a bug).
+
+### Changed
+
+- Formatting: one stray indentation level in `subagent.ts`'s execute tail and a redundant `maxTurns: maxTurns` property shorthand (no behavior change).
 
 ## [2.1.3] - 2026-10-02
 
