@@ -284,7 +284,7 @@ The loader runs the deterministic AST guard **before** jiti-imports the file —
 
 ### 12. Test without `pi`
 
-Inject a fake dispatch — no binary, no provider, no tokens. This is exactly how the package's own 108 tests work:
+Inject a fake dispatch — no binary, no provider, no tokens. This is exactly how the package's own 194 tests work:
 
 ```ts
 import { runWorkflow } from "@fyeeme/pi-dynamic-workflows/src/index.ts";
@@ -381,7 +381,7 @@ The three paradigm conflicts (imperative CC ↔ declarative graph) are resolved:
 
 ```bash
 node_modules/.bin/tsc -p packages/extensions/pi-dynamic-workflows/tsconfig.json --noEmit   # typecheck
-node_modules/.bin/vitest --run packages/extensions/pi-dynamic-workflows                    # 108 tests
+node_modules/.bin/vitest --run packages/extensions/pi-dynamic-workflows                    # 194 tests
 ```
 
 A real-`pi` subprocess smoke (default dispatch) lives at `examples/smoke-real-pi.ts` — run it manually when `pi` + a provider are configured.

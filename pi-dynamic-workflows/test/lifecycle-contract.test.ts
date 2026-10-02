@@ -4,7 +4,7 @@
  *
  * The former progress-widget / /wf-inspect tests were removed together with
  * those surfaces (live progress now renders via the shared
- * @fyeeme/pi-subagent-core extension); the engine-level listener contracts
+ * @fyeeme/pi-subagents extension); the engine-level listener contracts
  * they covered are kept here, plus the displayName contract for the shared
  * monitor UI.
  */

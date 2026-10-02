@@ -141,7 +141,7 @@ const BASE_WORKFLOW_SUBAGENT_PROMPT = [
 // Dispatch
 // ---------------------------------------------------------------------------
 
-export async function executeStep(
+async function executeStep(
 	step: StepDefinition,
 	ctx: StepContext,
 	exec: StepExecContext,
@@ -754,7 +754,7 @@ async function execLoopUntilDry(step: LoopUntilDryStep, ctx: StepContext, exec: 
 // runStepSequence — run a list of steps (top-level workflow OR a classify route)
 // ---------------------------------------------------------------------------
 
-export interface SequenceOutcome {
+interface SequenceOutcome {
 	readonly steps: readonly StepResult[];
 	readonly status: RunStatus;
 	readonly error?: string;

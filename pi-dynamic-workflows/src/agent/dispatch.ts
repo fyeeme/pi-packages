@@ -6,7 +6,7 @@
  * options/result types) lives in the shared `@fyeeme/pi-subagents`
  * package — extracted from the duplicate copies that used to live here and
  * in pi-review. This module keeps the workflows-specific layer on top:
- * `skipAgent`/`retryAgent` (with `AbortReason` semantics) and the lifecycle
+ * `skipAgent`/`retryAgent` (with user-skip/user-retry reasons) and the lifecycle
  * notifications.
  *
  * Core semantics: one `pi --mode json -p --no-session` subprocess per agent
@@ -26,20 +26,14 @@ import type { AgentSpawnRegistry } from "@fyeeme/pi-subagents";
 export {
 	abortAgent,
 	createSpawnRegistry,
-	getPiInvocation,
 	mapWithConcurrencyLimit,
 	spawnAgent,
 } from "@fyeeme/pi-subagents";
 export type {
-	AgentAbortMap,
-	AgentCallId,
 	AgentSpawnOptions,
 	AgentSpawnRegistry,
 	AgentSpawnResult,
-	AgentUsage,
 } from "@fyeeme/pi-subagents";
-
-export type AbortReason = "user-skip" | "user-retry";
 
 /**
  * Abort one call as skipped. The call settles skipped (runner will not

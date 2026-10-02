@@ -347,13 +347,3 @@ export type CacheKey = string;
 
 /** Unique id for a single agent call within a run. */
 export type AgentCallId = string;
-
-/**
- * Per-agent abort registry: `Map<callId, AbortController>`.
- *
- * Claude Code keeps one AbortController per in-flight agent so retry/skip can
- * target a single call without disturbing its batch siblings. In pi each agent
- * is a subprocess, so Task 5 pairs this map with `Map<callId, ChildProcess>`
- * in src/agent/dispatch.ts and translates abort → SIGTERM on exactly one process.
- */
-export type AgentAbortMap = Map<AgentCallId, AbortController>;
