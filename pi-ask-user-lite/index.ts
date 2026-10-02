@@ -197,13 +197,13 @@ export function autoSelectionForQuestion(question: AskQuestion): string[] {
 }
 
 /** Prefix a label with its 1-based option number, e.g. `2. OAuth2` (raw label when not found). */
-export function numberedLabel(options: readonly string[], label: string): string {
+function numberedLabel(options: readonly string[], label: string): string {
 	const index = options.indexOf(label);
 	return index >= 0 ? `${index + 1}. ${label}` : label;
 }
 
 /** Display form of an answer: `"custom text"`, `2. OAuth2`, `[1. A, 3. C]`, or `(no selection)`. */
-export function formatAnswerValue(
+function formatAnswerValue(
 	options: string[],
 	multi: boolean,
 	answer: { selectedOptions: string[]; customInput?: string },
@@ -780,7 +780,7 @@ const askUserTool: ToolDefinition<typeof AskParamsSchema, AskUserDetails> = {
 
 			// Reserved-label collision check (mirrors omp's schema narrow).
 			for (const q of params.questions) {
-				const clash = q.options.find((option) => RESERVED_LABELS.has(option.label ?? ""));
+				const clash = q.options.find((option) => RESERVED_LABELS.has(option.label));
 				if (clash) {
 					throw new Error(
 						`ask_user: option label "${clash.label}" in question "${q.id}" collides with a reserved runtime label`,

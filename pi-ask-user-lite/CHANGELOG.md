@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Removed
+
+- Dead exports: `numberedLabel` and `formatAnswerValue` are module-private now (tests never imported them; zero external consumers). Dropped an unreachable `?? ""` fallback in the reserved-label check (`label` is a required schema-validated string).
+
 ## [2.0.4] - 2026-10-02
 
 ### Changed
