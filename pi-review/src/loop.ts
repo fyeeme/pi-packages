@@ -25,7 +25,7 @@ import { OUTCOME_VALUES } from "./tools/review_report.ts";
 
 // --- pure helpers (unit-tested) ---------------------------------------------
 
-export const BLOCKING_PRIORITIES = ["P0", "P1"] as const;
+const BLOCKING_PRIORITIES = ["P0", "P1"] as const;
 
 /** Strip a --loop flag out of the trailing args; report whether it was there.
  *  Pure — unit-testable. */
@@ -53,7 +53,8 @@ export function blockingFindings(report: unknown): BlockingFinding[] {
 	for (const f of raw) {
 		if (!f || typeof f !== "object" || Array.isArray(f)) continue;
 		const rec = f as Record<string, unknown>;
-		if (rec.priority !== "P0" && rec.priority !== "P1") continue;
+		const priority = rec.priority;
+		if (priority !== BLOCKING_PRIORITIES[0] && priority !== BLOCKING_PRIORITIES[1]) continue;
 		if (typeof rec.file !== "string" || rec.file.length === 0) continue;
 		// A decided outcome (a fix turn re-reports its findings with one, per
 		// the skill's fixed-later obligation) un-blocks the finding —
@@ -64,7 +65,7 @@ export function blockingFindings(report: unknown): BlockingFinding[] {
 		out.push({
 			file: rec.file,
 			line: typeof rec.line === "number" ? rec.line : undefined,
-			priority: rec.priority,
+			priority,
 			summary: typeof rec.summary === "string" ? rec.summary : "",
 		});
 	}

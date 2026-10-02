@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Dead-export cleanup: `BLOCKING_PRIORITIES`, `findGitRoot`, `readScriptsAt`, and `REVIEW_LEVELS` are no longer exported (all had zero external importers; `blockingFindings` now reads the constant instead of hardcoded `"P0"`/`"P1"` literals, removing the dual source of truth). README now states the actual `@fyeeme/pi-subagents` dependency version (2.1.3).
+
 ## [2.1.2] - 2026-10-02
 
 ### Changed

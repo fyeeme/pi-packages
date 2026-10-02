@@ -20,7 +20,7 @@ export const CONTEXT_PACKAGE_MAX_FILES = 200;
  * Walk up from `from` to the nearest directory containing `.git` (a directory
  * or a submodule pointer file). Returns that root or null.
  */
-export function findGitRoot(from: string): string | null {
+function findGitRoot(from: string): string | null {
 	let dir = path.resolve(from);
 	for (;;) {
 		if (fs.existsSync(path.join(dir, ".git"))) return dir;
@@ -286,7 +286,7 @@ export function detectVerifyCommand(scripts: Record<string, string> | null): str
 }
 
 /** Read package.json scripts from `cwd`; returns null when absent/unparseable. */
-export function readScriptsAt(cwd: string): Record<string, string> | null {
+function readScriptsAt(cwd: string): Record<string, string> | null {
 	try {
 		const pkg = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8")) as {
 			scripts?: Record<string, string>;

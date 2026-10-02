@@ -55,7 +55,7 @@ export function render(body: string, vars: Record<string, string>): string {
 // ---------------------------------------------------------------------------
 
 /** Effort levels the /code-review command accepts (mirrors CC's effort enum). */
-export const REVIEW_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+const REVIEW_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type ReviewLevel = (typeof REVIEW_LEVELS)[number];
 
 const DEFAULT_LEVEL: ReviewLevel = "low";
