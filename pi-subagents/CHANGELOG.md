@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.3] - 2026-10-02
+
+### Added
+
+- The `subagent` tool now declares a tool-level `outputSchema` and returns a `structuredContent` envelope (`{ mode, tasks: [{ agent, status, result?, error?, usage? }] }`) derived from the same results as the rendered Markdown: codemode scripts and nested tool callers get machine-readable task results instead of parsing the text view. Per-task `result` carries the task-level-schema validated object when one applied, otherwise the answer text; mixed completed/failed batches stay normal results (failure lives in per-task `status`/`error`), and canceled tasks carry no `result`. Model-facing rendering is unchanged.
+
+### Changed
+
+- Dev toolchain pinned to `@earendil-works/pi-coding-agent`/`pi-ai`/`pi-tui`/`pi-agent-core` 1.0.0 (peer floors unchanged, `>=0.99.0`); typecheck and tests pass against 1.0.0 unchanged.
+
 ## [2.1.2] - 2026-10-01
 
 ### Changed
