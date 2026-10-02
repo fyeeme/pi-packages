@@ -116,7 +116,9 @@ function parsePreferenceScope(input: string): PersistedThinkingUIPreferenceScope
 	return undefined;
 }
 
-function parseCommandAction(args: string): ThinkingUICommandAction | undefined {
+/** Parse a /thinking-ui argument string into an action. Exported for tests
+ *  (the most regression-prone string logic in the package). */
+export function parseCommandAction(args: string): ThinkingUICommandAction | undefined {
 	const trimmed = args.trim();
 	if (!trimmed) {
 		return { type: "set", scope: "session" };
