@@ -35,19 +35,6 @@ import { monitor } from "./monitor.ts";
 import { extractResult, lastAssistantText, NO_OUTPUT_PLACEHOLDER } from "./text.ts";
 import { loadCoreSettings } from "./concurrency.ts";
 
-export { AgentMonitor, monitor } from "./monitor.ts";
-export type {
-	AgentCallEndInfo,
-	AgentCallStartMeta,
-	AgentCallState,
-	AgentCallStatus,
-} from "./monitor.ts";
-export { loadCoreSettings } from "./concurrency.ts";
-export type { SubagentCoreSettings } from "./concurrency.ts";
-export { contentText, contentTextBlocks, extractResult, lastAssistantText, lastMessageText } from "./text.ts";
-export { NO_OUTPUT_PLACEHOLDER } from "./text.ts";
-export type { ExtractedResult, ResultExtractMethod } from "./text.ts";
-
 /** Fire a monitor notification. UI observability must never break dispatch. */
 function notifyMonitor(fn: () => void): void {
 	try {

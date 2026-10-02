@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Dead code: the pi-subagent-core-era sibling-module re-export block in `src/dispatch.ts` (monitor, settings, and text-extraction symbols — all already exported from `index.ts` via their home modules, with zero deep-import consumers) and two unused imports in `src/tools/subagent.ts` (`NO_OUTPUT_PLACEHOLDER`, `classifyFailure`). No public API change: the package barrel (`index.ts`) still exports every documented symbol.
+
 ## [2.1.3] - 2026-10-02
 
 ### Added

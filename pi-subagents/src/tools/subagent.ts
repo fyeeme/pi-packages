@@ -30,9 +30,7 @@ import {
 	type AgentSpawnRegistry,
 	getMaxConcurrency,
 	mapWithConcurrencyLimit,
-	NO_OUTPUT_PLACEHOLDER,
 	type AgentFailureClass,
-	classifyFailure,
 	spawnAgent,
 } from "../dispatch.ts";
 import { extractResult, lastMessageText, type ExtractedResult, type ResultExtractMethod } from "../text.ts";
