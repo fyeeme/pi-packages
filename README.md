@@ -24,7 +24,7 @@ All five install with `pi install npm:@fyeeme/<name>`; pi-review and pi-dynamic-
 | [pi-ask-user](./pi-ask-user) | oh-my-pi's `ask` tool migrated to a pi extension — source port of the tabbed ask dialog (review tab, notes, markdown/code previews, inactivity countdown), legacy per-question selector path, and omp result semantics |
 | [pi-dynamic-workflows](./pi-dynamic-workflows) | Deterministic TypeScript workflow orchestration — declarative typed steps with resumable, budget-bounded, abortable execution |
 | [pi-goal](./pi-goal) | oh-my-pi's goal mode ported to pi — persistent autonomous objective loop with a `goal` tool, token/time budget accounting with budget-limit steering, automatic continuation turns, `/goal` + `/guided-goal` commands, and a `goal_updated` event for other extensions |
-| [pi-hooks](./pi-hooks) | Claude Code-compatible hooks runner — reads `.pi/hooks.json` and maps lifecycle events to hook scripts |
+| [pi-hooks](./pi-hooks) | Claude Code-compatible hooks runner — reads `.pi/hook.json` and maps lifecycle events to hook scripts |
 | [pi-mermaid-viewer](./pi-mermaid-viewer) | Renders Mermaid diagrams from conversations as an HTML page in the default browser |
 | [pi-peon-ping](./pi-peon-ping) | Routes pi lifecycle events through `peon.sh` for sound packs, desktop notifications, and trainer reminders |
 | [pi-subagents](./pi-subagents) | General-purpose `subagent` tool (single/parallel/chain) with three-source agent discovery, the shared dispatch core, and the live agent UI |
