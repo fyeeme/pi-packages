@@ -59,7 +59,7 @@ Run `/mermaid` to collect all ````mermaid` code blocks from the conversation and
 
 - **Dark / Light / White** background themes
 - **Zoom** controls (25% – 400%) with 1:1 reset
-- **2x PNG export** for sharing
+- **3x PNG export** for sharing
 - **Split view** to inspect source alongside rendered diagram
 - **Multi-diagram navigation** when the conversation contains multiple blocks
 - **Emoji support** — emoji render natively via the browser's color font

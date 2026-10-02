@@ -864,7 +864,7 @@ describe("renderHtml — PNG export", () => {
 		expect(h).toContain('bgFill[currentBg]');
 	});
 
-	it("export PNG reads SVG viewBox for true 2x resolution", () => {
+	it("export PNG reads SVG viewBox for true 3x resolution", () => {
 		const h = renderHtml([], "dark");
 		expect(h).toContain("viewBox?.baseVal");
 		expect(h).toContain("getBBox");

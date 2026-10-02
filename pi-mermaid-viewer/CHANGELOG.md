@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Doc drift: PNG export renders at 3x (scale = 3), not 2x — README and a test title said 2x.
+
 ## [1.0.2] - 2026-10-02
 
 ### Changed
