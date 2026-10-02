@@ -13,7 +13,7 @@
  *
  * Event mapping (pi ExtensionAPI → peon.sh hook_event_name):
  *   session_start                       → SessionStart
- *   turn_start                          → UserPromptSubmit
+ *   before_agent_start                 → UserPromptSubmit
  *   agent_settled                       → Stop
  *   tool_result (event.isError === true) → PostToolUseFailure
  *   ui_prompt_start                     → PermissionRequest (input.required:
@@ -134,10 +134,6 @@ export function resolveShellAndScript(
 	}
 	return { shell: "bash", script: peonPath };
 }
-
-// ============================================================================
-// Terminal tab title (via pi's mode-aware ctx.ui.setTitle)
-// ============================================================================
 
 // ============================================================================
 // Session ID helpers

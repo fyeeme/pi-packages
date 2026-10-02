@@ -57,22 +57,22 @@ category off there to silence just that event without touching the others.
 |---|---|---|---|
 | `session_start` | `SessionStart` | `session.start` | Pi starts or resumes a session |
 | `before_agent_start` | `UserPromptSubmit` | `task.acknowledge` | You submit a prompt (once per agent run) |
-| `agent_end` | `Stop` | `task.complete` | An agent run finishes (once per prompt) |
+| `agent_settled` | `Stop` | `task.complete` | An agent run finishes (once per prompt) |
 | `tool_result` (isError) | `PostToolUseFailure` | `task.error` | A tool call fails |
-| `tool_call` (`ask_user_question`) | `PermissionRequest` | `input.required` | Agent asks you a question |
+| `ui_prompt_start` | `PermissionRequest` | `input.required` | Any blocking `ctx.ui` dialog opens (ask, select, confirm) |
 | `session_before_compact` | `PreCompact` | `resource.limit` | Context is about to be compacted |
 | `session_shutdown` | `SessionEnd` | — | Session ends (always fires) |
 
-> **Why `agent_end` / `before_agent_start` instead of `turn_*`?**
+> **Why `agent_settled` / `before_agent_start` instead of `turn_*`?**
 > A single agent run spans multiple turns (e.g. several tool calls in a row).
 > Mapping `turn_end` → `Stop` would fire the completion sound on every turn;
-> `agent_end` fires once per prompt, which is what the completion sound should
+> `agent_settled` fires once per prompt, which is what the completion sound should
 > mean. Same reasoning for `before_agent_start` vs `turn_start`.
 
-> **`input.required` needs the `ask_user_question` tool**, provided by an
-> extension such as [@juicesharp/rpiv-ask-user-question](https://github.com/juicesharp/rpiv-ask-user-question).
-> It listens for the `tool_call` event with `toolName === "ask_user_question"`.
-> Without such a tool installed, this category never fires.
+> **`input.required` fires on any blocking dialog.** The extension listens to
+> `ui_prompt_start`, which the host emits whenever a modal `ctx.ui` dialog
+> (ask/select/confirm from any tool or extension) opens — no third-party
+> `ask_user_question` tool is required.
 
 ## Configuration
 
