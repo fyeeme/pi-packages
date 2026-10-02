@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-10-02
+
+### Changed
+
+- Dev toolchain pinned to `@earendil-works/pi-coding-agent`/`pi-ai` 1.0.0 (peer floors unchanged, `>=0.99.0`); typecheck and tests pass against 1.0.0 unchanged.
+
 ## [1.0.5] - 2026-10-01
 
 ### Removed
