@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Removed
+
+- Dead exports: `matchesKey`/`Key` re-export from `src/compat.ts` (importers use pi-tui directly), `formatKeyHints`, `RECOMMENDED_SUFFIX`, and the `SelectionResult` type are module-private now (zero external importers). Dropped a duplicated file-header comment block in `src/types.ts` and a ghost `note: undefined` field from a legacy-path test assertion (the note subsystem was removed in 2.0.1).
+
 ## [2.0.4] - 2026-10-02
 
 ### Changed

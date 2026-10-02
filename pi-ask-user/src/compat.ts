@@ -22,7 +22,7 @@
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
-export { truncateToWidth, visibleWidth, matchesKey, Key } from "@earendil-works/pi-tui";
+export { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 /** omp Ellipsis.Unicode ("…"). pi's truncateToWidth takes the glyph directly. */
 export const ELLIPSIS = "…";
@@ -92,7 +92,7 @@ export function clipIndicator(offset: number, rows: number, totalRows: number): 
 }
 
 /** Format a KeybindingsManager key list the way omp's formatKeyHints does. */
-export function formatKeyHints(keys: readonly string[]): string {
+function formatKeyHints(keys: readonly string[]): string {
 	return keys.join("/");
 }
 

@@ -119,7 +119,7 @@ describe("askSingleQuestion (single select)", () => {
 	it("returns the chosen option with the suffix stripped", async () => {
 		const { ui, calls } = makeScriptedUi(["Session (Recommended)"]);
 		const result = await askSingleQuestion(ui, "Which?", SINGLE_OPTS, false, { recommended: 1 });
-		expect(result).toEqual({ selectedOptions: ["Session"], customInput: undefined, note: undefined, timedOut: false });
+		expect(result).toEqual({ selectedOptions: ["Session"], customInput: undefined, timedOut: false });
 		expect(calls[0]?.opts.initialIndex).toBe(1);
 		expect(calls[0]?.opts.selectionMarker).toBe("radio");
 	});

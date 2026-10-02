@@ -45,13 +45,7 @@ export interface ExtensionAskDialogSubmitResult {
 
 export type ExtensionAskDialogResult = ExtensionAskDialogSubmitResult;
 
-/**
- * Ask dialog types — migrated from oh-my-pi. The ExtensionAskDialog / ExtensionUI
- * shapes come from packages/coding-agent/src/extensibility/extensions/types.ts;
- * QuestionResult/AskToolDetails/AskOption come from packages/coding-agent/src/tools/ask.ts.
- *
- * Adaptation: none — these are pure data shapes, carried over verbatim.
- *//** Result for a single question (omp AskToolDetails.QuestionResult). */
+/** Result for a single question (omp AskToolDetails.QuestionResult). */
 export interface QuestionResult {
 	id: string;
 	question: string;

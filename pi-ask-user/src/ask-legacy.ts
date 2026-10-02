@@ -47,7 +47,7 @@ function toSelectOption(option: AskOption, label = option.label): ExtensionUISel
 	return option.description ? { label, description: option.description } : label;
 }
 
-export const RECOMMENDED_SUFFIX = " (Recommended)";
+const RECOMMENDED_SUFFIX = " (Recommended)";
 export const OTHER_OPTION = "Other (type your own)";
 const CHAT_ABOUT_THIS_OPTION = "Chat about this";
 export const NEXT_OPTION = "Next →";
@@ -321,7 +321,7 @@ export function formatCustomInputTitle(
 
 // --- askSingleQuestion (omp ask.ts) ----------------------------------------
 
-export interface SelectionResult {
+interface SelectionResult {
 	selectedOptions: string[];
 	customInput?: string;
 	timedOut: boolean;
