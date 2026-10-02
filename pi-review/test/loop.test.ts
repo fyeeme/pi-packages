@@ -3,11 +3,12 @@
  * extraction, blocking-finding extraction from the structured report JSON,
  * and newest-report discovery under <cwd>/.pi/review/.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { blockingFindings, extractLoopFlag, latestReportFile, waitForQuiescent } from "../src/loop.ts";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { blockingFindings, extractLoopFlag, latestReportFile, runLoopFixing, waitForQuiescent } from "../src/loop.ts";
 
 describe("extractLoopFlag", () => {
 	it("detects and strips --loop, keeping the rest", () => {
@@ -156,5 +157,158 @@ describe("waitForQuiescent", () => {
 			signal: { aborted: true },
 		});
 		expect(await waitForQuiescent(session)).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// runLoopFixing — the --loop driver state machine (fake session, real files)
+// ---------------------------------------------------------------------------
+
+interface FakeHarness {
+	pi: ExtensionAPI;
+	ctx: ExtensionCommandContext;
+	notify: ReturnType<typeof vi.fn>;
+	sent: Array<{ text: string }>;
+	/** Per-settled-turn report payload (null = the turn writes no report). */
+	script: Array<unknown | null>;
+	/** Simulate the dispatcher-sent review turn settling before the loop runs. */
+	simulateInitialTurn(): void;
+	setReviewDir(dir: string): void;
+}
+
+function fakeHarness(): FakeHarness {
+	const entries: Array<{ id: string; type: "message"; message: { role: string; content: unknown[] } }> = [
+		{ id: "u1", type: "message", message: { role: "user", content: [] } },
+		{ id: "a1", type: "message", message: { role: "assistant", content: [] } }, // loop baseline
+	];
+	let nextId = 1;
+	let idle = true;
+	let pending = 0;
+	let reviewDir = "";
+	let turn = 0;
+	const waiters: Array<() => void> = [];
+	const notify = vi.fn();
+	const sent: Array<{ text: string }> = [];
+	const script: Array<unknown | null> = [];
+
+	const writeReport = (payload: unknown): void => {
+		if (!reviewDir) return;
+		mkdirSync(reviewDir, { recursive: true });
+		const fp = join(reviewDir, `report-${turn}.json`);
+		writeFileSync(fp, JSON.stringify({ level: "high", findings: payload }));
+		// Future mtime: beats loopStart regardless of filesystem timestamp
+		// granularity (the discovery filter is strictly `mtime > sinceMs`).
+		const t = new Date(Date.now() + 60_000);
+		utimesSync(fp, t, t);
+	};
+
+	const settleTurn = (): void => {
+		nextId += 1;
+		entries.push({ id: `a${nextId}`, type: "message", message: { role: "assistant", content: [] } });
+		const report = script[turn];
+		turn += 1;
+		if (report !== null) writeReport(report);
+		idle = true;
+		pending -= 1;
+		for (const w of waiters.splice(0)) w();
+	};
+
+	const pi = {
+		sendUserMessage: (content: string) => {
+			sent.push({ text: content });
+			pending += 1;
+			idle = false;
+			queueMicrotask(settleTurn); // the fake turn runs and settles immediately
+			return Promise.resolve();
+		},
+	} as unknown as ExtensionAPI;
+
+	const ctx = {
+		signal: undefined,
+		isIdle: () => idle,
+		hasPendingMessages: () => pending > 0,
+		waitForIdle: () => new Promise<void>((r) => (idle ? r() : waiters.push(r))),
+		ui: { notify },
+		sessionManager: { getBranch: () => entries },
+	} as unknown as ExtensionCommandContext;
+
+	return {
+		pi,
+		ctx,
+		notify,
+		sent,
+		script,
+		simulateInitialTurn: settleTurn,
+		setReviewDir: (d: string) => {
+			reviewDir = d;
+		},
+	};
+}
+
+describe("runLoopFixing (driver integration)", () => {
+	let dir = "";
+	beforeEach(() => {
+		dir = join(tmpdir(), `pi-review-loop-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("fixes one round: fix prompt → re-review prompt → clean → returns 1", async () => {
+		const h = fakeHarness();
+		h.setReviewDir(join(dir, ".pi", "review"));
+		// initial review reports an open P0; the fix turn writes nothing; the
+		// re-review reports the same finding with outcome=fixed (un-blocked).
+		h.script.push([{ file: "src/a.ts", line: 12, priority: "P0", summary: "off-by-one" }]);
+		h.script.push(null);
+		h.script.push([{ file: "src/a.ts", line: 12, priority: "P0", summary: "off-by-one", outcome: "fixed" }]);
+
+		const run = runLoopFixing(h.pi, h.ctx, { level: "high", passes: 3, reviewDir: join(dir, ".pi", "review") });
+		h.simulateInitialTurn();
+		const rounds = await run;
+
+		expect(rounds).toBe(1);
+		expect(h.sent).toHaveLength(2); // fix + re-review prompts
+		expect(h.sent[0]!.text).toContain("Fix the following blocking findings");
+		expect(h.sent[0]!.text).toContain("src/a.ts:12");
+		expect(h.sent[1]!.text).toContain("Re-run the code-review SINGLE-PASS flow for effort high");
+		expect(h.notify.mock.calls.some(([msg]) => /clean after 1 fix round/.test(String(msg)))).toBe(true);
+	});
+
+	it("stops at the passes limit with open findings and says so", async () => {
+		const h = fakeHarness();
+		h.setReviewDir(join(dir, ".pi", "review"));
+		const open = [{ file: "src/b.ts", priority: "P1", summary: "race" }];
+		h.script.push(open, null, open, null); // P0/P1 stays open every round
+
+		const run = runLoopFixing(h.pi, h.ctx, { level: "low", passes: 1, reviewDir: join(dir, ".pi", "review") });
+		h.simulateInitialTurn();
+		const rounds = await run;
+
+		expect(rounds).toBe(1);
+		expect(h.sent).toHaveLength(2); // 1 fix + 1 re-review, then the limit fires
+		expect(h.notify.mock.calls.some(([msg]) => /safety limit reached/.test(String(msg)))).toBe(true);
+	});
+
+	it("returns 0 with a warning when no report JSON ever lands", async () => {
+		const h = fakeHarness();
+		h.setReviewDir(join(dir, ".pi", "review"));
+		h.script.push(null); // review turn wrote no report
+
+		const run = runLoopFixing(h.pi, h.ctx, { level: "high", passes: 3, reviewDir: join(dir, ".pi", "review") });
+		h.simulateInitialTurn();
+		const rounds = await run;
+
+		expect(rounds).toBe(0);
+		expect(h.sent).toHaveLength(0);
+		expect(h.notify.mock.calls.some(([msg]) => /no review_report JSON found/.test(String(msg)))).toBe(true);
+	});
+
+	it("returns 0 immediately when the caller signal is already aborted", async () => {
+		const h = fakeHarness();
+		(h.ctx as { signal?: { aborted: boolean } }).signal = { aborted: true };
+		const rounds = await runLoopFixing(h.pi, h.ctx, { level: "high", passes: 3, reviewDir: join(dir, ".pi", "review") });
+		expect(rounds).toBe(0);
+		expect(h.sent).toHaveLength(0);
 	});
 });
