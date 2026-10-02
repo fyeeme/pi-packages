@@ -60,8 +60,8 @@ See the Pi Packages guide on [pi.dev](https://pi.dev) for the full list of sourc
 
 Aliases are accepted for modes: `c`/`collapse` → `collapsed`, `s`/`summaries` → `summary`, `e`/`expand`/`full` → `expanded`.
 
-On startup the view mode is restored from (in order): the current session's saved mode, the project default, the global default, then `summary`.
+On startup the view mode is restored from (in order): the current session's saved mode, the project default, the global default, then `collapsed`.
 
 ## Requirements
 
-Pi patches an internal assistant-message component at runtime. If pi's internals are incompatible with the patch, the extension logs a warning and falls back to pi's native thinking renderer for that session; persisted defaults still apply to future compatible sessions.
+Uses pi's official `registerMarkdownTransformer` hook (since 1.1.0 — the earlier runtime monkeypatch of pi's internal assistant-message component is gone). No fallback path is needed; if the host API changes shape the transformer simply stops applying.

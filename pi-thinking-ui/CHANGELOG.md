@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Fixed
+
+- README drift: startup default is `collapsed` (not `summary`); Requirements now describes the official `registerMarkdownTransformer` hook — the runtime monkeypatch and its fallback were removed in 1.1.0.
+
 ## [1.1.3] - 2026-10-02
 
 ### Changed
