@@ -609,3 +609,161 @@ describe("spec anchors: ids, wire schema, trust gate, frontmatter schema", () =>
 		}
 	});
 });
+
+describe("structured envelope (spec: subagent-structured-output)", () => {
+	interface EnvelopeTask {
+		agent: string;
+		status: string;
+		result?: unknown;
+		error?: string;
+		usage?: Record<string, number>;
+	}
+
+	function envelopeOf(result: { structuredContent?: unknown }): { mode: string; tasks: EnvelopeTask[] } {
+		return result.structuredContent as { mode: string; tasks: EnvelopeTask[] };
+	}
+
+	/** Fake ChildProcess that stays open until the test closes it (abort path). */
+	function idleProc(): ChildProcess & { kill: ReturnType<typeof vi.fn> } {
+		const stdout = new EventEmitter();
+		const stderr = new EventEmitter();
+		const bus = new EventEmitter();
+		return Object.assign(bus, {
+			stdout,
+			stderr,
+			exitCode: null as number | null,
+			signalCode: null as string | null,
+			kill: vi.fn(),
+		}) as unknown as ChildProcess & { kill: ReturnType<typeof vi.fn> };
+	}
+
+	it("declares the envelope outputSchema for programmatic callers", () => {
+		expect(subagentTool.outputSchema).toBeDefined();
+	});
+
+	it("parallel batch: schema-validated objects land as objects, schemaless answers as text", async () => {
+		spawnMock.mockImplementation((_c: string, args: string[]) => {
+			if (args.join(" ").includes("json-task")) return procWithFinalText(JSON.stringify({ answer: 42 }));
+			return procWithFinalText("plain answer");
+		});
+		const result = await subagentTool.execute!(
+			"call-1",
+			{
+				tasks: [
+					{
+						agent: "scout",
+						task: "json-task",
+						outputSchema: {
+							type: "object",
+							properties: { answer: { type: "number" } },
+							required: ["answer"],
+						},
+						schemaMode: "strict",
+					},
+					{ agent: "scout", task: "text-task" },
+				],
+			} as never,
+			new AbortController().signal,
+			undefined,
+			fakeCtx() as never,
+		);
+		const envelope = envelopeOf(result);
+		expect(envelope.mode).toBe("parallel");
+		expect(envelope.tasks).toHaveLength(2);
+		expect(envelope.tasks[0]).toMatchObject({ agent: "scout", status: "completed" });
+		expect(envelope.tasks[0].result).toEqual({ answer: 42 }); // parsed object, not the raw text
+		expect(envelope.tasks[1].result).toBe("plain answer"); // no task-level schema -> answer text
+		expect(typeof envelope.tasks[0].usage).toBe("object");
+		// Model-facing view unchanged: the rendered Markdown sections survive.
+		const text = result.content[0];
+		expect(text.type === "text" && text.text.includes("### [scout] completed")).toBe(true);
+	});
+
+	it("mixed batch is a normal result: failed task carries status/error, not isError", async () => {
+		spawnMock.mockImplementation((_c: string, args: string[]) => {
+			return args.join(" ").includes("boom-task") ? transientFailProc() : procWithFinalText("ok");
+		});
+		const result = await subagentTool.execute!(
+			"call-2",
+			{
+				tasks: [
+					{ agent: "scout", task: "fine-task" },
+					{ agent: "scout", task: "boom-task" },
+				],
+			} as never,
+			new AbortController().signal,
+			undefined,
+			fakeCtx() as never,
+		);
+		const envelope = envelopeOf(result);
+		expect(envelope.tasks[0]).toMatchObject({ agent: "scout", status: "completed", result: "ok" });
+		expect(envelope.tasks[1]).toMatchObject({ agent: "scout", status: "failed" });
+		expect(envelope.tasks[1].result).toBeUndefined();
+		expect(envelope.tasks[1].error).toContain("ProviderError");
+	});
+
+	it("canceled task: canceled status and no result field", async () => {
+		const procs: Array<ReturnType<typeof idleProc>> = [];
+		spawnMock.mockImplementation(() => {
+			const proc = idleProc();
+			procs.push(proc);
+			return proc;
+		});
+		const controller = new AbortController();
+		const running = subagentTool.execute!(
+			"call-3",
+			{ tasks: [{ agent: "scout", task: "slow-task" }] } as never,
+			controller.signal,
+			undefined,
+			fakeCtx() as never,
+		);
+		await vi.waitFor(() => expect(procs).toHaveLength(1));
+		controller.abort();
+		await vi.waitFor(() => expect(procs[0].kill).toHaveBeenCalled());
+		procs[0].emit("close", null, "SIGTERM");
+		const result = await running;
+		const envelope = envelopeOf(result);
+		expect(envelope.tasks[0]).toMatchObject({ agent: "scout", status: "canceled" });
+		expect("result" in envelope.tasks[0]).toBe(false);
+	});
+
+	it("single mode: envelope mirrors the one result alongside the text view", async () => {
+		spawnMock.mockImplementation(() => procWithFinalText("final answer"));
+		const result = await subagentTool.execute!(
+			"call-4",
+			{ agent: "scout", task: "single-task" } as never,
+			new AbortController().signal,
+			undefined,
+			fakeCtx() as never,
+		);
+		const envelope = envelopeOf(result);
+		expect(envelope.mode).toBe("single");
+		expect(envelope.tasks[0]).toMatchObject({ agent: "scout", status: "completed", result: "final answer" });
+	});
+
+	it("trust-gate cancel: envelope and details report the parallel call shape", async () => {
+		const dir = mkdtempSync(join(td(), "pi-sa-cancel-"));
+		mkdirSync(join(dir, ".pi", "agents"), { recursive: true });
+		writeFileSync(join(dir, ".pi", "agents", "pa.md"), "---\nname: pa\ndescription: project agent\n---\nbody\n");
+		// Project setting pins the gate ON deterministically (overrides any global).
+		writeFileSync(join(dir, ".pi", "pi-subagent.json"), JSON.stringify({ confirmProjectAgents: true }));
+		try {
+			const result = await subagentTool.execute!(
+				"call-5",
+				{ tasks: [{ agent: "pa", task: "never-runs" }, { agent: "pa", task: "also-never" }] } as never,
+				new AbortController().signal,
+				undefined,
+				{ hasUI: true, mode: "tui", cwd: dir, ui: { confirm: async () => false } } as never,
+			);
+			expect(spawnMock).not.toHaveBeenCalled();
+			const envelope = envelopeOf(result);
+			expect(envelope.mode).toBe("parallel"); // not the hardcoded "single"
+			expect(envelope.tasks).toEqual([]); // nothing was dispatched
+			expect((result.details as { mode: string }).mode).toBe("parallel");
+			const text = result.content[0];
+			expect(text.type === "text" && text.text).toContain("Canceled");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});

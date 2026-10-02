@@ -16,10 +16,10 @@
  * physically cannot recurse.
  */
 import { defineTool, getMarkdownTheme, truncateHead } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 import * as os from "node:os";
 import type { AgentToolResult, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Message } from "@earendil-works/pi-ai";
+import type { JsonValue, Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { type AgentConfig, discoverAgents } from "../../agents.ts";
@@ -638,6 +638,91 @@ const SubagentParams = Type.Object({
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
 });
 
+// --- structured envelope (spec: subagent-structured-output) ------------------
+//
+// design D2: the envelope is derived from the same SingleResult data as the
+// rendered text — one source, two views (model keeps the Markdown, codemode
+// scripts get the envelope). design D3: `result` carries the task-level-schema
+// validated object when `schemaValid` is set (validation implies the text
+// parsed and checked), otherwise the answer text; task-level strict/permissive
+// semantics are untouched. design D4: mixed batches are normal results —
+// failure lives in per-task status/error, never in a result-level isError.
+
+/** Per-task usage slice — the accounting dispatch already produces. */
+const TaskUsageEnvelope = Type.Object({
+	input: Type.Number(),
+	output: Type.Number(),
+	cacheRead: Type.Number(),
+	cacheWrite: Type.Number(),
+	cost: Type.Number(),
+});
+
+const TaskEnvelope = Type.Object({
+	agent: Type.String({ description: "Agent name from the call" }),
+	status: Type.Union([
+		Type.Literal("completed", { description: "Agent finished; `result` carries its answer" }),
+		Type.Literal("failed", { description: "Agent failed; `error` carries the reason" }),
+		Type.Literal("canceled", { description: "Agent aborted before finishing; no `result`" }),
+	]),
+	result: Type.Optional(
+		Type.Unknown({ description: "Answer text, or the task-level-schema validated object when one applied" }),
+	),
+	error: Type.Optional(Type.String({ description: "Failure reason (errorMessage/stderr/stopReason)" })),
+	usage: Type.Optional(TaskUsageEnvelope),
+});
+
+const SubagentEnvelope = Type.Object({
+	mode: Type.Union([Type.Literal("single"), Type.Literal("parallel")]),
+	tasks: Type.Array(TaskEnvelope, { description: "One entry per dispatched task, in call order" }),
+});
+
+// `result` is Type.Unknown on the wire (task-level schemas are caller-defined);
+// the static type narrows to JsonValue so envelopes satisfy structuredContent.
+type TaskEnvelopeOut = Omit<Static<typeof TaskEnvelope>, "result"> & { result?: JsonValue };
+type SubagentEnvelopeOut = Omit<Static<typeof SubagentEnvelope>, "tasks"> & { tasks: TaskEnvelopeOut[] };
+
+function envelopeStatus(r: SingleResult): TaskEnvelopeOut["status"] {
+	if (r.aborted === true || r.stopReason === "aborted") return "canceled";
+	return isFailedResult(r) ? "failed" : "completed";
+}
+
+function envelopeResult(r: SingleResult): JsonValue {
+	const { text } = getResultOutput(r);
+	if (r.schemaValid) {
+		try {
+			return JSON.parse(text) as JsonValue;
+		} catch {
+			// schemaValid implies a validated parse existed; a re-parse miss
+			// falls back to the text rather than throwing into the envelope.
+		}
+	}
+	return text;
+}
+
+/** Builds the structuredContent payload from the same results the text view renders. */
+function buildEnvelope(mode: "single" | "parallel", results: SingleResult[]): SubagentEnvelopeOut {
+	return {
+		mode,
+		tasks: results.map((r): TaskEnvelopeOut => {
+			const status = envelopeStatus(r);
+			const task: TaskEnvelopeOut = { agent: r.agent, status };
+			if (status === "completed") task.result = envelopeResult(r);
+			const reason =
+				r.errorMessage || r.stderr || (r.stopReason && r.stopReason !== "end" ? r.stopReason : undefined);
+			if (status !== "completed" && reason) task.error = reason;
+			if (r.usage)
+				task.usage = {
+					input: r.usage.input,
+					output: r.usage.output,
+					cacheRead: r.usage.cacheRead,
+					cacheWrite: r.usage.cacheWrite,
+					cost: r.usage.cost,
+				};
+			return task;
+		}),
+	};
+}
+
 export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 	name: "subagent",
 	label: "Subagent",
@@ -649,6 +734,9 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 	].join(" "),
 	promptSnippet: "subagent — delegate to specialized agents (single/parallel)",
 	parameters: SubagentParams,
+	// pi 1.0 (spec: subagent-structured-output): codemode scripts and nested
+	// callers receive the structured envelope instead of the Markdown text.
+	outputSchema: SubagentEnvelope,
 	// pi 0.99 metadata (design D6): namespace groups the tool under one heading
 	// in codemode listings (describeNamespace() reads `instructions`);
 	// annotations declare the spawn-subprocess reality for permission gates —
@@ -730,11 +818,16 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 					"Run project-local agents?",
 					`Agents: ${names}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
 				);
-				if (!ok)
+				if (!ok) {
+					// The gate fires before mode branching; derive the call shape from
+					// the params so a declined parallel fan-out is not reported as single.
+					const mode = hasTasks ? "parallel" : "single";
 					return {
 						content: [{ type: "text", text: "Canceled: project-local agents not approved." }],
-						details: makeDetails("single")([]),
+						details: makeDetails(mode)([]),
+						structuredContent: buildEnvelope(mode, []),
 					};
+				}
 			}
 		}
 
@@ -847,6 +940,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 			return {
 				content: [{ type: "text", text }],
 				details: makeDetails("parallel")(results),
+				structuredContent: buildEnvelope("parallel", results),
 				usage: sumUsage(results),
 			};
 		}
@@ -881,6 +975,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 					},
 				],
 				details: makeDetails("single")([result]),
+				structuredContent: buildEnvelope("single", [result]),
 				usage: toPiUsage(result.usage),
 			};
 		}
