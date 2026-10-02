@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-10-02
+
+### Changed
+
+- Relaxed the `@earendil-works/pi-agent-core` peer dependency from exact `0.99.2` to `>=0.99.0`, matching the other peer floors.
+- Dev toolchain pinned to `@earendil-works/pi-agent-core`/`pi-ai`/`pi-coding-agent`/`pi-tui` 1.0.0; typecheck and tests pass against 1.0.0 unchanged.
+
 ## [1.0.4] - 2026-10-01
 
 ### Added
