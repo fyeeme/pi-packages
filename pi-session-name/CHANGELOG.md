@@ -7,12 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional `maxWords` (`PI_SESSION_NAME_MAX_WORDS`) enforces a positive-integer word cap for generated titles in both prompt styles and auto KEEP/NEW requests. Explicit manual names bypass the cap.
+- Optional `includeAssistantContext` (`PI_SESSION_NAME_INCLUDE_ASSISTANT_CONTEXT`) adds bounded role-labelled user/assistant text and the latest compaction summary. Human-only input remains the default; tools, thinking, images, system messages, and custom messages are excluded.
+- Personal `session-name.json` in Pi's agent directory supplies cross-project defaults, followed by project configuration and environment overrides. Invalid configuration values are ignored.
+
 ### Changed
+
+- Prompts summarize the concrete main task rather than opening filler; `/rename` without arguments uses the whole selected conversation window.
+- Failed or overlong generated revisions preserve an existing title. The deterministic first-word fallback is retained only for unnamed sessions and respects `maxWords` when configured.
+- Model inputs share a 16 KiB UTF-8 budget, including framing and the system prompt; oversized classifier inputs fall back to bounded completion requests.
 
 - Public surface narrowed to the documented API: the implementation moved to `src/core.ts` and `index.ts` now re-exports only README's seven utilities, the types their signatures reference (`PromptStyle`, `SessionEntry`, `TitleRequest`, `SessionNameConfig`), and the default extension factory. Previously every internal helper (20+ symbols) rode the package entry. Verified against the npm registry: the package has no dependents outside this repo. `files` now ships `src/`.
 
 ### Fixed
 
+- Title requests pass instructions through `Context.systemPrompt`, rather than assuming every supported Pi SDK accepts a `system` role in the messages array. Reasoning-capable models use provider-neutral low-effort `streamSimple()` instead of a completion that may disable required reasoning. The current session model and main-session thinking settings are unchanged.
+- Pending title results cannot overwrite a newer turn, replaced session, shutdown, or manual rename. A stale handler cannot clear a newer request's in-flight guard.
+- Word counting trims whitespace left after trailing punctuation removal; title sanitization and code-point-safe byte truncation remain intact.
+- Package tests and typecheck run from a clean standalone checkout without an external `tsconfig.base.json`; regression tests isolate personal configuration and inherited environment variables.
 - README drift: default mode is `follow` (not `first`); removed the config example's `model` field (the 1.0.5 model override removal); prerequisites now state pi >= 0.99.0 (classifier APIs); a test title now names the real config path (`.pi/agent/session-name.json`).
 
 ## [1.0.6] - 2026-10-02
