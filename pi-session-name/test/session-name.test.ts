@@ -21,6 +21,25 @@ import {
 	type SessionEntry,
 } from "../src/core.ts";
 
+// Isolate all config reads, including orchestration's default getAgentDir().
+const configPaths = vi.hoisted(() => ({ agentDir: "" }));
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
+	...await importOriginal<typeof import("@earendil-works/pi-coding-agent")>(),
+	getAgentDir: () => configPaths.agentDir,
+}));
+beforeEach(() => {
+	for (const name of [
+		"PI_SESSION_NAME_MODE", "PI_SESSION_NAME_PROMPT", "PI_SESSION_NAME_ENABLED",
+		"PI_SESSION_NAME_TIMESTAMP", "PI_SESSION_NAME_MAX_LENGTH", "PI_SESSION_NAME_MAX_WORDS",
+		"PI_SESSION_NAME_INCLUDE_ASSISTANT_CONTEXT",
+	]) vi.stubEnv(name, undefined);
+	configPaths.agentDir = mkdtempSync(join(tmpdir(), "pisn-personal-"));
+});
+afterEach(() => {
+	rmSync(configPaths.agentDir, { recursive: true, force: true });
+	vi.unstubAllEnvs();
+});
+
 // ---------------------------------------------------------------------------
 // buildTitleMessages — human-only selection with window + budgets
 // ---------------------------------------------------------------------------
@@ -233,7 +252,7 @@ describe("loadConfig", () => {
 
 	it("returns defaults when no file and no env", () => {
 		const cfg = loadConfig(dir, {});
-		expect(cfg).toEqual({ mode: "follow", prompt: "concise", enabled: true, appendCreationTime: true, maxLength: 200 });
+		expect(cfg).toEqual({ mode: "follow", prompt: "concise", enabled: true, appendCreationTime: true, maxLength: 200, includeAssistantContext: false });
 	});
 	it("reads .pi/agent/session-name.json", () => {
 		mkdirSync(join(dir, ".pi", "agent"), { recursive: true });
@@ -271,7 +290,7 @@ describe("loadConfig", () => {
 	it("malformed JSON falls back to defaults silently", () => {
 		mkdirSync(join(dir, ".pi", "agent"), { recursive: true });
 		writeFileSync(join(dir, ".pi", "agent", "session-name.json"), "{ not valid json", "utf8");
-		expect(loadConfig(dir, {})).toEqual({ mode: "follow", prompt: "concise", enabled: true, appendCreationTime: true, maxLength: 200 });
+		expect(loadConfig(dir, {})).toEqual({ mode: "follow", prompt: "concise", enabled: true, appendCreationTime: true, maxLength: 200, includeAssistantContext: false });
 	});
 });
 
@@ -293,13 +312,41 @@ describe("generateTitle", () => {
 		});
 		const out = await generateTitle({ system: "SYS", user: "USR", maxOutputTokens: 512 }, { id: "m" } as any, ctx);
 		expect(out).toBe("T");
-		expect(seenCtx.messages[0]).toMatchObject({ role: "system" });
-		expect(seenCtx.messages[0].content[0].text).toBe("SYS");
-		expect(seenCtx.messages[1]).toMatchObject({ role: "user" });
-		expect(seenCtx.messages[1].content[0].text).toBe("USR");
+		expect(seenCtx.systemPrompt).toBe("SYS");
+		expect(seenCtx.messages).toHaveLength(1);
+		expect(seenCtx.messages[0]).toMatchObject({ role: "user" });
+		expect(seenCtx.messages[0].content[0].text).toBe("USR");
 		expect(seenOpts.maxTokens).toBe(512);
 		expect(seenOpts.signal).toBeInstanceOf(AbortSignal);
 	});
+	it("uses provider-neutral low effort for the selected reasoning model without changing it", async () => {
+		const model = { id: "reasoning-model", reasoning: true } as any;
+		const complete = vi.fn();
+		const result = vi.fn(async () => ({ stopReason: "stop", content: [{ type: "text", text: "Token Refresh Race" }] }));
+		const streamSimple = vi.fn(() => ({ result }));
+		const ctx = { modelRegistry: { complete, streamSimple } } as any;
+		expect(await generateTitle({ system: "SYS", user: "USR", maxOutputTokens: 512 }, model, ctx)).toBe("Token Refresh Race");
+		expect(streamSimple).toHaveBeenCalledWith(model, {
+			systemPrompt: "SYS",
+			messages: [{ role: "user", content: [{ type: "text", text: "USR" }], timestamp: expect.any(Number) }],
+		}, { signal: expect.any(AbortSignal), maxTokens: 512, reasoning: "low" });
+		expect(complete).not.toHaveBeenCalled();
+		expect(model).toEqual({ id: "reasoning-model", reasoning: true });
+	});
+
+	it("also composes context cancellation when a separate caller signal is provided", async () => {
+		let seenOpts: any;
+		const ctx = mkGenCtx(async (_m: any, _c: any, options: any) => {
+			seenOpts = options;
+			return { stopReason: "stop", content: [] };
+		});
+		const contextController = new AbortController();
+		ctx.signal = contextController.signal;
+		contextController.abort();
+		await generateTitle({ system: "SYS", user: "USR", maxOutputTokens: 512 }, { id: "m" } as any, ctx, new AbortController().signal);
+		expect(seenOpts.signal.aborted).toBe(true);
+	});
+
 	it("composes the caller signal so abort cancels the nested call", async () => {
 		let seenOpts: any;
 		const ctx = mkGenCtx(async (_m: any, _c: any, o: any) => {
@@ -504,7 +551,6 @@ describe("extension orchestration", () => {
 	});
 
 	it("default mode is follow (regenerates every turn without any config)", async () => {
-		vi.unstubAllEnvs(); // earlier cases stubbed PI_SESSION_NAME_MODE
 		const { pi, handlers, setCalls } = mkPi();
 		setup(pi);
 		handlers.session_start?.({ type: "session_start", reason: "new" }, mkCtxOrch([]));
@@ -603,7 +649,6 @@ describe("extension orchestration", () => {
 	});
 
 	it("falls back to the deterministic first-words title when the model call fails", async () => {
-		vi.unstubAllEnvs();
 		vi.stubEnv("PI_SESSION_NAME_MODE", "first");
 		const { pi, handlers, setCalls } = mkPi();
 		setup(pi);
@@ -616,7 +661,6 @@ describe("extension orchestration", () => {
 	});
 
 	it("falls back when the model returns an empty/stopReason-failed response", async () => {
-		vi.unstubAllEnvs();
 		vi.stubEnv("PI_SESSION_NAME_MODE", "first");
 		const { pi, handlers, setCalls } = mkPi();
 		setup(pi);
@@ -665,7 +709,8 @@ describe("rename command", () => {
 			throw new Error("down");
 		});
 		await commands.rename!.handler("", ctx);
-		// deterministic fallback still names it
+		// Unnamed sessions still get the initial fallback, but report failure.
 		expect(setCalls.map(stripPrefix)).toEqual(["fix login"]);
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Could not generate a name from the model response", "warning");
 	});
 });

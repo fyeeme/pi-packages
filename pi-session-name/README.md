@@ -14,12 +14,14 @@ Auto-name [pi](https://pi.dev) sessions with a short LLM-generated title so `--r
 - **Creation-time prefix** — every title is prefixed `yyyy-mm-dd hh:mm - …` so sessions edited later still show when they were created (the list sorts by last-modified)
 - **`/rename [name]`** — rename the current session on demand. With an argument it sets that name; without, it generates one from the conversation
 - **Language-aware** — titles use the same language as your first message
-- **Distinctive titles** — leads with the concrete entity/error/identifier, so similar sessions don't blur together (~15-40 chars)
-- **Graceful failure** — model unavailable or model call fails? Stays silent, never blocks the session
+- **Distinctive titles** — summarizes the concrete main task instead of copying greetings or opening filler
+- **Optional short titles** — configure a hard `maxWords` limit, such as three words for a terminal tab
+- **Optional conversation context** — include bounded assistant text and the latest compaction summary to clarify vague requests
+- **Graceful failure** — preserves an existing title when a model call fails; only unnamed sessions get a first-message fallback
 
 ## Prerequisites
 
-- [pi](https://pi.dev) >= 0.99.0 (uses `agent_settled` / `session_info_changed` events and `ctx.modelRegistry.complete()` / `classify()`)
+- [pi](https://pi.dev) >= 0.99.0 (uses `agent_settled` / `session_info_changed` events and authenticated model-registry calls)
 
 ## Installation
 
@@ -41,7 +43,7 @@ pi -e @fyeeme/pi-session-name
 ```bash
 # Clone the repo
 git clone https://github.com/fyeeme/pi-packages.git
-cd pi-packages/packages/extensions/pi-session-name
+cd pi-packages/pi-session-name
 
 # Symlink to pi extensions
 ln -s "$(pwd)" ~/.pi/agent/extensions/pi-session-name
@@ -66,7 +68,11 @@ If you want to change behavior, see [Configuration](#configuration).
 
 ## Configuration
 
-Create `.pi/agent/session-name.json` in your project root:
+Create `session-name.json` in your personal Pi agent directory (normally
+`~/.pi/agent/`) to set defaults for all projects, or create
+`.pi/agent/session-name.json` in a project for overrides. Precedence is
+**built-in defaults → personal file → project file → environment variables**.
+The personal location follows Pi's `PI_CODING_AGENT_DIR` override.
 
 ```json
 {
@@ -75,17 +81,38 @@ Create `.pi/agent/session-name.json` in your project root:
 }
 ```
 
+For short, conversation-aware titles suitable for terminal tabs:
+
+```json
+{
+	"mode": "auto",
+	"maxWords": 3,
+	"includeAssistantContext": true,
+	"appendCreationTime": false
+}
+```
+
+The extra settings are opt-in: existing defaults and mode choices remain the
+same. `maxWords` counts whitespace-delimited words **before** byte truncation
+and excludes the creation-time prefix. An overlong generated title is rejected,
+not clipped to an arbitrary three-word fragment. Explicit `/rename <name>`
+bypasses the word limit but still applies terminal sanitization and `maxLength`.
+For languages without word spaces, retain `maxLength` as the size limit.
+Invalid configuration values are ignored rather than replacing valid defaults.
+
 ### Options
 
 | Option | Default | Env override | Description |
 |--------|---------|--------------|-------------|
 | `mode` | `"follow"` | `PI_SESSION_NAME_MODE` | `"follow"` — regenerate every turn (all-prompts cadence); `"first"` — name once; `"auto"` — re-evaluate each turn (KEEP/NEW) |
 | `maxLength` | `200` | `PI_SESSION_NAME_MAX_LENGTH` | UTF-8 byte budget for accepted titles (200 bytes ≈ 200 ASCII chars or ~66 CJK chars) |
-| `prompt` | `"concise"` | `PI_SESSION_NAME_PROMPT` | `"concise"` — deepseek-harness wording, 512-token budget (default); `"editorial"` — adds distinctiveness/concrete-detail rules, 1024-token budget |
+| `maxWords` | Unset | `PI_SESSION_NAME_MAX_WORDS` | Optional positive safe integer limiting generated title words; applies to both prompt styles and KEEP/NEW requests |
+| `includeAssistantContext` | `false` | `PI_SESSION_NAME_INCLUDE_ASSISTANT_CONTEXT` | Include role-labelled user/assistant text and the latest compaction summary; excludes thinking, images, tools, system messages, and custom messages |
+| `prompt` | `"concise"` | `PI_SESSION_NAME_PROMPT` | `"concise"` — task-focused summaries, 512-token budget (default); `"editorial"` — adds distinctiveness/concrete-detail rules, 1024-token budget |
 | `enabled` | `true` | `PI_SESSION_NAME_ENABLED=false` | Master switch to disable auto-naming |
 | `appendCreationTime` | `true` | `PI_SESSION_NAME_TIMESTAMP=false` | Prefix every title with the session's creation time — `yyyy-mm-dd hh:mm - title`. The resume list sorts by last-modified, so an edited old session resurfaces at the top; the prefix keeps its original age visible. Parsed from the session file name (best effort: no stamp, no prefix). |
 
-Titles are generated with the model you're already chatting with (`ctx.model`) — there is no model override. Model calls go through `ctx.modelRegistry.complete()`, which resolves authentication at request time — API keys and OAuth subscription logins both work, with no extra API key configuration.
+Titles are generated with the model you're already chatting with (`ctx.model`) — there is no model override. Calls go through Pi's authenticated model registry: `complete()` for non-reasoning models and provider-neutral `streamSimple()` for reasoning-capable models. The latter uses low effort **only for the auxiliary title request**, letting Pi map it to supported provider options; the main session's model and thinking settings are unchanged. API keys and OAuth subscription logins both work without extra credentials.
 
 ### Environment variables only
 
@@ -94,6 +121,8 @@ If you prefer environment variables over a config file:
 ```bash
 export PI_SESSION_NAME_MODE=auto
 export PI_SESSION_NAME_MAX_LENGTH=150
+export PI_SESSION_NAME_MAX_WORDS=3
+export PI_SESSION_NAME_INCLUDE_ASSISTANT_CONTEXT=true
 export PI_SESSION_NAME_ENABLED=true
 ```
 
@@ -107,22 +136,24 @@ export PI_SESSION_NAME_ENABLED=true
 
 ### Prompt styles
 
-Two system-prompt styles ship (measured A/B on 50 local sessions with a reasoning model, glm-5.3-flash):
+Two system-prompt styles ship:
 
-- **`concise`** (default) — deepseek-harness wording verbatim: four lines of format discipline, no editorial content rules. 96% title yield, p50 latency 5.1 s, uniform lengths.
-- **`editorial`** — same architecture plus pi's distinctiveness rules (never a generic headline; carry the concrete module/error/identifier). Titles are more information-dense, but the extra rules induce longer chain-of-thought on reasoning models, so the output budget is raised to 1024 tokens and latency runs ~30% higher.
+- **`concise`** (default) — task-focused summaries with plain-text output discipline and approximate language-aware length targets; 512-token output budget.
+- **`editorial`** — additionally emphasizes distinctive concrete entities, errors, and identifiers; 1024-token output budget.
 
-Switch in `.pi/agent/session-name.json` (`"prompt": "editorial"`) or via `PI_SESSION_NAME_PROMPT=editorial`.
+An explicit `maxWords` overrides either style's approximate word target. Switch
+styles in either configuration file (`"prompt": "editorial"`) or with
+`PI_SESSION_NAME_PROMPT=editorial`.
 
-### Pipeline (deepseek-harness discipline, 1:1 where the host allows)
+### Pipeline
 
-1. On `agent_settled`, the extension collects the eligible **human messages** (assistant/system never enter a title request): first message plus the recent tail, per-message cap, and a 16 KiB UTF-8 input budget that narrows from the oldest non-first message
-2. It sends a **system/user split** request: the system instruction carries the output discipline (plain text, no Markdown/XML/code/terminal codes, language of the messages, ~6 words / ~18 CJK chars); the user payload is the JSON-framed message array, so untrusted text cannot forge structural delimiters
-3. Output is normalized — ANSI/OSC/CSI/control/bidi stripping, quote/punctuation trimming — and capped by a **UTF-8 byte budget** (`maxLength`, default 200 bytes ≈ 200 ASCII chars or ~66 CJK chars)
-4. On any failure (provider error, abort, 20 s timeout, non-`stop` finish, empty output), a **deterministic fallback** names the session from the first human message's leading words — zero LLM involvement
-5. The title is set via `pi.setSessionName()`, which updates the resume picker immediately
-6. In `first` mode, it stops there. `follow` regenerates every turn (all-prompts cadence). `auto` runs a KEEP/NEW verdict (classifier when available)
-7. If a manual rename is detected (`session_info_changed` with a name the extension didn't set), auto-naming locks permanently
+1. On `agent_settled`, the extension collects bounded human text from the current branch. With `includeAssistantContext: true`, it instead frames role-labelled user/assistant text plus the latest compaction summary. Human intent remains authoritative; tool results, thinking blocks, images, system messages, and custom messages are excluded.
+2. The model receives a separate `systemPrompt` and a JSON-framed user payload. Both share a 16 KiB UTF-8 input budget. Oversized windows narrow from older non-first messages, preserving the opening request and recent tail; oversized text is shortened without splitting code points.
+3. The current session model generates the title within the prompt style's output budget. There are no provider-specific defaults or model overrides.
+4. Output is terminal-sanitized and checked against optional `maxWords` before applying the UTF-8 `maxLength` budget. On error, abort, timeout, non-`stop` finish, or invalid output, an **existing title stays unchanged**. Only an unnamed session gets the deterministic first-message fallback (up to `maxWords`, or eight words when unset).
+5. The title is set via `pi.setSessionName()`. Session changes, new turns, shutdown, or manual renames invalidate pending results so they cannot overwrite newer state.
+6. `first` generates once; `follow` regenerates each settled turn; `auto` prefers a classifier KEEP/NEW verdict when available and otherwise uses a completion verdict. Oversized classifier inputs skip to the bounded completion path.
+7. A manual rename locks background naming for the rest of the session. `/rename` without arguments summarizes the **whole selected conversation window**, rather than only the opening request; it remains a manual action and pins the result. A failed explicit generation reports a warning and preserves an existing title.
 
 ## Smoke test
 
@@ -146,6 +177,21 @@ pi -e @fyeeme/pi-session-name
 # → No errors, session runs normally
 ```
 
+## Development and verification
+
+From this package directory:
+
+```bash
+npm ci
+npm test
+npm run typecheck
+```
+
+The package has a self-contained TypeScript configuration and does not require
+an external workspace configuration. Tests mock model calls and isolate both
+personal configuration files and `PI_SESSION_NAME_*` variables; they do not
+require API credentials or a running model provider.
+
 ## API (for extension developers)
 
 This extension exposes utilities that other extensions can import:
@@ -162,7 +208,11 @@ import {
 } from "@fyeeme/pi-session-name";
 ```
 
-See `index.ts` for complete type signatures.
+See `src/core.ts` for complete signatures. Existing calls remain valid;
+`normalizeSessionTitle(raw, maxBytes, maxWords?)`,
+`buildTitleRequest(mode, messages, style?, maxWords?)`, and
+`buildVerdictRequest(currentName, messages, style?, maxWords?)` accept an optional
+word limit. `buildTitleMessages` remains human-only regardless of configuration.
 
 ## Changelog
 
