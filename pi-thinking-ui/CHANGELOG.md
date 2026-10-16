@@ -1,4 +1,6 @@
-## [Unreleased]
+# Changelog
+
+## [1.1.4] - 2026-10-16
 
 ### Fixed
 
