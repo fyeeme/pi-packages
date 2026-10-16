@@ -262,8 +262,11 @@ describe("AskDialogComponent embedded prompt", () => {
 		run.component.handleInput("\x1b[D"); // cursor left, between a and b
 		const text = run.component.render(80).join("\n");
 		expect(text).toContain("\x1b_pi:c\x07");
-		// Marker sits between 'a' and the reversed 'b' (pi-tui Input contract).
-		expect(text).toContain(`a\x1b_pi:c\x07\x1b[7mb`);
+		// Marker sits between 'a' and the fake-cursor-wrapped 'b' (pi-tui 1.2.0
+		// Input contract: reverse video is applied at TUI resolution, not in
+		// the raw render — and a fake cursor directly after the hardware marker
+		// is dropped there when the hardware cursor is shown).
+		expect(text).toContain(`a\x1b_pi:c\x07\x1b_pi:fc\x07b\x1b_pi:/fc\x07`);
 		// Losing focus (dialog closes the prompt) must clear the marker path:
 		// the Input instance stops emitting it once unfocused.
 		run.component.focused = false;
