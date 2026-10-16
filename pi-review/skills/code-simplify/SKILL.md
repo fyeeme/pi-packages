@@ -319,6 +319,10 @@ cost — Chinese), and `outcome`:
   goes into `summary`.
 - `no_change_needed` — not applicable or already handled.
 
+写作风格 STE-lite（80% toward ASD-STE100，与 review_report 契约一致）：一句
+一个事实（≤30 字），主动语态、一般现在时；先写重复/浪费/过深的具体位置，
+再写代价；不用模糊副词与习语，直接引用代码中的真实标识符。
+
 Do **not** write a free-text summary as the primary record — the structured
 `review_report` call IS the summary (it renders the report AND writes JSON to
 `<cwd>/.pi/review/` for CI). If `review_report` is unavailable, fall back to a

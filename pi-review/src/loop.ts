@@ -120,11 +120,12 @@ export interface QuiescenceView {
 
 /** Wait until the session is fully quiescent: nothing running AND nothing
  *  queued. A single `waitForIdle()` is NOT enough — it resolves at the first
- *  idle point even while follow-ups are still queued (a queued message does
- *  not flip `isIdle` until its run actually starts), which is exactly the
- *  window between `sendUserMessage(…, followUp)` and that turn's first
- *  token. Aborts return false; there is no timeout — Esc is the escape
- *  hatch, same as for the bare waitForIdle call. */
+ *  idle point even while follow-ups are still queued, so re-check both
+ *  conditions in a loop until they hold at the same time (idle semantics
+ *  differ across pi versions: since 1.2.0 a starting run already counts as
+ *  busy; either way this loop only exits on idle + no pending messages).
+ *  Aborts return false; there is no timeout — Esc is the escape hatch, same
+ *  as for the bare waitForIdle call. */
 export async function waitForQuiescent(session: QuiescenceView): Promise<boolean> {
 	for (;;) {
 		if (session.signal?.aborted) return false;
@@ -158,8 +159,8 @@ async function waitForTurnSettled(ctx: ExtensionCommandContext, baselineAssistan
 		const current = lastAssistantId();
 		if (!ctx.isIdle() || ctx.hasPendingMessages() || (current && current !== baselineAssistantId)) {
 			// Wait past every queued message, not merely to the next idle
-			// point — waitForIdle() alone returns inside the gap between
-			// queueing a followUp and its run actually starting.
+			// point — waitForIdle() alone can return while follow-ups are
+			// still queued.
 			return waitForQuiescent(ctx);
 		}
 		await new Promise((resolve) => setTimeout(resolve, POLL_MS));

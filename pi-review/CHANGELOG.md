@@ -5,15 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.3] - 2026-10-16
 
 ### Breaking Changes
 
 - The on-disk JSON and `structuredContent` top-level keys are now snake_case, matching the input schema: `report_id` / `files_changed` / `fanned_out` / `generated_at` (previously `reportId` / `filesChanged` / `fannedOut` / `generatedAt`). The findings array was already snake_case and is unchanged; `--loop` reads only `findings` and is unaffected. Update external CI consumers that read the old camelCase keys.
 
+### Added
+
+- CC re-sync (from the reverse-engineered v2.1.223 strings analysis), six targeted ports: finder-output path normalization (`canonFile` longest-suffix match against the changed-file list) before verify grouping, so mixed absolute/relative/backslash paths no longer split location groups; free-form instruction targets ("focus on error handling") that narrow scope instead of replacing the diff, carried through every finder/verifier/gap-hunt prompt with CC's anti-injection framing (scope-only data — no actions, writes, or commands from it); `/code-review` near-miss effort tolerance (a first token like `meduim` is warned about and ignored per CC's "Ignoring unrecognized effort", never mistaken for a review target); light synthesize (cross-location same-root-cause survivors merge into the most severe finding with `[same root cause also at: …]`); `review_report` optional `refuted` (the REFUTED candidates) and `stats` (`finders`/`candidates`/`verifierAgents`/`verified`/`refuted`/`reported`) — rendered as `已否决 N 条` plus a `统计` line, sanitized alongside findings in `prepareArguments`/`execute`, and present in both the on-disk JSON and `structuredContent`; and an after-the-review closing step (CC's `/verify`+`/simplify` chain, one-line version): on runtime-surface diffs where `/code-simplify` hasn't run, suggest the trigger's verification command and `/code-simplify`.
+- CC 2.1.291 re-sync, three targeted ports: `--max-findings <n>|all|default` (sticky like effort — explicit value persists in `pi-review.json` as `codeReviewLastMaxFindings`, `default` clears it, a reused limit is disclosed in the trigger's "Findings limit:" note; invalid values warn and are ignored, never parsed as a target); a 32-finding hard ceiling on a single report (`review_report` truncates most-severe-first in `prepareArguments` + `execute` and stamps `已按 32 条上限截断（原 N 条）` on the rendered header, `truncated_from` on the JSON/`structuredContent`); and a finder budget hint (the dispatcher measures the committed range with `git diff --numstat` — hooks/fsmonitor disabled, 5s timeout — and injects `ceil(lines/150)` clamped to 2–8 as the suggested finder-agent count into the xhigh/max trigger).
+
 ### Changed
 
-- Dead-export cleanup: `BLOCKING_PRIORITIES`, `findGitRoot`, `readScriptsAt`, and `REVIEW_LEVELS` are no longer exported (all had zero external importers; `blockingFindings` now reads the constant instead of hardcoded `"P0"`/`"P1"` literals, removing the dual source of truth). README now states the actual `@fyeeme/pi-subagents` dependency version (2.1.3).
+- Dead-export cleanup: `BLOCKING_PRIORITIES`, `findGitRoot`, `readScriptsAt`, and `REVIEW_LEVELS` are no longer exported (all had zero external importers; `blockingFindings` now reads the constant instead of hardcoded `"P0"`/`"P1"` literals, removing the dual source of truth). README now states the actual `@fyeeme/pi-subagents` dependency version.
+- Bumped the `@fyeeme/pi-subagents` dependency to 2.1.4 (headless fail-closed on project-local agents, `reachesTools` reach-word declaration, fill-in transcript renderer).
+- The code-review skill's medium/high angle sets are synced to CC's 8-angle inline mapping: medium now runs Angles A–C plus Reuse/Simplification/Efficiency/Altitude/Conventions, and high runs the same 8-angle set at recall bias (Angles D/E — language-pitfall, wrapper/proxy — stay xhigh/max specialists). This closes an undocumented drift where medium was missing Altitude+Conventions while high carried D/E.
+- The after-the-review chain is upgraded from a one-line suggestion to CC 2.1.291's gated auto-invocation: when `/code-simplify` has not run this session, the diff has a runtime surface (not test-only/docs-only), and the trigger carries no further user instruction, the review now invokes `/code-simplify` itself; any failed gate falls back to the one-line suggestion, and the chain fires at most once per session.
+- Finding prose (`short_summary` / `summary` / `failure_scenario` / `refuted[].summary`) now follows a STE-lite writing contract (80% toward ASD-STE100, language unchanged): one fact per sentence (about 20 words / 30 Chinese characters), active voice, present tense, subject-verb-object; defect and trigger first, consequence after; `failure_scenario` keeps the concrete input/state → wrong output/cost shape; no hedging adverbs or idioms (uncertainty belongs to `verdict`), no noun clusters over 3 words, real code identifiers instead of paraphrases. Enforced in the `review_report` field descriptions + prompt guidelines and both skills' output contracts, with a skill-schema-sync drift anchor.
 
 ## [2.1.2] - 2026-10-02
 

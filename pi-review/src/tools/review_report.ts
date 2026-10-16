@@ -56,6 +56,27 @@ const Level = StringEnum([
 	"simplify",
 ] as const);
 
+/** 被独立 verify 否决（REFUTED）的候选（CC workflow 同款透明度）：xhigh/max
+ *  走过 verify 后可选附带 —— 被丢掉的否决记录可审计，而不是无声消失。 */
+const RefutedFinding = Type.Object({
+	file: Type.String({ description: "相对仓库根的文件路径。" }),
+	line: Type.Optional(Type.Number({ description: "行号（1-based）。省略表示文件级。" })),
+	summary: Type.String({
+		description:
+			"一句话否决理由（中文）。STE-lite 写作（80% toward ASD-STE100）：主动语态、一般现在时、一句一个事实（≤30 字），直接引用代码中的真实标识符。",
+	}),
+});
+
+/** 本次评审的执行统计（CC workflow stats 同名字段，全可选）。 */
+const ReportStats = Type.Object({
+	finders: Type.Optional(Type.Number({ description: "派出的 finder 数（单遍/自审为 0）。" })),
+	candidates: Type.Optional(Type.Number({ description: "进入 verify 的候选总数。" })),
+	verifierAgents: Type.Optional(Type.Number({ description: "派出的 verifier agent 数（单遍/自审为 0）。" })),
+	verified: Type.Optional(Type.Number({ description: "拿到 verdict 的候选数。" })),
+	refuted: Type.Optional(Type.Number({ description: "被否决（REFUTED）的候选数。" })),
+	reported: Type.Optional(Type.Number({ description: "最终上报的 findings 数。" })),
+});
+
 // --- schema -----------------------------------------------------------------
 
 const FindingParams = Type.Object({
@@ -73,10 +94,13 @@ const FindingParams = Type.Object({
 				"≤60 字符的纯声明标签（去掉理由与后果）。汇总表概述列优先使用它；详情块仍显示完整 summary。流程层面必填（CC 输出模板契约），schema 层面 optional（与 CC tool schema 一致）。中文。",
 		}),
 	),
-	summary: Type.String({ description: "一句话说明（≤80字），同时作紧凑标签。中文。" }),
+	summary: Type.String({
+		description:
+			"一句话缺陷声明（≤30 字最佳、80 字上限），同时作紧凑标签。中文。STE-lite 写作（80% toward ASD-STE100）：主动语态、一般现在时、主谓宾直述，先缺陷与触发条件、后后果。",
+	}),
 	failure_scenario: Type.String({
 		description:
-			"具体场景：输入/状态 → 错误输出/崩溃；清理类发现写明具体代价（重复/浪费/更难维护/违反哪条规则）。中文。",
+			"具体场景：输入/状态 → 错误输出/崩溃；清理类发现写明具体代价（重复/浪费/更难维护/违反哪条规则）。中文。STE-lite 写作（80% toward ASD-STE100）：一句一个事实（≤30 字），不用模糊副词（不确定性属于 verdict 字段）、习语、>3 词名词串；直接引用代码中的真实标识符。",
 	}),
 	outcome: Type.Optional(Outcome),
 });
@@ -89,8 +113,16 @@ const ReviewReportParams = Type.Object({
 		Type.Boolean({ description: "是否真的多智能体并发（Single-pass honesty）。false/省略表示单遍自审。" }),
 	),
 	findings: Type.Array(FindingParams, {
-		description: "已验证、去重、按严重度从高到低排序的发现列表（most-severe first）。空数组表示无发现存活。",
+		description:
+			"已验证、去重、按严重度从高到低排序的发现列表（most-severe first）。空数组表示无发现存活。硬1 32 条（CC 2.1.291 Fe）：超出部分在清洗阶段截断（保序最严重在前），渲染与落盘均附截断注记。",
+		maxItems: 32,
 	}),
+	refuted: Type.Optional(
+		Type.Array(RefutedFinding, {
+			description: "被独立 verify 否决的候选列表（仅 xhigh/max 走过 verify 时附带；REFUTED 不进 findings）。",
+		}),
+	),
+	stats: Type.Optional(ReportStats),
 	report_id: Type.Optional(
 		Type.String({
 			description:
@@ -118,10 +150,16 @@ const ReviewReportOutput = Type.Object({
 	fanned_out: Type.Union([Type.Boolean(), Type.Null()]),
 	generated_at: Type.String(),
 	findings: Type.Array(FindingOutput),
+	refuted: Type.Optional(Type.Array(RefutedFinding)),
+	stats: Type.Optional(ReportStats),
+	/** 仅在 32 硬顶截断时携带：截断前的原始发现条数。 */
+	truncated_from: Type.Optional(Type.Number()),
 });
 
 /** Static 派生类型:reportData 的类型即出参 schema,类型层单一事实源(消除断言)。 */
 type FindingOut = Static<typeof FindingOutput>;
+type RefutedOut = Static<typeof RefutedFinding>;
+type StatsOut = Static<typeof ReportStats>;
 type ReviewReportOut = Static<typeof ReviewReportOutput>;
 
 interface ReviewReportDetails {
@@ -185,6 +223,39 @@ function normalizeFindings(findings: LooseFinding[]): { findings: LooseFinding[]
 	return { findings: out, notes };
 }
 
+/** 宽松 refuted 形态 —— 与 findings 同层防御（prepareArguments 主防 + execute
+ *  双保险）：非对象 / 缺 file 或 summary 的条目剔除；line 仅收数字。 */
+type LooseRefutedFinding = { file: string; line?: number; summary: string };
+
+function normalizeRefuted(raw: unknown): LooseRefutedFinding[] {
+	if (!Array.isArray(raw)) return [];
+	const out: LooseRefutedFinding[] = [];
+	for (const r of raw) {
+		if (!r || typeof r !== "object" || Array.isArray(r)) continue;
+		const rec = r as Record<string, unknown>;
+		if (typeof rec.file !== "string" || rec.file.length === 0) continue;
+		if (typeof rec.summary !== "string" || rec.summary.length === 0) continue;
+		const e: LooseRefutedFinding = { file: rec.file, summary: rec.summary };
+		if (typeof rec.line === "number") e.line = rec.line;
+		out.push(e);
+	}
+	return out;
+}
+
+/** stats 清洗：仅保留 STAT_KEYS 中的有限数值字段；全空 → undefined（不落键）。 */
+const STAT_KEYS = ["finders", "candidates", "verifierAgents", "verified", "refuted", "reported"] as const;
+
+function normalizeStats(raw: unknown): StatsOut | undefined {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+	const rec = raw as Record<string, unknown>;
+	const out: StatsOut = {};
+	for (const key of STAT_KEYS) {
+		const v = rec[key];
+		if (typeof v === "number" && Number.isFinite(v)) out[key] = v;
+	}
+	return Object.keys(out).length > 0 ? out : undefined;
+}
+
 // --- render -----------------------------------------------------------------
 
 interface ReportInput {
@@ -194,6 +265,10 @@ interface ReportInput {
 	fanned_out?: boolean;
 	reportId?: string;
 	findings: FindingOut[];
+	refuted?: RefutedOut[];
+	stats?: StatsOut;
+	/** 32 硬顶截断前的原始发现条数；未截断时缺省。 */
+	truncatedFrom?: number;
 }
 
 function fmtLoc(f: { file: string; line?: number }): string {
@@ -215,8 +290,26 @@ function renderReport(p: ReportInput): string {
 	const targetStr = (p.target ?? "(whole diff)").replace(/`/g, "\\`"); // backtick inside the inline-code cell would close it early
 	const filesStr = p.files_changed != null ? `${p.files_changed} 个文件` : "文件数未标注";
 	const idStr = p.reportId ? ` · 报告 \`${escapeCell(p.reportId)}\`` : "";
-	lines.push(`\`${p.level}\` · \`${targetStr}\` · ${filesStr} · ${p.findings.length} 条发现 · ${fanLabel}${idStr}`);
+	const refutedStr = p.refuted && p.refuted.length > 0 ? ` · 已否决 ${p.refuted.length} 条` : "";
+	const truncStr = p.truncatedFrom != null ? ` · 已按 32 条上限截断（原 ${p.truncatedFrom} 条）` : "";
+	lines.push(
+		`\`${p.level}\` · \`${targetStr}\` · ${filesStr} · ${p.findings.length} 条发现 · ${fanLabel}${idStr}${refutedStr}${truncStr}`,
+	);
 	lines.push("");
+
+	if (p.stats) {
+		const parts: string[] = [];
+		if (p.stats.finders != null) parts.push(`finder ${p.stats.finders}`);
+		if (p.stats.candidates != null) parts.push(`候选 ${p.stats.candidates}`);
+		if (p.stats.verifierAgents != null) parts.push(`verifier ${p.stats.verifierAgents}`);
+		if (p.stats.verified != null) parts.push(`验证 ${p.stats.verified}`);
+		if (p.stats.refuted != null) parts.push(`否决 ${p.stats.refuted}`);
+		if (p.stats.reported != null) parts.push(`上报 ${p.stats.reported}`);
+		if (parts.length > 0) {
+			lines.push(`统计：${parts.join(" · ")}`);
+			lines.push("");
+		}
+	}
 
 	if (p.findings.length === 0) {
 		lines.push("（无发现存活验证。）");
@@ -255,6 +348,7 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 	promptSnippet: "review_report — report structured code-review findings (renders Markdown + writes JSON for CI)",
 	promptGuidelines: [
 		"After verify + dedup, call `review_report` once with { level, findings } (most-severe first; empty array if none survived). Do not also hand-write the Markdown table — this tool renders it.",
+		"Write finding prose in STE-lite style (80% toward ASD-STE100; keep the required language): short declarative sentences — one fact per sentence, about 20 words / 30 Chinese characters each — active voice, present tense, subject-verb-object. State the defect and its trigger first, then the consequence; `failure_scenario` follows the concrete input/state → wrong output/cost shape. No hedging adverbs or idioms (uncertainty belongs to `verdict`), no noun clusters over 3 words; use the real identifiers from the code, not paraphrases.",
 		"On re-report after --fix, set each finding's `outcome` (fixed / skipped / no_change_needed).",
 		"Use `review_report` only when the code-review skill instructs reporting findings; otherwise follow the active output format.",
 	],
@@ -267,12 +361,21 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 	// 因此 execute 内的防御对模型不可达）。返回符合 schema 的对象——非法 verdict
 	// 的 finding 剔除、非法 outcome 归一化为 skipped；note 附注由 execute 层基于
 	// 清洗结果生成（schema 对象不含 note 字段）。
+	// refuted/stats 与 findings 同层清洗（主防御）：非法条目剔除/只留数值
+	// 字段，防边缘值在 schema 校验处 throw 掉整份报告。
 	prepareArguments(args) {
 		if (typeof args !== "object" || args === null) return args as Static<typeof ReviewReportParams>;
-		const raw = args as { findings?: unknown };
+		const raw = args as { findings?: unknown; refuted?: unknown; stats?: unknown };
 		if (!Array.isArray(raw.findings)) return args as Static<typeof ReviewReportParams>;
 		const { findings } = normalizeFindings(raw.findings as unknown as LooseFinding[]);
-		return { ...raw, findings } as Static<typeof ReviewReportParams>;
+		// 32 硬顶（CC 2.1.291 Fe）主防线：schema 校验前截断，maxItems 永不触发
+		// 硬失败；截断注记由 execute 基于同一确定性数组自行重导（两条路径截
+		// 断结果一致，不轻传额外键）。
+		const capped = findings.length > 32 ? findings.slice(0, 32) : findings;
+		const next: Record<string, unknown> = { ...raw, findings: capped };
+		if (raw.refuted !== undefined) next.refuted = normalizeRefuted(raw.refuted);
+		if (raw.stats !== undefined) next.stats = normalizeStats(raw.stats);
+		return next as Static<typeof ReviewReportParams>;
 	},
 
 	async execute(toolCallId, params, _signal, _onUpdate, ctx) {
@@ -280,9 +383,15 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 		// 旧五档 outcome 或已废弃的 REFUTED verdict。归一化而非整单拒绝：非法
 		// verdict 的 finding 剔除，非法 outcome 归一化为 skipped 并附注；渲染与落盘
 		// 永远只含合法值（spec: 消费方永远看到合法值）。
-		const { findings: cleaned, notes } = normalizeFindings(
+		const { findings: normalized, notes } = normalizeFindings(
 			(params.findings ?? []) as unknown as LooseFinding[],
 		);
+		// 32 硬顶双保险（与 prepareArguments 同一确定性截断）：直接调用路径
+		// （单测）可能携带超长数组；notes 索引与数组位置对齐，截断保序安全。
+		const truncatedFrom = normalized.length > 32 ? normalized.length : undefined;
+		const cleaned = truncatedFrom !== undefined ? normalized.slice(0, 32) : normalized;
+		const refutedClean = normalizeRefuted(params.refuted);
+		const statsClean = normalizeStats(params.stats);
 		// 仅含已赋值字段的 finding:显式 undefined 键会让磁盘 JSON(serialize 丢弃)与
 		// structuredContent(原样返回)键集分叉;条件赋值保证两个视图逐键一致。
 		const findings: FindingOut[] = cleaned.map((f, i) => {
@@ -315,6 +424,11 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 			generated_at: now.toISOString(),
 			findings,
 		};
+		// 条件赋值（与 findings 同纪律）：显式 undefined 不落键，磁盘 JSON 与
+		// structuredContent 键集逐键一致。
+		if (refutedClean.length > 0) reportData.refuted = refutedClean;
+		if (statsClean) reportData.stats = statsClean;
+		if (truncatedFrom !== undefined) reportData.truncated_from = truncatedFrom;
 
 		const report = renderReport({
 			level: params.level,
@@ -323,6 +437,9 @@ export const reviewReportTool = defineTool<typeof ReviewReportParams, ReviewRepo
 			fanned_out: params.fanned_out,
 			reportId: params.report_id,
 			findings,
+			refuted: refutedClean,
+			stats: statsClean,
+			truncatedFrom,
 		});
 
 		let outFile: string | null = null;

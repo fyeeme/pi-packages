@@ -1,6 +1,6 @@
 ---
 description: "/code-review trigger — single-pass main-session review via the code-review skill (low/medium/high)"
-vars: [effort, effort-source, extra-args, skill, verify, loop-note]
+vars: [effort, effort-source, extra-args, skill, verify, loop-note, limit-note]
 ---
 Run a code review now. Effective effort: {{effort}} ({{effort-source}}){{extra-args}}.
 
@@ -10,6 +10,7 @@ session — read it, surface candidates against the skill's rubric, self-verify
 them (medium/high), and report via the `review_report` tool. No subagent
 fan-out at this level: do NOT dispatch finder or verifier agents, even though
 the `subagent` tool may be in your session toolset.
+{{limit-note}}
 {{loop-note}}
 Verification guidance (the skill's `--fix` flow consumes it):
 

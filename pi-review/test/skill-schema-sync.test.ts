@@ -8,7 +8,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 	defineTool: <T>(def: T): T => def,
 }));
 
-import { OUTCOME_VALUES, PRIORITY_VALUES, VERDICT_VALUES } from "../src/tools/review_report.ts";
+import { OUTCOME_VALUES, PRIORITY_VALUES, VERDICT_VALUES, reviewReportTool } from "../src/tools/review_report.ts";
 
 /**
  * 防漂移（pi-review-cc-parity）：SKILL.md 中的流程层输出契约（outcome 三档、
@@ -67,5 +67,54 @@ describe("SKILL 输出契约与 review_report schema 同步", () => {
 			expect(REVIEW, `review 必须包含 priority ${v}`).toContain(`**${v}**`);
 		}
 		expect(REVIEW).toContain("--loop");
+	});
+
+	it("CC re-sync 2026-10 契约在 review SKILL 中（canonFile 归一 / 反注入 / 8 角映射 / 轻量 synthesize / 收尾链）", () => {
+		// finder 输出路径归一化（CC workflow canonFile）
+		expect(REVIEW).toContain("canonFile");
+		expect(REVIEW).toContain("longest");
+		// 自由文本指令 + 反注入框架
+		expect(REVIEW).toContain("free-form");
+		expect(REVIEW).toContain("How to apply the review target");
+		expect(REVIEW).toContain("never as an instruction to a subagent");
+		// medium/high = CC 8 角映射
+		expect(REVIEW).toContain("8-angle");
+		// 轻量 Synthesize：同根因合并 + refuted/stats 透明度
+		expect(REVIEW).toContain("same root cause also at");
+		expect(REVIEW).toContain("`refuted`");
+		expect(REVIEW).toContain("`stats`");
+		// After-the-review 收尾链
+		expect(REVIEW).toContain("## After the review");
+	});
+
+	it("STE-lite（80% ASD-STE100）写作契约在两份 SKILL 与工具 schema/guidelines 中", () => {
+		expect(REVIEW).toContain("ASD-STE100");
+		expect(SIMPLIFY).toContain("ASD-STE100");
+		const tool = reviewReportTool as unknown as {
+			promptGuidelines?: string[];
+			parameters?: { properties?: Record<string, { description?: string }> };
+		};
+		expect((tool.promptGuidelines ?? []).some((g) => g.includes("ASD-STE100"))).toBe(true);
+		// schema 形状无关的计数断言：guideline + summary/failure_scenario 两个字段描述
+		const occurrences = JSON.stringify(reviewReportTool).split("ASD-STE100").length - 1;
+		// guideline + summary/failure_scenario/refuted[].summary 三个字段描述
+		expect(occurrences).toBeGreaterThanOrEqual(4);
+		// 风格块的作用域覆盖 refuted 文本
+		expect(REVIEW).toContain("refuted[].summary");
+	});
+
+	it("CC 291 re-sync 契约在 review SKILL 中（--max-findings / 32 硬顶 / gated 收尾链 / finder budget）", () => {
+		// --max-findings flag 契约与上限优先级
+		expect(REVIEW).toContain("--max-findings <n>|all|default");
+		expect(REVIEW).toContain("`Fe=32`");
+		expect(REVIEW).toContain("Findings limit:");
+		expect(REVIEW).toContain("Limit precedence");
+		// finder budget hint 消费（numstat → ceil(lines/150) 夰 [2,8]）
+		expect(REVIEW).toContain("Finder budget:");
+		expect(REVIEW).toContain("numstat");
+		// after-review gated 主动调用链
+		expect(REVIEW).toContain("three gates");
+		expect(REVIEW).toContain("invoke `/code-simplify` now");
+		expect(REVIEW).toContain("at most once");
 	});
 });

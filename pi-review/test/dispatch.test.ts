@@ -5,12 +5,22 @@
  * assertions (frontmatter guards, phase structure, agent references).
  */
 import { describe, expect, it } from "vitest";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { parseGuards, selectVariant } from "../src/strategy.ts";
-import { parseReviewArgs, render, resolveEffort, usesFanout } from "../src/dispatch.ts";
+import {
+	budgetFromLines,
+	buildLimitNote,
+	normalizeMaxFindings,
+	parseReviewArgs,
+	readStateFile,
+	render,
+	resolveEffort,
+	updateStateFile,
+	usesFanout,
+} from "../src/dispatch.ts";
 
 const PKG_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const template = (rel: string) =>
@@ -105,6 +115,22 @@ describe("parseReviewArgs", () => {
 
 	it("no leading level → whole string is the target/flags", () => {
 		expect(parseReviewArgs("feat/branch --fix")).toEqual({ level: undefined, rest: "feat/branch --fix" });
+	});
+
+	it("a near-miss effort token is flagged unrecognized and dropped from the target", () => {
+		// CC "Ignoring unrecognized effort" behavior — typos must not become targets.
+		expect(parseReviewArgs("meduim --fix")).toEqual({ level: undefined, rest: "--fix", unrecognized: "meduim" });
+		expect(parseReviewArgs("HIG")).toEqual({ level: undefined, rest: "", unrecognized: "hig" });
+		expect(parseReviewArgs("xhigh5 src/")).toEqual({ level: undefined, rest: "src/", unrecognized: "xhigh5" });
+		expect(parseReviewArgs("lo")).toEqual({ level: undefined, rest: "", unrecognized: "lo" });
+	});
+
+	it("real targets stay targets (no near-miss against the level enum)", () => {
+		expect(parseReviewArgs("main")).toEqual({ level: undefined, rest: "main" });
+		expect(parseReviewArgs("dev")).toEqual({ level: undefined, rest: "dev" });
+		expect(parseReviewArgs("123")).toEqual({ level: undefined, rest: "123" });
+		expect(parseReviewArgs("--fix")).toEqual({ level: undefined, rest: "--fix" });
+		expect(parseReviewArgs("src/foo.ts")).toEqual({ level: undefined, rest: "src/foo.ts" });
 	});
 
 	it("empty args", () => {
@@ -252,5 +278,117 @@ describe("prompt template assets", () => {
 			"gap-hunter.md",
 			"verifier.md",
 		]);
+	});
+});
+
+describe("--max-findings (CC 2.1.291 re-sync)", () => {
+	it("parses value forms and keeps the value out of the target", () => {
+		expect(parseReviewArgs("high --max-findings 5 src/foo.ts")).toEqual({
+			level: "high",
+			rest: "src/foo.ts",
+			maxFindings: 5,
+		});
+		expect(parseReviewArgs("--max-findings=20")).toEqual({ level: undefined, rest: "", maxFindings: 20 });
+		expect(parseReviewArgs("--max-findings = 7")).toEqual({ level: undefined, rest: "", maxFindings: 7 });
+		expect(parseReviewArgs("--max-findings all")).toEqual({
+			level: undefined,
+			rest: "",
+			maxFindings: "all",
+		});
+		expect(parseReviewArgs("--max-findings default")).toEqual({
+			level: undefined,
+			rest: "",
+			maxFindings: "default",
+		});
+		expect(parseReviewArgs("xhigh --max-findings 5")).toEqual({
+			level: "xhigh",
+			rest: "",
+			maxFindings: 5,
+		});
+	});
+
+	it("last occurrence wins (CC .at(-1) semantics)", () => {
+		expect(parseReviewArgs("--max-findings 5 --max-findings 20").maxFindings).toBe(20);
+		expect(parseReviewArgs("--max-findings all --max-findings 3").maxFindings).toBe(3);
+	});
+
+	it("invalid values are flagged ignored, stripped, and never a target", () => {
+		// Space-separated garbage: the garbage token itself is CONSUMED as the
+		// value (CC `To` regex semantics — the next non-dash token is the value),
+		// so the following target survives.
+		for (const bad of ["0", "abc"]) {
+			const r = parseReviewArgs(`high --max-findings ${bad} src/foo.ts`);
+			expect(r.maxFindings).toBeUndefined();
+			expect(r.maxFindingsIgnored).toBe(true);
+			expect(r.rest).toBe("src/foo.ts");
+			expect(r.level).toBe("high");
+		}
+		// Bare flag followed by another --flag: the (?!--) guard leaves the
+		// value slot empty and the following tokens survive.
+		const bare = parseReviewArgs("high --max-findings --fix src/foo.ts");
+		expect(bare.maxFindingsIgnored).toBe(true);
+		expect(bare.rest).toBe("--fix src/foo.ts");
+	});
+
+	it("normalizeMaxFindings accepts persisted shapes and rejects the rest", () => {
+		expect(normalizeMaxFindings("all")).toBe("all");
+		expect(normalizeMaxFindings(10)).toBe(10);
+		expect(normalizeMaxFindings("20")).toBe(20);
+		expect(normalizeMaxFindings(0)).toBeUndefined();
+		expect(normalizeMaxFindings(-5)).toBeUndefined();
+		expect(normalizeMaxFindings("abc")).toBeUndefined();
+		expect(normalizeMaxFindings(null)).toBeUndefined();
+		expect(normalizeMaxFindings(undefined)).toBeUndefined();
+	});
+
+	it("budgetFromLines clamps ceil(lines/150) into [2, 8]", () => {
+		expect(budgetFromLines(undefined)).toBeUndefined();
+		expect(budgetFromLines(0)).toBeUndefined();
+		expect(budgetFromLines(1)).toBe(2);
+		expect(budgetFromLines(300)).toBe(2);
+		expect(budgetFromLines(700)).toBe(5);
+		expect(budgetFromLines(1200)).toBe(8);
+		expect(budgetFromLines(120000)).toBe(8);
+	});
+
+	it("buildLimitNote covers explicit / reused / all / none (CC Oo)", () => {
+		// No limit anywhere → empty note (effort-table default).
+		expect(buildLimitNote(undefined, undefined)).toBe("");
+		// Explicit numeric cap → stated without the reused marker.
+		expect(buildLimitNote(20, undefined)).toBe(
+			"\nFindings limit: 20 — report at most 20 findings, most-severe first. `--max-findings default` restores the usual limit.\n",
+		);
+		// Sticky reuse → carried with the reused marker.
+		expect(buildLimitNote(undefined, 10)).toContain("Findings limit: 10 (reused from the last run)");
+		// `all` → numeric cap lifted, 32 ceiling still stated.
+		expect(buildLimitNote("all", undefined)).toContain("hard-capped at 32 findings");
+		expect(buildLimitNote("all", undefined)).toContain("`--max-findings default`");
+		// `default` clears → falls back to sticky-less default (empty), or to the
+		// persisted value only when one still exists.
+		expect(buildLimitNote("default", undefined)).toBe("");
+	});
+
+	it("state roundtrip: write/read/delete share the file, garbage is never clobbered", () => {
+		const tmp = join(process.cwd(), ".tmp-state-roundtrip.json");
+		try {
+			updateStateFile({ codeReviewLastMaxFindings: 10 }, tmp);
+			expect(readStateFile(tmp).codeReviewLastMaxFindings).toBe(10);
+			// Roundtrip preserves sibling keys (maxTurns lives here too).
+			updateStateFile({ maxTurns: { loop: 2 } }, tmp);
+			expect(readStateFile(tmp)).toEqual({ codeReviewLastMaxFindings: 10, maxTurns: { loop: 2 } });
+			updateStateFile({ codeReviewLastMaxFindings: "all" }, tmp);
+			expect(readStateFile(tmp).codeReviewLastMaxFindings).toBe("all");
+			// undefined deletes the key (the `default` path).
+			updateStateFile({ codeReviewLastMaxFindings: undefined }, tmp);
+			expect("codeReviewLastMaxFindings" in readStateFile(tmp)).toBe(false);
+			// A hand-edited unparseable file: reads as {}, writes refuse to touch it.
+			const garbage = "not json at all{";
+			writeFileSync(tmp, garbage);
+			expect(readStateFile(tmp)).toEqual({});
+			updateStateFile({ codeReviewLastMaxFindings: 3 }, tmp);
+			expect(readFileSync(tmp, "utf8")).toBe(garbage);
+		} finally {
+			rmSync(tmp, { force: true });
+		}
 	});
 });

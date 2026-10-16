@@ -19,7 +19,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadTurnBudgets } from "./config.ts";
-import { DIFF_SCOPES, buildContextPackage, getRepoDiff, verifyLine } from "./diff.ts";
+import { DIFF_SCOPES, buildContextPackage, countDiffLines, getRepoDiff, verifyLine } from "./diff.ts";
 import { extractLoopFlag, runLoopFixing } from "./loop.ts";
 import { bundledSkillPath } from "./skills.ts";
 import { parseGuards, selectVariant } from "./strategy.ts";
@@ -77,15 +77,121 @@ export function usesFanout(level: ReviewLevel): boolean {
 	return level === "xhigh" || level === "max";
 }
 
-export function parseReviewArgs(args: string): { level: ReviewLevel | undefined; rest: string } {
-	const tokens = (args ?? "").trim().split(/\s+/).filter(Boolean);
-	if (tokens.length === 0) return { level: undefined, rest: "" };
-	const first = tokens[0]!.toLowerCase();
-	const isLevel = (REVIEW_LEVELS as readonly string[]).includes(first);
-	return {
-		level: isLevel ? (first as ReviewLevel) : undefined,
-		rest: isLevel ? tokens.slice(1).join(" ") : tokens.join(" "),
-	};
+/** Optimal-string-alignment (Damerau–Levenshtein) edit distance — catches
+ *  transpositions ("meduim") that plain Levenshtein scores 2 for. */
+function editDistance(a: string, b: string): number {
+	const m = a.length;
+	const n = b.length;
+	// d[i][j] = distance between a[..i] and b[..j]
+	const d: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
+	for (let i = 0; i <= m; i++) d[i][0] = i;
+	for (let j = 0; j <= n; j++) d[0][j] = j;
+	for (let i = 1; i <= m; i++) {
+		for (let j = 1; j <= n; j++) {
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+			let v = Math.min(d[i - 1][j]! + 1, d[i][j - 1]! + 1, d[i - 1][j - 1]! + cost);
+			if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+				v = Math.min(v, d[i - 2][j - 2]! + 1);
+			}
+			d[i][j] = v;
+		}
+	}
+	return d[m][n]!;
+}
+
+/** True when `token` is plausibly a mistyped effort level rather than a real
+ *  review target (path / PR# / branch): a prefix of a level ("hig"), a level
+ *  plus a short suffix ("high2"), or within edit distance 1 (2 once the token
+ *  is long enough that a distance-2 collision with a real word is unlikely).
+ *  "main", "dev", "123", "src/foo.ts" all stay targets. */
+function looksLikeLevelTypo(token: string): boolean {
+	const t = token.toLowerCase();
+	if (t.length < 2) return false;
+	return REVIEW_LEVELS.some((lvl) => {
+		if (lvl.startsWith(t) || (t.startsWith(lvl) && t.length <= lvl.length + 2)) return true;
+		const d = editDistance(t, lvl);
+		return d === 1 || (d === 2 && t.length >= 6);
+	});
+}
+
+/** CC 2.1.291 `To` — accepts `--max-findings 20`, `--max-findings=20`,
+ *  `--max-findings = 20`, and a bare `--max-findings` (no value → ignored).
+ *  Global + last-match-wins (CC reads the LAST occurrence via `.at(-1)`),
+ *  and the whole match (boundary + flag + value) strips back to its leading
+ *  boundary so the value can never leak into the target. */
+const MAX_FINDINGS_RE = /(^|\s)--max-findings(?:(?:\s*=\s*|\s+)(?!--)(\S+)|\s*=\S*)?(?=\s|$)/g;
+
+/** A parsed `--max-findings` value: a positive integer, `all` (no numeric cap
+ *  this run, 32-report hard ceiling still applies), or `default` (clear the
+ *  persisted value, use the effort table's cap). CC 2.1.291 `Io`. */
+export type MaxFindings = number | "all" | "default";
+
+/** Validate a `--max-findings` value (string form from the flag, or a
+ *  persisted number). Returns undefined for anything invalid (0, negative,
+ *  non-numeric, garbage). Pure — unit-testable. */
+export function normalizeMaxFindings(v: unknown): number | "all" | undefined {
+	if (v === "all") return "all";
+	if (typeof v === "number") return Number.isSafeInteger(v) && v > 0 ? v : undefined;
+	if (typeof v === "string" && /^\d+$/.test(v)) {
+		const n = Number(v);
+		return n > 0 ? n : undefined;
+	}
+	return undefined;
+}
+
+export function parseReviewArgs(args: string): {
+	level: ReviewLevel | undefined;
+	rest: string;
+	/** A first token that looks like a mistyped effort level ("meduim") but
+	 *  matches none — the handler warns (CC "Ignoring unrecognized effort")
+	 *  instead of silently reviewing it as a target. */
+	unrecognized?: string;
+	/** Explicit `--max-findings` value (last occurrence wins); `default` means
+	 *  clear the persisted limit, not "use no limit". */
+	maxFindings?: MaxFindings;
+	/** The flag was typed with a value that validates against nothing — the
+	 *  handler warns and the review uses the usual limit (CC
+	 *  `maxFindingsIgnored`); the token is stripped, never a target. */
+	maxFindingsIgnored?: boolean;
+} {
+	const raw = (args ?? "").trim();
+	const lastMax = [...raw.matchAll(MAX_FINDINGS_RE)].at(-1);
+	const stripped = lastMax ? raw.replace(MAX_FINDINGS_RE, "$1") : raw;
+	const tokens = stripped.split(/\s+/).filter(Boolean);
+	let level: ReviewLevel | undefined;
+	let rest = "";
+	let unrecognized: string | undefined;
+	if (tokens.length > 0) {
+		const first = tokens[0]!.toLowerCase();
+		const isLevel = (REVIEW_LEVELS as readonly string[]).includes(first);
+		if (isLevel) {
+			level = first as ReviewLevel;
+			rest = tokens.slice(1).join(" ");
+		} else {
+			const typo = looksLikeLevelTypo(first);
+			rest = (typo ? tokens.slice(1) : tokens).join(" ");
+			unrecognized = typo ? first : undefined;
+		}
+	}
+	let maxFindings: MaxFindings | undefined;
+	let maxFindingsIgnored: boolean | undefined;
+	if (lastMax) {
+		const v = (lastMax[2] ?? "").toLowerCase();
+		if (v === "all" || v === "default") maxFindings = v;
+		else {
+			maxFindings = normalizeMaxFindings(v);
+			if (maxFindings === undefined) maxFindingsIgnored = true;
+		}
+	}
+	return { level, rest, unrecognized, maxFindings, maxFindingsIgnored };
+}
+
+/** CC 2.1.291 `Bs` — finder budget: clamp(ceil(lines/150), 2, 8); undefined
+ *  when the count failed (no hint injected, default fan-out unchanged).
+ *  Pure — unit-testable. */
+export function budgetFromLines(lines: number | undefined): number | undefined {
+	if (lines === undefined || lines <= 0) return undefined;
+	return Math.max(2, Math.min(8, Math.ceil(lines / 150)));
 }
 
 /**
@@ -101,41 +207,51 @@ export function resolveEffort(
 	return { level: DEFAULT_LEVEL, source: "default" };
 }
 
-// Best-effort persistence — sticky-effort is a convenience, not a correctness
-// invariant; a read/write failure must not break the review.
-function readLastEffort(): ReviewLevel | undefined {
+// Best-effort persistence — sticky-effort and sticky-max-findings are
+// conveniences, not correctness invariants; a read/write failure must not
+// break the review. Both share one state file with user-authored config
+// (maxTurns), so all writes are read-modify-write and never clobber a
+// hand-edited file they cannot parse. The `file` parameter exists for tests.
+export function readStateFile(file = STATE_FILE): Record<string, unknown> {
 	try {
-		const raw = JSON.parse(fs.readFileSync(STATE_FILE, "utf8")) as { codeReviewLastEffort?: unknown };
-		const v = raw.codeReviewLastEffort;
-		return typeof v === "string" && (REVIEW_LEVELS as readonly string[]).includes(v)
-			? (v as ReviewLevel)
-			: undefined;
+		const raw: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+		return raw as Record<string, unknown>;
 	} catch {
-		return undefined;
+		return {};
 	}
 }
-function writeLastEffort(level: ReviewLevel): void {
+export function updateStateFile(patch: Record<string, unknown>, file = STATE_FILE): void {
 	try {
-		// The state field shares a file with user-authored config (maxTurns), so
-		// read-modify-write instead of overwriting, and never clobber a
-		// hand-edited file we cannot parse.
 		let existing: Record<string, unknown> = {};
-		if (fs.existsSync(STATE_FILE)) {
+		if (fs.existsSync(file)) {
 			let raw: unknown;
 			try {
-				raw = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+				raw = JSON.parse(fs.readFileSync(file, "utf8"));
 			} catch {
 				return;
 			}
 			if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
 			existing = raw as Record<string, unknown>;
 		}
-		existing.codeReviewLastEffort = level;
-		fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
-		fs.writeFileSync(STATE_FILE, `${JSON.stringify(existing, null, 2)}\n`);
+		for (const [key, value] of Object.entries(patch)) {
+			if (value === undefined) delete existing[key];
+			else existing[key] = value;
+		}
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(file, `${JSON.stringify(existing, null, 2)}\n`);
 	} catch {
 		/* ignore — non-critical */
 	}
+}
+function readLastEffort(file = STATE_FILE): ReviewLevel | undefined {
+	const v = readStateFile(file).codeReviewLastEffort;
+	return typeof v === "string" && (REVIEW_LEVELS as readonly string[]).includes(v)
+		? (v as ReviewLevel)
+		: undefined;
+}
+function writeLastEffort(level: ReviewLevel): void {
+	updateStateFile({ codeReviewLastEffort: level });
 }
 
 // ---------------------------------------------------------------------------
@@ -150,21 +266,74 @@ const DIFF_TOO_LARGE_CHARS = 400_000;
 // Registration
 // ---------------------------------------------------------------------------
 
+/** The trigger's "Findings limit:" note (CC 2.1.291 `Oo`): states the
+ *  effective limit, marks a reused one, and names the reset flag. Empty when
+ *  no limit applies (effort-table default). Pure — unit-testable. */
+export function buildLimitNote(
+	explicit: MaxFindings | undefined,
+	sticky: number | "all" | undefined,
+): string {
+	const effective = explicit !== undefined && explicit !== "default" ? explicit : sticky;
+	if (effective === undefined) return "";
+	const reused = explicit === undefined ? " (reused from the last run)" : "";
+	return effective === "all"
+		? `\nFindings limit: \`all\`${reused} — no numeric cap this run, but a single report is hard-capped at 32 findings. \`--max-findings default\` restores the usual limit.\n`
+		: `\nFindings limit: ${effective}${reused} — report at most ${effective} findings, most-severe first. \`--max-findings default\` restores the usual limit.\n`;
+}
+
 export function registerDispatcher(pi: ExtensionAPI): void {
 	pi.registerCommand("code-review", {
 		description:
-			"Review the current diff using the code-review skill. low/medium/high review in a single pass in this session; xhigh/max fan out finder/verifier agents. Usage: /code-review [low|medium|high|xhigh|max] [--fix] [--loop] [--comment] [--share] [<pr#>|<branch>|<path>]",
+			"Review the current diff using the code-review skill. low/medium/high review in a single pass in this session; xhigh/max fan out finder/verifier agents. Usage: /code-review [low|medium|high|xhigh|max] [--fix] [--loop] [--comment] [--share] [--max-findings <n>|all|default] [<pr#>|<branch>|<path>]",
 		getArgumentCompletions(prefix) {
-			const tokens = ["low", "medium", "high", "xhigh", "max", "--fix", "--loop", "--comment", "--share"];
+			const tokens = [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max",
+				"--fix",
+				"--loop",
+				"--comment",
+				"--share",
+				"--max-findings",
+			];
 			return tokens.filter((t) => t.startsWith(prefix)).map((t) => ({ label: t, value: t }));
 		},
 		async handler(args, ctx) {
-			const { level: explicit, rest } = parseReviewArgs(args ?? "");
+			const { level: explicit, rest, unrecognized, maxFindings, maxFindingsIgnored } = parseReviewArgs(args ?? "");
+			if (unrecognized !== undefined) {
+				ctx.ui.notify(
+					`/code-review: ignoring unrecognized effort "${unrecognized}"; valid: ${REVIEW_LEVELS.join(", ")}.`,
+					"warning",
+				);
+			}
+			if (maxFindingsIgnored) {
+				ctx.ui.notify(
+					"/code-review: --max-findings was ignored: type a whole number above zero, `all`, or `default` after it. Using the usual limit.",
+					"warning",
+				);
+			}
 			// Skip the read when we just wrote it — resolveEffort returns `explicit` unchanged.
 			const lastUsed = explicit ? undefined : readLastEffort();
 			if (explicit) writeLastEffort(explicit); // remember the explicit level
 			const { level, source } = resolveEffort(explicit, lastUsed);
 			const budgets = loadTurnBudgets();
+
+			// Sticky --max-findings (CC 2.1.291 Io/Oo): an explicit value persists,
+			// `default` clears it, and no value reuses the persisted one — including
+			// when the typed value was ignored (CC falls back to the persisted limit
+			// there too). Never persisted: `default` itself.
+			if (maxFindings === "default") {
+				updateStateFile({ codeReviewLastMaxFindings: undefined });
+			} else if (maxFindings !== undefined) {
+				updateStateFile({ codeReviewLastMaxFindings: maxFindings });
+			}
+			const effectiveMax =
+				maxFindings === undefined || maxFindings === "default"
+					? normalizeMaxFindings(readStateFile().codeReviewLastMaxFindings)
+					: maxFindings;
+			const limitNote = buildLimitNote(maxFindings, effectiveMax);
 
 			// Effort split: low/medium/high review in ONE pass in the main session
 			// (no subprocess fan-out); xhigh/max keep the finder/verifier pipeline.
@@ -183,6 +352,20 @@ export function registerDispatcher(pi: ExtensionAPI): void {
 			}
 
 			const { body } = loadTemplate(fanout ? "review.parallel.md" : "review.single.md");
+
+			// Finder budget hint (CC 2.1.291 Bs/Gs): fan-out levels only — measure
+			// the committed range with numstat (hooks off, bounded) and suggest a
+			// finder count scaled to diff size. Silent no-hint when the count
+			// fails, so a slow or exotic repo keeps the default fan-out.
+			let budgetNote = "";
+			if (fanout) {
+				const lines = await countDiffLines(ctx.cwd, flagsRest.trim() || undefined, undefined, ctx.signal);
+				const finders = budgetFromLines(lines);
+				if (lines !== undefined && finders !== undefined) {
+					budgetNote = `\nFinder budget: the committed range measures about ${lines} changed lines. Start with about ${finders} finder agents (min 2, max 8) and scale your investigation depth to the diff size rather than a fixed large fleet. Uncommitted changes are not counted — treat the count as a floor.\n`;
+				}
+			}
+
 			const shared = {
 				effort: level,
 				"effort-source": source,
@@ -190,6 +373,8 @@ export function registerDispatcher(pi: ExtensionAPI): void {
 				skill: bundledSkillPath("code-review/SKILL.md"),
 				// Consumed by the skill's --fix flow (apply → verify → re-report).
 				verify: verifyLine(ctx.cwd),
+				// The skill's Output contract consumes the effective findings limit.
+				"limit-note": limitNote,
 			};
 			void pi.sendUserMessage(
 				render(
@@ -200,6 +385,7 @@ export function registerDispatcher(pi: ExtensionAPI): void {
 								"finder-max-turns": String(budgets.subagent),
 								"verifier-max-turns": String(budgets.verifier),
 								"gap-hunt-max-turns": String(budgets.gapHunt),
+								"budget-note": budgetNote,
 							}
 						: {
 								...shared,

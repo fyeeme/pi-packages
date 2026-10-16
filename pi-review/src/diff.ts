@@ -95,6 +95,75 @@ const defaultGitRunner: GitRunner = async (args, opts) =>
 		signal: opts.signal,
 	})).stdout;
 
+/** An abort signal that fires after `ms` or when `outer` aborts, whichever
+ *  comes first (bounded numstat — a slow repo must not stall the command). */
+function timeoutSignal(ms: number, outer?: AbortSignal): AbortSignal {
+	const ctl = new AbortController();
+	const timer = setTimeout(() => ctl.abort(), ms);
+	outer?.addEventListener(
+		"abort",
+		() => {
+			clearTimeout(timer);
+			ctl.abort();
+		},
+		{ once: true },
+	);
+	ctl.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
+	return ctl.signal;
+}
+
+/** CC 2.1.291 `Gs` — measure the changed lines (additions + deletions) of the
+ *  review scope with `git diff --numstat`: hooks and fsmonitor disabled, no
+ *  external diff drivers or textconv, 5s timeout. Only the upstream range
+ *  (or an explicit `<a>..<b>` target) is measured; uncommitted changes are
+ *  NOT counted — callers word the hint as a floor (CC does the same).
+ *  Returns undefined when nothing countable results (no upstream, empty
+ *  range, timeout, git error) — the caller then injects no budget hint. */
+export async function countDiffLines(
+	cwd: string,
+	target: string | undefined,
+	run: GitRunner = defaultGitRunner,
+	signal?: AbortSignal,
+): Promise<number | undefined> {
+	const scope = resolveDiffScope(cwd, target);
+	if (!scope) return undefined;
+	const raw = (target ?? "").trim();
+	let range: string | undefined;
+	if (!raw) range = "@{upstream}...HEAD";
+	else if (raw.length <= 256 && /^[@\w][@\w./~^-]*\.\.\.?[@\w][@\w./~^-]*$/.test(raw)) range = raw;
+	if (!range) return undefined;
+	try {
+		const out = await run(
+			[
+				"-c",
+				"core.hooksPath=/dev/null",
+				"-c",
+				"core.fsmonitor=",
+				"-c",
+				"core.askPass=",
+				"diff",
+				"--no-ext-diff",
+				"--no-textconv",
+				"--numstat",
+				"--end-of-options",
+				range,
+				...(scope.relPath ? ["--", scope.relPath] : []),
+			],
+			{ cwd: scope.gitRoot, signal: timeoutSignal(5_000, signal) },
+		);
+		let total = 0;
+		for (const line of out.split("\n")) {
+			// numstat rows are `<added>\t<deleted>\t<path>`; binary rows carry `-`
+			// counts and never match.
+			const m = line.match(/^(\d+)\t(\d+)\t/);
+			if (m) total += Number(m[1]) + Number(m[2]);
+		}
+		return total > 0 ? total : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Which diff range produced the diff (drives scope reporting in prompts/messages). */
 export type DiffScopeKind = "upstream" | "worktree" | "staged-fresh" | "unstaged-fresh";
 

@@ -474,4 +474,103 @@ describe("review_report tool", () => {
 		expect(res.details.outFile).toBeNull();
 		expect((res.structuredContent?.findings as unknown[]).length).toBe(1);
 	});
+	it("renders and sinks refuted + stats (xhigh transparency, CC re-sync)", async () => {
+		const res = await execute(
+			"sc_rf",
+			{
+				level: "xhigh",
+				fanned_out: true,
+				findings: [
+					{ file: "a.ts", line: 1, category: "correctness", verdict: "CONFIRMED", summary: "s", failure_scenario: "f" },
+				],
+				refuted: [{ file: "b.ts", line: 2, summary: "误报：guard 在别处" }],
+				stats: { finders: 10, candidates: 47, verifierAgents: 12, verified: 40, refuted: 7, reported: 15 },
+			},
+			undefined,
+			undefined,
+			{ cwd },
+		);
+		const text = res.content[0]!.text;
+		expect(text).toContain("已否决 1 条");
+		expect(text).toContain("统计：finder 10 · 候选 47 · verifier 12 · 验证 40 · 否决 7 · 上报 15");
+		// on-disk JSON + structuredContent both carry the refuted list and stats
+		const outDir = join(cwd, ".pi", "review");
+		const f = readdirSync(outDir)[0]!;
+		const json = JSON.parse(readFileSync(join(outDir, f), "utf8")) as Record<string, unknown>;
+		expect(json.refuted).toEqual([{ file: "b.ts", line: 2, summary: "误报：guard 在别处" }]);
+		expect(json.stats).toEqual({ finders: 10, candidates: 47, verifierAgents: 12, verified: 40, refuted: 7, reported: 15 });
+		expect(res.structuredContent?.refuted).toEqual(json.refuted);
+		expect(res.structuredContent?.stats).toEqual(json.stats);
+	});
+
+	it("renders the stats line with omitted keys skipped", async () => {
+		const res = await execute(
+			"sc_st",
+			{ level: "high", findings: [], stats: { candidates: 12, reported: 0 } },
+			undefined,
+			undefined,
+			{ cwd },
+		);
+		expect(res.content[0]!.text).toContain("统计：候选 12 · 上报 0");
+	});
+
+	it("prepareArguments sanitizes refuted/stats before schema validation (model path)", () => {
+		const tool = reviewReportTool as unknown as {
+			prepareArguments: (args: Record<string, unknown>) => Record<string, unknown>;
+		};
+		const out = tool.prepareArguments({
+			level: "high",
+			findings: [],
+			refuted: [{ file: "a.ts", summary: "x" }, { junk: 1 }, { file: "", summary: "y" }, "garbage"],
+			stats: { finders: "ten", verified: 3, bogus: 1 },
+		});
+		expect(out.refuted).toEqual([{ file: "a.ts", summary: "x" }]);
+		expect(out.stats).toEqual({ verified: 3 });
+	});
+
+	it("truncates past the 32-finding hard ceiling and stamps the truncation (CC 2.1.291 Fe)", async () => {
+		const many = Array.from({ length: 40 }, (_, i) => ({
+			file: `f${i}.ts`,
+			line: i + 1,
+			category: "correctness",
+			verdict: "CONFIRMED",
+			summary: `s${i}`,
+			failure_scenario: `f${i}`,
+		}));
+		const res = await execute("sc_cap", { level: "xhigh", findings: many }, undefined, undefined, { cwd });
+		const text = res.content[0]!.text;
+		expect(text).toContain("32 条发现");
+		expect(text).toContain("已按 32 条上限截断（原 40 条）");
+		const outDir = join(cwd, ".pi", "review");
+		const f = readdirSync(outDir)[0]!;
+		const json = JSON.parse(readFileSync(join(outDir, f), "utf8")) as Record<string, unknown>;
+		expect((json.findings as unknown[]).length).toBe(32);
+		expect(json.truncated_from).toBe(40);
+		// Most-severe-first order is preserved (array order is the ranking).
+		expect((json.findings as { summary: string }[])[0]!.summary).toBe("s0");
+		expect((json.findings as { summary: string }[])[31]!.summary).toBe("s31");
+		expect(res.structuredContent?.truncated_from).toBe(40);
+		expect((res.structuredContent?.findings as unknown[]).length).toBe(32);
+	});
+
+	it("no truncation note below the ceiling; prepareArguments truncates as the validation backstop", async () => {
+		const few = Array.from({ length: 3 }, (_, i) => ({
+			file: `g${i}.ts`,
+			line: 1,
+			category: "correctness",
+			summary: `s${i}`,
+			failure_scenario: "f",
+		}));
+		const res = await execute("sc_nocap", { level: "low", findings: few }, undefined, undefined, { cwd });
+		expect(res.content[0]!.text).not.toContain("截断");
+		expect(res.structuredContent?.truncated_from).toBeUndefined();
+
+		const tool = reviewReportTool as unknown as {
+			prepareArguments: (args: Record<string, unknown>) => Record<string, unknown>;
+		};
+		const many = Array.from({ length: 35 }, (_, i) => ({ file: `h${i}.ts`, summary: "s", failure_scenario: "f" }));
+		const out = tool.prepareArguments({ level: "high", findings: many });
+		expect((out.findings as unknown[]).length).toBe(32);
+	});
+
 });
