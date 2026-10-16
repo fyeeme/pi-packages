@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -226,52 +226,58 @@ describe("loadConfig", () => {
 	let dir: string;
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "pisn-cfg-"));
+		// Pin the shared config file away from the real ~/.pi/agent.
+		process.env.PI_CODING_AGENT_DIR = dir;
 	});
 	afterEach(() => {
+		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(dir, { recursive: true, force: true });
 	});
 
 	it("returns defaults when no file and no env", () => {
-		const cfg = loadConfig(dir, {});
+		const cfg = loadConfig({});
 		expect(cfg).toEqual({ mode: "follow", prompt: "concise", enabled: true, appendCreationTime: true, maxLength: 200 });
 	});
-	it("reads .pi/agent/session-name.json", () => {
-		mkdirSync(join(dir, ".pi", "agent"), { recursive: true });
-		writeFileSync(join(dir, ".pi", "agent", "session-name.json"), JSON.stringify({ mode: "auto", maxLength: 20 }));
-		const cfg = loadConfig(dir, {});
+	it("reads the session-name section of young.json", () => {
+		writeFileSync(join(dir, "young.json"), JSON.stringify({ "session-name": { mode: "auto", maxLength: 20 } }));
+		const cfg = loadConfig({});
 		expect(cfg.mode).toBe("auto");
 		expect(cfg.maxLength).toBe(20);
 	});
+	it("ignores other sections and a non-object session-name section", () => {
+		writeFileSync(join(dir, "young.json"), JSON.stringify({ subagents: { fleet: false }, "session-name": 42 }));
+		expect(loadConfig({})).toEqual({ mode: "follow", prompt: "concise", enabled: true, appendCreationTime: true, maxLength: 200 });
+	});
 	it("env overrides file", () => {
-		const cfg = loadConfig(dir, { PI_SESSION_NAME_MODE: "auto", PI_SESSION_NAME_MAX_LENGTH: "12" });
+		writeFileSync(join(dir, "young.json"), JSON.stringify({ "session-name": { mode: "first", maxLength: 30 } }));
+		const cfg = loadConfig({ PI_SESSION_NAME_MODE: "auto", PI_SESSION_NAME_MAX_LENGTH: "12" });
 		expect(cfg.mode).toBe("auto");
 		expect(cfg.maxLength).toBe(12);
 	});
 	it("env mode accepts follow", () => {
-		expect(loadConfig(dir, { PI_SESSION_NAME_MODE: "follow" }).mode).toBe("follow");
+		expect(loadConfig({ PI_SESSION_NAME_MODE: "follow" }).mode).toBe("follow");
 	});
 	it("illegal env mode value is ignored", () => {
-		expect(loadConfig(dir, { PI_SESSION_NAME_MODE: "always" }).mode).toBe("follow");
+		expect(loadConfig({ PI_SESSION_NAME_MODE: "always" }).mode).toBe("follow");
 	});
 	it("prompt style defaults to concise and switches via env/file", () => {
-		expect(loadConfig(dir, {}).prompt).toBe("concise");
-		expect(loadConfig(dir, { PI_SESSION_NAME_PROMPT: "editorial" }).prompt).toBe("editorial");
-		expect(loadConfig(dir, { PI_SESSION_NAME_PROMPT: "bogus" }).prompt).toBe("concise");
+		expect(loadConfig({}).prompt).toBe("concise");
+		expect(loadConfig({ PI_SESSION_NAME_PROMPT: "editorial" }).prompt).toBe("editorial");
+		expect(loadConfig({ PI_SESSION_NAME_PROMPT: "bogus" }).prompt).toBe("concise");
 	});
 	it("non-numeric env maxLength is ignored", () => {
-		expect(loadConfig(dir, { PI_SESSION_NAME_MAX_LENGTH: "abc" }).maxLength).toBe(200);
+		expect(loadConfig({ PI_SESSION_NAME_MAX_LENGTH: "abc" }).maxLength).toBe(200);
 	});
 	it("PI_SESSION_NAME_ENABLED=false disables", () => {
-		expect(loadConfig(dir, { PI_SESSION_NAME_ENABLED: "false" }).enabled).toBe(false);
+		expect(loadConfig({ PI_SESSION_NAME_ENABLED: "false" }).enabled).toBe(false);
 	});
 	it("appendCreationTime defaults true, env TIMESTAMP=false disables", () => {
-		expect(loadConfig(dir, {}).appendCreationTime).toBe(true);
-		expect(loadConfig(dir, { PI_SESSION_NAME_TIMESTAMP: "false" }).appendCreationTime).toBe(false);
+		expect(loadConfig({}).appendCreationTime).toBe(true);
+		expect(loadConfig({ PI_SESSION_NAME_TIMESTAMP: "false" }).appendCreationTime).toBe(false);
 	});
 	it("malformed JSON falls back to defaults silently", () => {
-		mkdirSync(join(dir, ".pi", "agent"), { recursive: true });
-		writeFileSync(join(dir, ".pi", "agent", "session-name.json"), "{ not valid json", "utf8");
-		expect(loadConfig(dir, {})).toEqual({ mode: "follow", prompt: "concise", enabled: true, appendCreationTime: true, maxLength: 200 });
+		writeFileSync(join(dir, "young.json"), "{ not valid json", "utf8");
+		expect(loadConfig({})).toEqual({ mode: "follow", prompt: "concise", enabled: true, appendCreationTime: true, maxLength: 200 });
 	});
 });
 

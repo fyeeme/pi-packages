@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 
 // ---------------------------------------------------------------------------
@@ -276,11 +276,15 @@ export interface SessionNameConfig {
 
 const DEFAULT_CONFIG: SessionNameConfig = { mode: "follow", prompt: "concise", enabled: true, appendCreationTime: true, maxLength: 200 };
 
-export function loadConfig(cwd: string, env: Record<string, string | undefined> = process.env): SessionNameConfig {
+export function loadConfig(env: Record<string, string | undefined> = process.env): SessionNameConfig {
 	let fileCfg: Partial<SessionNameConfig> = {};
-	const file = join(cwd, CONFIG_DIR_NAME, "agent", "session-name.json");
+	const file = join(getAgentDir(), "young.json");
 	try {
-		fileCfg = JSON.parse(readFileSync(file, "utf8")) as Partial<SessionNameConfig>;
+		const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+		// Shared per-user config file keyed by extension name; this extension
+		// owns its "session-name" section, other sections are ignored.
+		const section = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>)["session-name"] : undefined;
+		if (section && typeof section === "object") fileCfg = section as Partial<SessionNameConfig>;
 	} catch {
 		// missing or malformed config — ignore, fall back to defaults
 	}
@@ -431,7 +435,7 @@ export function sessionNameExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
-		if (cfg === null) cfg = loadConfig(ctx.cwd);
+		if (cfg === null) cfg = loadConfig();
 		if (!cfg.enabled || manuallyLocked || inFlight) return;
 		// first/auto never touch a resumed session's inherited title (pi's API
 		// carries no title source, so any existing name is treated as pinned);
@@ -509,7 +513,7 @@ export function sessionNameExtension(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			// /rename is a manual action: take control and stop background auto-naming
 			manuallyLocked = true;
-			const cfg = loadConfig(ctx.cwd);
+			const cfg = loadConfig();
 			const name = args.trim();
 
 			if (name) {

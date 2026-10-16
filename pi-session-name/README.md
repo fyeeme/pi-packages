@@ -66,12 +66,15 @@ If you want to change behavior, see [Configuration](#configuration).
 
 ## Configuration
 
-Create `.pi/agent/session-name.json` in your project root:
+Add a `session-name` section to the shared global `~/.pi/agent/young.json`
+(top-level keys in that file isolate extensions):
 
 ```json
 {
-	"mode": "auto",
-	"maxLength": 200
+	"session-name": {
+		"mode": "auto",
+		"maxLength": 200
+	}
 }
 ```
 
@@ -112,7 +115,7 @@ Two system-prompt styles ship (measured A/B on 50 local sessions with a reasonin
 - **`concise`** (default) — deepseek-harness wording verbatim: four lines of format discipline, no editorial content rules. 96% title yield, p50 latency 5.1 s, uniform lengths.
 - **`editorial`** — same architecture plus pi's distinctiveness rules (never a generic headline; carry the concrete module/error/identifier). Titles are more information-dense, but the extra rules induce longer chain-of-thought on reasoning models, so the output budget is raised to 1024 tokens and latency runs ~30% higher.
 
-Switch in `.pi/agent/session-name.json` (`"prompt": "editorial"`) or via `PI_SESSION_NAME_PROMPT=editorial`.
+Switch in the young.json `session-name` section (`"prompt": "editorial"`) or via `PI_SESSION_NAME_PROMPT=editorial`.
 
 ### Pipeline (deepseek-harness discipline, 1:1 where the host allows)
 
