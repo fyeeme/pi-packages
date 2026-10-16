@@ -1,0 +1,1 @@
+/Users/Young/Projects/personal/frontend/agent-stuff/extensions/view-image.ts

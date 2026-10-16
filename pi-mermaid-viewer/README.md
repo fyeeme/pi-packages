@@ -57,10 +57,12 @@ Run `/mermaid` to collect all ````mermaid` code blocks from the conversation and
 
 ### Features
 
+- **Full mermaid@12 coverage** — the same rendering stack as [mermaid.live](https://mermaid.live) (v12, `redux-color` as the default theme, matching grid), incl. the ELK layouts (`flowchart-elk`), ZenUML (registered at runtime), and FontAwesome icon nodes (`fa:fa-*`, `icon:*` with the FA webfont loaded and awaited)
+- **Hand-drawn look** (mermaid `look:"handDrawn"`) and **grid background** toggles, persisted across sessions — the two controls from mermaid.live's floating toolbar
 - **Dark / Light / White** background themes
 - **Zoom** controls (25% – 400%) with 1:1 reset
-- **3x PNG export** for sharing
-- **Split view** to inspect source alongside rendered diagram
+- **3x PNG export** for sharing; SVG export embeds the FA stylesheet when the diagram uses icons
+- **Split view** with a live editor — edit the source (line numbers, Tab indent) and watch the diagram re-render in real time
 - **Multi-diagram navigation** when the conversation contains multiple blocks
 - **Emoji support** — emoji render natively via the browser's color font
 - **Auto-quoting** of node labels with special characters (`?`, `@`, `<br/>`, `/`, etc.) that Mermaid cannot parse
