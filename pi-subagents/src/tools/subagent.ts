@@ -753,6 +753,41 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 		openWorldHint: true,
 	},
 
+	// pi 1.2.0 (ToolDefinition.reachesTools): lets the host's MCP extension
+	// wait for still-connecting servers before the call runs, so children
+	// spawned with MCP tools find them registered. The host matches each word
+	// against server names by containment (word.includes(name)), so tool names
+	// over-match safely. Agent definitions with an explicit non-empty
+	// `tools` frontmatter list contribute their entries; a definition without
+	// one spawns the child with pi's DEFAULT active tools — which may include
+	// MCP tools — so any such named agent conservatively reaches everything.
+	// Unknown names contribute nothing: that task fails in execute() anyway,
+	// and waiting on a typo would only delay the error.
+	reachesTools: (input) => {
+		const names = new Set<string>();
+		if (typeof input.agent === "string") names.add(input.agent);
+		if (Array.isArray(input.tasks)) {
+			for (const t of input.tasks) {
+				if (t && typeof t === "object" && typeof (t as { agent?: unknown }).agent === "string") {
+					names.add((t as { agent: string }).agent);
+				}
+			}
+		}
+		if (names.size === 0) return [];
+		// Discovery must mirror execute(): agents resolve from the session cwd
+		// (ctx.cwd — equals process.cwd() here). input.cwd is the CHILD process
+		// working directory only and never affects agent resolution.
+		const { agents } = discoverAgents(process.cwd(), "both");
+		const words = new Set<string>();
+		for (const name of names) {
+			const def = agents.find((a) => a.name === name);
+			if (!def) continue; // unknown name: that task fails in execute() anyway
+			if (!def.tools || def.tools.length === 0) return "all";
+			for (const tool of def.tools) words.add(tool);
+		}
+		return [...words];
+	},
+
 	async execute(_toolCallId, params, signal, onUpdate, ctx) {
 		if (params.maxTurns !== undefined && (!Number.isInteger(params.maxTurns) || params.maxTurns <= 0)) {
 			// Parameter errors are tool errors: throw so pi sets isError (a
@@ -812,7 +847,8 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 		// no policy parameters). Interactive sessions confirm repo-controlled
 		// agents before any subprocess spawns; headless runs (`pi -p`) cannot
 		// prompt, so they fail closed unless explicitly opted out via
-		// {"confirmProjectAgents": false} in .pi/pi-subagent.json or the per-run
+		// {"confirmProjectAgents": false} in the "subagents" section of
+		// ~/.pi/agent/young.json or the per-run
 		// PI_SUBAGENTS_ALLOW_PROJECT_AGENTS=1 override.
 		const requestedAgentNames = new Set<string>();
 		if (params.tasks) for (const t of params.tasks) requestedAgentNames.add(t.agent);
@@ -822,7 +858,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 			.filter((a): a is AgentConfig => a?.source === "project");
 		const gateArmed =
 			projectAgentsRequested.length > 0 &&
-			loadCoreSettings(ctx.cwd).confirmProjectAgents !== false &&
+			loadCoreSettings().confirmProjectAgents !== false &&
 			process.env.PI_SUBAGENTS_ALLOW_PROJECT_AGENTS !== "1";
 
 		if (gateArmed && ctx.hasUI) {
@@ -849,7 +885,7 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 					content: [
 						{
 							type: "text",
-							text: "Blocked: project-local agents are not trusted in headless runs. Allow them via {\"confirmProjectAgents\": false} in .pi/pi-subagent.json, or set PI_SUBAGENTS_ALLOW_PROJECT_AGENTS=1 for this run.",
+							text: "Blocked: project-local agents are not trusted in headless runs. Allow them via {\"confirmProjectAgents\": false} in the \"subagents\" section of ~/.pi/agent/young.json, or set PI_SUBAGENTS_ALLOW_PROJECT_AGENTS=1 for this run.",
 						},
 					],
 				details: makeDetails(mode)([]),

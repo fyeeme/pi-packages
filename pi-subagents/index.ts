@@ -20,10 +20,10 @@
  * conversation-viewer overlay (Enter); event-driven rendering on monitor
  * notifications.
  *
- * Configuration is file-based only (src/concurrency.ts), read from
- * `<agentDir>/pi-subagent.json` (global defaults) with
- * `<cwd>/<CONFIG_DIR_NAME>/pi-subagent.json` (project) overriding — there is
- * no interactive settings UI. Keys: `fleet` (boolean, default true, read once
+ * Configuration is file-based only (src/concurrency.ts), read from the
+ * `subagents` section of the shared global `<agentDir>/young.json` (top-level
+ * keys isolate extensions) — there is no interactive settings UI. Keys:
+ * `fleet` (boolean, default true, read once
  * at startup), `maxConcurrency` (any positive integer, default 5 — consumed
  * by the dispatch core at call time), `confirmProjectAgents` (boolean,
  * default true), `stallMs` (default 60000), and `wallClockMs` (default
@@ -198,6 +198,20 @@ export default function subagentsUiExtension(pi: ExtensionAPI): void {
 		} catch {
 			/* registration clash — the UI surfaces still work */
 		}
+	}
+
+	// Transcript-rendering fallback (pi >= 1.0.1 `registerToolRenderer`):
+	// when the `subagent` tool is NOT registered — fan-out disallowed for this
+	// process, the clash swallowed above, or a stale guard after an unexpected
+	// factory rebuild — calls carried in from a resumed session would render
+	// fully expanded. `next() ?? ours` defers to the registered tool's own
+	// renderers and to any later resolver, so this only fills in. Feature-
+	// detected because peer hosts may predate the API (>= 0.99.0). Registered
+	// by every composing entry; idempotent, all entries return the same pair.
+	if (typeof pi.registerToolRenderer === "function") {
+		pi.registerToolRenderer((toolName, next) =>
+			toolName === "subagent" ? next() ?? { renderCall: subagentTool.renderCall, renderResult: subagentTool.renderResult } : next(),
+		);
 	}
 
 	const { fleet } = getSharedUi();

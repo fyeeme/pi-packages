@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.4] - 2026-10-16
+
+### Added
+
+- `subagent` declares `reachesTools` (pi 1.2.0): agent definitions with an explicit `tools` frontmatter list contribute their entries as reach words; any named agent without one spawns with pi's default active tools (which may include MCP tools) and makes the call reach `"all"` — so the host's MCP extension waits for still-connecting servers before the call runs instead of letting children start with unregistered tools. Unknown agent names contribute nothing (the task fails in execute anyway).
+- Transcript rendering of `subagent` calls no longer depends on the tool being registered: the extension also registers a fill-in renderer through pi's `registerToolRenderer` (pi ≥ 1.0.1, feature-detected for older hosts). Calls carried in from a resumed session keep their rendering when fan-out is disallowed for the process, the composition guard skipped registration, or a registration clash was swallowed; the resolver defers to whatever already resolved (`next() ?? ours`).
 
 ### Changed
 
@@ -14,14 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Dead code: the pi-subagent-core-era sibling-module re-export block in `src/dispatch.ts` (monitor, settings, and text-extraction symbols — all already exported from `index.ts` via their home modules, with zero deep-import consumers) and two unused imports in `src/tools/subagent.ts` (`NO_OUTPUT_PLACEHOLDER`, `classifyFailure`). No public API change: the package barrel (`index.ts`) still exports every documented symbol.
 - Dead code: `formatFleetElapsed` / `formatFleetTokens` in `src/ui/shared.ts` (zero references across the family after the fleet renderer moved to its own formatting).
+- Formatting: one stray indentation level in `subagent.ts`'s execute tail and a redundant `maxTurns: maxTurns` property shorthand (no behavior change).
 
 ### Fixed
 
 - Flaky test: the stable-id assertion in `dispatch.test.ts` now accepts the `-N` uniquification suffix (a second draw of the same AdjectiveNoun base within one test process is legal, not a bug).
-
-### Changed
-
-- Formatting: one stray indentation level in `subagent.ts`'s execute tail and a redundant `maxTurns: maxTurns` property shorthand (no behavior change).
 
 ## [2.1.3] - 2026-10-02
 

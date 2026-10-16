@@ -3,7 +3,7 @@
  * parameter validation, shared-context prepending, and result shapes that
  * need no real subprocess (dispatch's node:child_process.spawn is mocked).
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
@@ -72,9 +72,20 @@ function procWithFinalText(text: string): ChildProcess {
 	return proc;
 }
 
+let agentConfigDir: string;
+
 beforeEach(() => {
 	spawnMock.mockReset();
 	spawnMock.mockImplementation(() => fakeProc());
+	// Pin the global settings location (young.json) away from the real
+	// ~/.pi/agent so tests stay hermetic regardless of the user's config.
+	agentConfigDir = mkdtempSync(join(td(), "pi-sa-cfg-"));
+	process.env.PI_CODING_AGENT_DIR = agentConfigDir;
+});
+
+afterEach(() => {
+	delete process.env.PI_CODING_AGENT_DIR;
+	rmSync(agentConfigDir, { recursive: true, force: true });
 });
 
 describe("subagent tool parameter validation", () => {
@@ -627,7 +638,7 @@ describe("spec anchors: ids, wire schema, trust gate, frontmatter schema", () =>
 			join(dir, ".pi", "agents", "pa.md"),
 			"---\nname: pa\ndescription: project agent\n---\nbody\n",
 		);
-		writeFileSync(join(dir, ".pi", "pi-subagent.json"), JSON.stringify({ confirmProjectAgents: false }));
+		writeFileSync(join(agentConfigDir, "young.json"), JSON.stringify({ subagents: { confirmProjectAgents: false } }));
 		try {
 			spawnMock.mockImplementation(() => procWithFinalText("<result>ok</result>"));
 			const allowed = await subagentTool.execute!(
@@ -648,7 +659,7 @@ describe("spec anchors: ids, wire schema, trust gate, frontmatter schema", () =>
 		const dir = mkdtempSync(join(td(), "pi-sa-nogate-"));
 		mkdirSync(join(dir, ".pi", "agents"), { recursive: true });
 		writeFileSync(join(dir, ".pi", "agents", "pa.md"), "---\nname: pa\ndescription: project agent\n---\nbody\n");
-		writeFileSync(join(dir, ".pi", "pi-subagent.json"), JSON.stringify({ confirmProjectAgents: false }));
+		writeFileSync(join(agentConfigDir, "young.json"), JSON.stringify({ subagents: { confirmProjectAgents: false } }));
 		try {
 			const confirm = vi.fn(async () => true);
 			await subagentTool.execute!(
@@ -667,8 +678,7 @@ describe("spec anchors: ids, wire schema, trust gate, frontmatter schema", () =>
 
 	it("frontmatter output: validates when the caller passes no outputSchema (permissive warns)", async () => {
 		const dir = mkdtempSync(join(td(), "pi-sa-fm-"));
-		mkdirSync(join(dir, ".pi"), { recursive: true });
-		writeFileSync(join(dir, ".pi", "pi-subagent.json"), JSON.stringify({ confirmProjectAgents: false }));
+		writeFileSync(join(agentConfigDir, "young.json"), JSON.stringify({ subagents: { confirmProjectAgents: false } }));
 		const agentsDir = join(dir, ".pi", "agents");
 		mkdirSync(agentsDir, { recursive: true });
 		writeFileSync(
@@ -840,8 +850,8 @@ describe("structured envelope (spec: subagent-structured-output)", () => {
 		const dir = mkdtempSync(join(td(), "pi-sa-cancel-"));
 		mkdirSync(join(dir, ".pi", "agents"), { recursive: true });
 		writeFileSync(join(dir, ".pi", "agents", "pa.md"), "---\nname: pa\ndescription: project agent\n---\nbody\n");
-		// Project setting pins the gate ON deterministically (overrides any global).
-		writeFileSync(join(dir, ".pi", "pi-subagent.json"), JSON.stringify({ confirmProjectAgents: true }));
+		// The global settings file pins the gate ON deterministically.
+		writeFileSync(join(agentConfigDir, "young.json"), JSON.stringify({ subagents: { confirmProjectAgents: true } }));
 		try {
 			const result = await subagentTool.execute!(
 				"call-5",
@@ -859,6 +869,95 @@ describe("structured envelope (spec: subagent-structured-output)", () => {
 			expect(text.type === "text" && text.text).toContain("Canceled");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("reachesTools (pi 1.2.0 MCP wait hint)", () => {
+	const reach = (input: Record<string, unknown>): "all" | readonly string[] =>
+		subagentTool.reachesTools!(input);
+
+	/** Temp project agents dir with one toolful and one toolless definition,
+	 * so vectors do not depend on the bundled set. */
+	function fixtureDir(): string {
+		const dir = mkdtempSync(join(td(), "pi-subagents-reach-"));
+		mkdirSync(join(dir, ".pi", "agents"), { recursive: true });
+		writeFileSync(
+			join(dir, ".pi", "agents", "toolful.md"),
+			"---\nname: toolful\ndescription: pins tools\ntools: read, serena_search\n---\nbody\n",
+		);
+		writeFileSync(
+			join(dir, ".pi", "agents", "toolless.md"),
+			"---\nname: toolless\ndescription: default toolset\n---\nbody\n",
+		);
+		return dir;
+	}
+
+	it("no agent or tasks reaches nothing", () => {
+		expect(reach({})).toEqual([]);
+	});
+
+	it("unknown agent name reaches nothing (the task fails in execute anyway)", () => {
+		expect(reach({ agent: "no-such-agent" })).toEqual([]);
+	});
+
+	/** Run `fn` with the process cwd (the session-cwd stand-in) inside `dir`;
+	 * discovery follows the session cwd, never input.cwd. */
+	function withSessionCwd<T>(dir: string, fn: () => T): T {
+		const previous = process.cwd();
+		process.chdir(dir);
+		try {
+			return fn();
+		} finally {
+			process.chdir(previous);
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}
+
+	it("agent with an explicit tools list contributes its tool words", () => {
+		withSessionCwd(fixtureDir(), () => {
+			expect(reach({ agent: "toolful" })).toEqual(["read", "serena_search"]);
+		});
+	});
+
+	it("agent without an explicit tools list runs default active tools — reaches all", () => {
+		withSessionCwd(fixtureDir(), () => {
+			expect(reach({ agent: "toolless" })).toBe("all");
+		});
+	});
+
+	it("one toolless agent in a parallel batch makes the whole call reach all", () => {
+		withSessionCwd(fixtureDir(), () => {
+			expect(reach({ tasks: [{ agent: "toolful" }, { agent: "toolless" }] })).toBe("all");
+		});
+	});
+
+	it("bundled worker (no frontmatter tools) anchors the real-world all case", () => {
+		expect(reach({ agent: "worker" })).toBe("all");
+	});
+
+	it("input.cwd (child process dir) never affects discovery — mirrors execute()'s ctx.cwd", () => {
+		// review-20261013-1345: session cwd = dirA (pa.md WITHOUT tools),
+		// input.cwd = dirB (pa.md WITH tools). Resolution must follow the
+		// session cwd ("all"), not the child cwd (["bash"]).
+		const dirA = mkdtempSync(join(td(), "pi-subagents-reach-a-"));
+		const dirB = mkdtempSync(join(td(), "pi-subagents-reach-b-"));
+		mkdirSync(join(dirA, ".pi", "agents"), { recursive: true });
+		mkdirSync(join(dirB, ".pi", "agents"), { recursive: true });
+		writeFileSync(
+			join(dirA, ".pi", "agents", "pa.md"),
+			"---\nname: pa\ndescription: session-scoped, default toolset\n---\nbody\n",
+		);
+		writeFileSync(
+			join(dirB, ".pi", "agents", "pa.md"),
+			"---\nname: pa\ndescription: child-scoped, pins tools\ntools: bash\n---\nbody\n",
+		);
+		try {
+			withSessionCwd(dirA, () => {
+				expect(reach({ agent: "pa", cwd: dirB })).toBe("all");
+			});
+		} finally {
+			rmSync(dirB, { recursive: true, force: true });
 		}
 	});
 });

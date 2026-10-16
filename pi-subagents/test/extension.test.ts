@@ -11,11 +11,12 @@
  * Project-layer settings are read via process.cwd() — hence the chdir.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import extensionFactory from "../index.ts";
 import { monitor } from "../src/monitor.ts";
+import { subagentTool } from "../src/tools/subagent.ts";
 
 const FLEET_KEY = "pi-subagents:fleet";
 const UI_KEY = Symbol.for("@fyeeme/pi-subagents/ui");
@@ -28,6 +29,7 @@ function fakePi() {
 	return {
 		registerCommand: vi.fn(),
 		registerTool: vi.fn(),
+		registerToolRenderer: vi.fn(),
 		on(event: string, handler: Handler): void {
 			const list = handlers.get(event) ?? [];
 			list.push(handler);
@@ -102,9 +104,8 @@ afterEach(() => {
 	monitor.clear();
 });
 
-function writeProject(obj: unknown): void {
-	mkdirSync(join(projDir, ".pi"), { recursive: true });
-	writeFileSync(join(projDir, ".pi", "pi-subagent.json"), JSON.stringify(obj));
+function writeSettings(obj: unknown): void {
+	writeFileSync(join(globalDir, "young.json"), JSON.stringify({ subagents: obj }));
 }
 
 /** The setWidget keys registered so far (factories only, not teardown calls). */
@@ -176,7 +177,7 @@ describe("extension lifecycle", () => {
 	});
 
 	it("fleet: false — the fleet never registers and never captures input", () => {
-		writeProject({ fleet: false });
+		writeSettings({ fleet: false });
 		const pi = fakePi();
 		const { setWidget, ui, inputHandlers } = fakeUi();
 		extensionFactory(pi as never);
@@ -195,7 +196,7 @@ describe("extension lifecycle", () => {
 
 	it("legacy widget/fleetView settings are ignored — the fleet stays on by default", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		writeProject({ widget: "background", fleetView: false });
+		writeSettings({ widget: "background", fleetView: false });
 		const pi = fakePi();
 		const { setWidget, ui, inputHandlers } = fakeUi();
 		extensionFactory(pi as never);
@@ -363,5 +364,65 @@ describe("composition guard (consumer-composed factories)", () => {
 			extensionFactory(rebuilt as never);
 			expect(rebuilt.registerTool).toHaveBeenCalledTimes(1);
 		}
+	});
+});
+
+describe("tool renderer fallback (pi >= 1.0.1 registerToolRenderer)", () => {
+	const TOOL_FLAG = Symbol.for("@fyeeme/pi-subagents/tool-registered");
+
+	function resolverFrom(pi: ReturnType<typeof fakePi>): (toolName: string, next: () => unknown) => unknown {
+		expect(pi.registerToolRenderer).toHaveBeenCalledTimes(1);
+		return pi.registerToolRenderer.mock.calls[0][0] as (toolName: string, next: () => unknown) => unknown;
+	}
+
+	it("fills in for `subagent` even when the tool itself is not registered (fan-out disallowed)", () => {
+		delete (globalThis as Record<symbol, unknown>)[TOOL_FLAG];
+		// Child depth without the recursion opt-in → isFanoutToolAllowed() false.
+		const prevDepth = process.env.PI_SUBAGENT_DEPTH;
+		process.env.PI_SUBAGENT_DEPTH = "1";
+		try {
+			const pi = fakePi();
+			extensionFactory(pi as never);
+			expect(pi.registerTool).toHaveBeenCalledTimes(0);
+
+			const resolve = resolverFrom(pi);
+			// next() → undefined models the unregistered tool (no later resolver,
+			// no tool-owned renderers): our pair must fill in or resumed-session
+			// calls render fully expanded.
+			const renderers = resolve("subagent", () => undefined) as { renderCall: unknown; renderResult: unknown };
+			expect(renderers.renderCall).toBe(subagentTool.renderCall);
+			expect(renderers.renderResult).toBe(subagentTool.renderResult);
+		} finally {
+			if (prevDepth === undefined) delete process.env.PI_SUBAGENT_DEPTH;
+			else process.env.PI_SUBAGENT_DEPTH = prevDepth;
+		}
+	});
+
+	it("defers to what next() already resolved (registered tool / later resolver wins)", () => {
+		delete (globalThis as Record<symbol, unknown>)[TOOL_FLAG];
+		const pi = fakePi();
+		extensionFactory(pi as never);
+		const resolve = resolverFrom(pi);
+
+		const existing = { renderCall: () => null, renderResult: () => null };
+		expect(resolve("subagent", () => existing)).toBe(existing);
+	});
+
+	it("passes tool names other than `subagent` through untouched", () => {
+		delete (globalThis as Record<symbol, unknown>)[TOOL_FLAG];
+		const pi = fakePi();
+		extensionFactory(pi as never);
+		const resolve = resolverFrom(pi);
+
+		const mcpRenderers = { renderCall: () => null };
+		expect(resolve("mcp__x__y", () => mcpRenderers)).toBe(mcpRenderers);
+		expect(resolve("read", () => undefined)).toBeUndefined();
+	});
+
+	it("does not crash on hosts predating the API (peer >= 0.99.0)", () => {
+		delete (globalThis as Record<symbol, unknown>)[TOOL_FLAG];
+		const pi = fakePi();
+		const { registerToolRenderer: _absent, ...legacy } = pi;
+		expect(() => extensionFactory(legacy as never)).not.toThrow();
 	});
 });

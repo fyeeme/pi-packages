@@ -191,15 +191,15 @@ function childSpawnEnv(options: AgentSpawnOptions): NodeJS.ProcessEnv {
 
 /** Hardcoded fallback concurrency ceiling for sub-agent fan-out: 5. The
  *  effective default is configurable via the package settings file
- *  (`maxConcurrency` in pi-subagent.json, options 3/5/8/10 — see concurrency.ts); this constant
+ *  (`maxConcurrency` in the young.json `subagents` section, options 3/5/8/10 — see concurrency.ts); this constant
  *  applies when no valid setting is present. Callers needing a different
  *  ceiling pass `concurrency` explicitly. */
 export const DEFAULT_MAX_CONCURRENCY = 5;
 
 /**
  * Effective concurrency ceiling for fan-out (the "concurrent agents" setting):
- * `maxConcurrency` from the package settings files (project layer overriding
- * global; any positive integer), falling back to the hardcoded
+ * `maxConcurrency` from the package settings file (the young.json `subagents`
+ * section; any positive integer), falling back to the hardcoded
  * {@link DEFAULT_MAX_CONCURRENCY}. Read at call time so an edited file takes
  * effect on the next fan-out without a restart. There is no environment-
  * variable configuration channel — the settings file is the single source.

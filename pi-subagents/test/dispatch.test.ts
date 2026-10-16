@@ -116,7 +116,7 @@ describe("mapWithConcurrencyLimit", () => {
 	});
 
 	it("maxConcurrency from the global settings file raises the ceiling to the configured option", async () => {
-		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: 8 }));
+		writeFileSync(join(configDir, "young.json"), JSON.stringify({ subagents: { maxConcurrency: 8 } }));
 		expect(getEffectiveMaxConcurrency()).toBe(8);
 		let active = 0;
 		let peak = 0;
@@ -129,8 +129,8 @@ describe("mapWithConcurrencyLimit", () => {
 		expect(peak).toBe(8); // 8 items, configured ceiling 8 — all in flight
 	});
 
-	it("maxConcurrency from the project layer overrides the global layer", async () => {
-		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: 10 }));
+	it("the project layer is gone — a <cwd>/.pi/pi-subagent.json is not read (no back-compat)", async () => {
+		writeFileSync(join(configDir, "young.json"), JSON.stringify({ subagents: { maxConcurrency: 10 } }));
 		// Hermetic project layer: chdir into a temp dir so its .pi/ is never the repo's.
 		const projDir = mkdtempSync(join(tmpdir(), "pi-sa-proj-"));
 		const prevCwd = process.cwd();
@@ -138,6 +138,7 @@ describe("mapWithConcurrencyLimit", () => {
 		writeFileSync(join(projDir, ".pi", "pi-subagent.json"), JSON.stringify({ maxConcurrency: 3 }));
 		try {
 			process.chdir(projDir);
+			expect(getEffectiveMaxConcurrency()).toBe(10); // global (10) alone drives
 			let active = 0;
 			let peak = 0;
 			await mapWithConcurrencyLimit([1, 2, 3, 4, 5, 6, 7, 8], async () => {
@@ -146,7 +147,7 @@ describe("mapWithConcurrencyLimit", () => {
 				await new Promise((r) => setTimeout(r, 5));
 				active--;
 			});
-			expect(peak).toBe(3); // project layer (3) wins over global (10)
+			expect(peak).toBe(8); // the project file (3) is ignored — all 8 items in flight
 		} finally {
 			process.chdir(prevCwd);
 			rmSync(projDir, { recursive: true, force: true });
@@ -154,18 +155,18 @@ describe("mapWithConcurrencyLimit", () => {
 	});
 
 	it("non-positive / non-integer maxConcurrency values are dropped (fallback 5)", () => {
-		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: 0 }));
+		writeFileSync(join(configDir, "young.json"), JSON.stringify({ subagents: { maxConcurrency: 0 } }));
 		expect(getEffectiveMaxConcurrency()).toBe(5);
-		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: 3.5 }));
+		writeFileSync(join(configDir, "young.json"), JSON.stringify({ subagents: { maxConcurrency: 3.5 } }));
 		expect(getEffectiveMaxConcurrency()).toBe(5);
-		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: -2 }));
+		writeFileSync(join(configDir, "young.json"), JSON.stringify({ subagents: { maxConcurrency: -2 } }));
 		expect(getEffectiveMaxConcurrency()).toBe(5);
-		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: 3 }));
+		writeFileSync(join(configDir, "young.json"), JSON.stringify({ subagents: { maxConcurrency: 3 } }));
 		expect(getEffectiveMaxConcurrency()).toBe(3);
 	});
 
 	it("PI_MAX_CONCURRENT_SUBAGENTS is no longer honored — the file alone drives the ceiling", () => {
-		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ maxConcurrency: 3 }));
+		writeFileSync(join(configDir, "young.json"), JSON.stringify({ subagents: { maxConcurrency: 3 } }));
 		process.env.PI_MAX_CONCURRENT_SUBAGENTS = "50";
 		try {
 			expect(getMaxConcurrency()).toBe(3);
@@ -590,7 +591,7 @@ describe("stall watchdog and wall-clock ceiling", () => {
 
 	it("wallClockMs ends an agent that keeps outputting, reported as wall-clock", async () => {
 		vi.useFakeTimers();
-		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ stallMs: 10_000, wallClockMs: 20_000 }));
+		writeFileSync(join(configDir, "young.json"), JSON.stringify({ subagents: { stallMs: 10_000, wallClockMs: 20_000 } }));
 		const proc = fakeProc();
 		spawnMock.mockReturnValue(proc);
 		const registry = createSpawnRegistry();
@@ -611,14 +612,14 @@ describe("stall watchdog and wall-clock ceiling", () => {
 
 	it("a wallClockMs below twice stallMs is ignored (invariant), default disabled otherwise", async () => {
 		writeFileSync(
-			join(configDir, "pi-subagent.json"),
-			JSON.stringify({ stallMs: 30_000, wallClockMs: 40_000 }),
+			join(configDir, "young.json"),
+			JSON.stringify({ subagents: { stallMs: 30_000, wallClockMs: 40_000 } }),
 		);
 		const resolved = resolveWatchdogThresholds();
 		expect(resolved.stallMs).toBe(30_000);
 		expect(resolved.wallClockMs).toBeUndefined(); // 40s < 2×30s → ignored
 
-		writeFileSync(join(configDir, "pi-subagent.json"), JSON.stringify({ wallClockMs: -5 }));
+		writeFileSync(join(configDir, "young.json"), JSON.stringify({ subagents: { wallClockMs: -5 } }));
 		const defaults = resolveWatchdogThresholds();
 		expect(defaults.stallMs).toBe(60_000); // invalid stall → default 60000
 		expect(defaults.wallClockMs).toBeUndefined(); // no valid config → disabled
@@ -711,7 +712,7 @@ describe("stable spawn ids", () => {
 		proc.emit("close", 0);
 		const r = await p;
 		expect(r.callId).toBe("subagent-scout-1738-abc"); // addressing key unchanged
-		expect(r.id).toMatch(/^[A-Z][a-z]+[A-Z][a-z]+$/); // AdjectiveNoun
+		expect(r.id).toMatch(/^[A-Z][a-z]+[A-Z][a-z]+(?:-\d+)?$/); // AdjectiveNoun（同进程重复抽取带 -N 去重后缀）
 		expect(monitor.get(r.callId)?.id).toBe(r.id); // same id across surfaces
 	});
 

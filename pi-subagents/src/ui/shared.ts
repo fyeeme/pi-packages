@@ -90,16 +90,6 @@ export function formatMs(ms: number): string {
 	return `${minutes}m${String(seconds).padStart(2, "0")}s`;
 }
 
-/** Fleet row elapsed: integer seconds ("11s"), matching Claude Code. */
-export function formatFleetElapsed(ms: number): string {
-	return `${Math.max(0, Math.round(ms / 1000))}s`;
-}
-
-/** Fleet row tokens: "↓ 13.1k tokens". */
-export function formatFleetTokens(count: number): string {
-	return `↓ ${compactCount(count)} tokens`;
-}
-
 /** Truncate text to a single line, max `len` chars. */
 export function truncateLine(text: string, len = 60): string {
 	const line = text.split("\n").find((l) => l.trim())?.trim() ?? "";

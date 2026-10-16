@@ -1,9 +1,10 @@
 /**
  * concurrency.ts — file-based configuration for this package (settings + ceiling policy).
  *
- * Read-only. Two layers, project overriding global:
- *   - Global:  <agentDir>/pi-subagent.json — user-wide defaults.
- *   - Project: <cwd>/.pi/pi-subagent.json — overrides global on load.
+ * Read-only. Single global layer:
+ *   - <agentDir>/young.json — the shared per-user config file, keyed by
+ *     extension name at the top level; this package owns its "subagents"
+ *     section (other sections belong to other extensions and are ignored).
  *
  *   fleet           boolean, default true — the below-editor fleet surface
  *   maxConcurrency  positive integer (default 5) — fan-out concurrency ceiling
@@ -19,10 +20,12 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { getAgentDir, CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-/** Settings file name (both layers). */
-const SETTINGS_FILE = "pi-subagent.json";
+/** Shared per-user settings file; this package owns its "subagents" section. */
+const SETTINGS_FILE = "young.json";
+/** Top-level key of this package's section inside the shared settings file. */
+const SETTINGS_SECTION = "subagents";
 
 /** Package settings read from the two config layers. */
 export interface SubagentCoreSettings {
@@ -93,12 +96,14 @@ function sanitize(raw: unknown): SubagentCoreSettings {
 	return out;
 }
 
-/** Read one settings file; missing file → {} (the normal case, silent).
- *  Unparseable file → warn + {}. */
+/** Read the settings file; missing file → {} (the normal case, silent).
+ *  Unparseable file → warn + {}; absent/non-object section → {}. */
 function readSettingsFile(path: string): SubagentCoreSettings {
 	if (!existsSync(path)) return {};
 	try {
-		return sanitize(JSON.parse(readFileSync(path, "utf-8")));
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
+		const section = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>)[SETTINGS_SECTION] : undefined;
+		return sanitize(section);
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
 		console.warn(`[pi-subagents] Ignoring malformed settings at ${path}: ${reason}`);
@@ -106,9 +111,7 @@ function readSettingsFile(path: string): SubagentCoreSettings {
 	}
 }
 
-/** Load merged settings: global provides defaults, project overrides. */
-export function loadCoreSettings(cwd: string = process.cwd()): SubagentCoreSettings {
-	const globalSettings = readSettingsFile(join(getAgentDir(), SETTINGS_FILE));
-	const projectSettings = readSettingsFile(join(cwd, CONFIG_DIR_NAME, SETTINGS_FILE));
-	return { ...globalSettings, ...projectSettings };
+/** Load this package's settings: its "subagents" section of the shared global young.json. */
+export function loadCoreSettings(): SubagentCoreSettings {
+	return readSettingsFile(join(getAgentDir(), SETTINGS_FILE));
 }

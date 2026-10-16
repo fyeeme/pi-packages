@@ -15,7 +15,7 @@ General-purpose subagent fan-out for [pi](https://github.com/earendil-works/pi-m
 | Tool | `src/tools/subagent.ts` | `subagent` — single `{agent, task}`, parallel `{tasks[]}` (max 16 per call, shared concurrency ceiling), shared `context`, `<result>` contract extraction, structured output via `outputSchema` (+ `schemaMode`) and agent frontmatter `output:` |
 | Agents | `agents.ts` + `agents/` | Discovery: project `.pi/agents` > user `~/.pi/agent/agents` > bundled `agents/` (scout / planner / reviewer / worker). Drop-in registration, re-discovered per call |
 | Dispatch core | `src/dispatch.ts` | `spawnAgent` (stable ids, stall watchdog + wall-clock ceiling, failure classification, full-output artifacts), `mapWithConcurrencyLimit`, `createSpawnRegistry`, `abortAgent`, per-callId abort, maxTurns budget, whitelist-by-default recursion guard |
-| Settings | `src/concurrency.ts` | `pi-subagent.json` (global `<agentDir>` + project `.pi/`): `fleet`, `maxConcurrency` (any positive integer, default 5), `confirmProjectAgents`, `stallMs` (default 60000), `wallClockMs` (default 0 = disabled). No environment-variable configuration channel |
+| Settings | `src/concurrency.ts` | The `subagents` section of the shared global `<agentDir>/young.json`: `fleet`, `maxConcurrency` (any positive integer, default 5), `confirmProjectAgents`, `stallMs` (default 60000), `wallClockMs` (default 0 = disabled). No environment-variable configuration channel |
 | UI | `index.ts` + `src/ui/` | Single below-editor fleet surface (`main` + every agent, full stat rows) with Enter-to-open conversation viewer — event-driven rendering on monitor notifications; ↓/← at an empty editor activates it |
 
 ## Install
@@ -83,17 +83,19 @@ Same names and signatures as the old `@fyeeme/pi-subagent-core` — consumers sw
 
 ## Settings
 
-`~/.pi/agent/pi-subagent.json` (defaults) overridden by `<cwd>/.pi/pi-subagent.json`.
-The settings file is the single configuration channel — there is no
-environment-variable override.
+The `subagents` section of the shared global `~/.pi/agent/young.json` (top-level
+keys in that file isolate extensions). The settings file is the single
+configuration channel — there is no environment-variable override.
 
 ```json
 {
-  "fleet": true,                  // below-editor fleet surface on/off
-  "maxConcurrency": 5,            // any positive integer; invalid → default
-  "confirmProjectAgents": true,   // prompt before running repo-controlled agents
-  "stallMs": 60000,               // abort a call with no subprocess event for this long
-  "wallClockMs": 0                // hard per-call ceiling; unset/0 = disabled; must be ≥ 2× stallMs
+  "subagents": {
+    "fleet": true,                  // below-editor fleet surface on/off
+    "maxConcurrency": 5,            // any positive integer; invalid → default
+    "confirmProjectAgents": true,   // prompt before running repo-controlled agents
+    "stallMs": 60000,               // abort a call with no subprocess event for this long
+    "wallClockMs": 0                // hard per-call ceiling; unset/0 = disabled; must be ≥ 2× stallMs
+  }
 }
 ```
 
@@ -163,7 +165,7 @@ runs (see pitfalls below).
 5. `confirmProjectAgents` prompts only in interactive sessions; headless
    `pi -p` runs fail closed (blocked with the two opt-outs named in the
    result) unless `confirmProjectAgents: false` is set in
-   `.pi/pi-subagent.json` or `PI_SUBAGENTS_ALLOW_PROJECT_AGENTS=1` is exported
+   the young.json `subagents` section or `PI_SUBAGENTS_ALLOW_PROJECT_AGENTS=1` is exported
    for the run. Nested fan-out is unaffected — spawned children never
    register the `subagent` tool.
 
