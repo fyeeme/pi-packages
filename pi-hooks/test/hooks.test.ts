@@ -614,7 +614,7 @@ describe("hooks extension wiring: extended events", () => {
 		expect(makeContextReader(handlers)()).toBeNull();
 	});
 
-	it("UserPromptSubmit: runs on before_agent_start and injects context", async () => {
+	it("UserPromptSubmit: pre-1.2.0 host event (no messageType) still runs hooks", async () => {
 		await writeRawConfig({
 			UserPromptSubmit: [
 				{ matcher: "", hooks: [{ type: "command", command: `echo '{"hookSpecificOutput":{"additionalContext":"PROMPT-HOOK"}}'`, timeout: 10 }] },
@@ -625,6 +625,41 @@ describe("hooks extension wiring: extended events", () => {
 		const before = (handlers.get("before_agent_start") ?? [])[0]!;
 		await before({ type: "before_agent_start", prompt: "fix the bug" }, hooksCtx(workDir));
 		expect(makeContextReader(handlers)()).toContain("PROMPT-HOOK");
+	});
+
+	it("UserPromptSubmit: messageType user runs hooks and stdin carries the prompt", async () => {
+		const reflect =
+			`node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(JSON.stringify({hookSpecificOutput:{additionalContext:"SAW:"+j.prompt}}))})'`;
+		await writeRawConfig({
+			UserPromptSubmit: [
+				{ matcher: "", hooks: [{ type: "command", command: reflect, timeout: 10 }] },
+			],
+		});
+		const { pi, handlers } = hooksFakeHost();
+		defaultExport(pi);
+		const before = (handlers.get("before_agent_start") ?? [])[0]!;
+		await before({ type: "before_agent_start", messageType: "user", prompt: "fix the bug" }, hooksCtx(workDir));
+		expect(makeContextReader(handlers)()).toContain("SAW:fix the bug");
+	});
+
+	it("UserPromptSubmit: messageType custom run (triggerTurn) is skipped", async () => {
+		await writeRawConfig({
+			UserPromptSubmit: [
+				{ matcher: "", hooks: [{ type: "command", command: `echo '{"hookSpecificOutput":{"additionalContext":"PROMPT-HOOK"}}'`, timeout: 10 }] },
+			],
+		});
+		const { pi, handlers } = hooksFakeHost();
+		defaultExport(pi);
+		const before = (handlers.get("before_agent_start") ?? [])[0]!;
+		await before(
+			{
+				type: "before_agent_start",
+				messageType: "custom",
+				message: { role: "user", content: "auto continuation", customType: "goal-continuation" },
+			},
+			hooksCtx(workDir),
+		);
+		expect(makeContextReader(handlers)()).toBeNull();
 	});
 
 	it("PreCompact: trigger mapping — matcher sees manual/auto", async () => {

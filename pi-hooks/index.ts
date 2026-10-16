@@ -663,8 +663,13 @@ export default function (pi: ExtensionAPI): void {
 	// before_agent_start: UserPromptSubmit hooks. pi has no blocking result at
 	// this boundary, so additionalContext rides the next context event and a
 	// deny is demoted to a prefixed context note (documented deviation).
+	// pi 1.2.0 also fires this event for triggerTurn custom-message runs;
+	// UserPromptSubmit hooks are for user prompts only, so skip those. Hosts
+	// older than 1.2.0 send no messageType field — the undefined check keeps
+	// them running every event (pre-1.2.0 behavior).
 	// -------------------------------------------------------------------------
 	pi.on("before_agent_start", async (event, ctx) => {
+		if (event.messageType !== undefined && event.messageType !== "user") return;
 		const cfg = getConfig(ctx.cwd);
 		if (!cfg?.hooks.UserPromptSubmit) return;
 		const stdin = buildStdin("UserPromptSubmit", ctx, { prompt: event.prompt });

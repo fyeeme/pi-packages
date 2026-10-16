@@ -5,12 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.8] - 2026-10-16
 
 ### Added
 
 - Four CC-compatible events: `PostToolUse` (runs on `tool_result`; stdin carries `tool_name`/`tool_input`/`tool_response`; deny demoted to `[PostToolUse hook]` context), `UserPromptSubmit` (runs on `before_agent_start`; stdin carries `prompt`; deny demoted to context — pi cannot block here), `PreCompact` (runs on `session_before_compact`; matcher sees the `manual`/`auto` trigger; side-effect only), and `SessionEnd` (runs on `session_shutdown` for real ends only: quit → `exit`, new → `clear`; reload/resume/fork run Stop cleanup only). Existing three-event configs behave unchanged.
 - `PI_HOOKS_PERMISSION_MODE` env override for the stdin `permission_mode` field (pi has no CC-style permission modes; default stays `"default"`).
+
+### Changed
+
+- `UserPromptSubmit` hooks no longer run for extension-triggered runs: pi 1.2.0 also fires `before_agent_start` for `triggerTurn` custom-message runs, so the handler now skips events with `messageType: "custom"`. Hosts older than 1.2.0 (no `messageType` field) keep firing every event; peer floor stays `>=0.99.0`. Dev toolchain pinned to `@earendil-works/pi-coding-agent` 1.3.0.
 
 ### Fixed
 
