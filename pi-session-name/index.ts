@@ -14,6 +14,9 @@ export {
 	buildVerdictRequest,
 	loadConfig,
 	generateTitle,
+	resolveTitleModel,
+	stripInjectedPreamble,
+	titleFromOutput,
 } from "./src/core.ts";
 export type { PromptStyle, SessionEntry, TitleRequest, SessionNameConfig } from "./src/core.ts";
 

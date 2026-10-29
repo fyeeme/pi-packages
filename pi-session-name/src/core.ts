@@ -107,6 +107,59 @@ const extractText = (content: unknown): string[] => {
 /** Code-point-safe per-message truncation with an ellipsis marker. */
 const truncate = (s: string, max: number): string => (Array.from(s).length <= max ? s : `${Array.from(s).slice(0, max).join("")}\u2026`);
 
+// ---------------------------------------------------------------------------
+// Injection stripping — pi prepends machine-generated text to user messages:
+// expanded skill blocks (`<skill name location>…SKILL.md body…</skill>`, the
+// official format from pi's agent-session) and pasted-image markers
+// (`…pi-clipboard-<uuid>.png 提取图片`). Titles must reflect the user's own
+// words, so a skill block is reduced to a one-line reference — name plus the
+// skill's frontmatter description, read from the location once and cached —
+// and clipboard markers are dropped. A message that strips to empty never
+// enters a title request.
+// ---------------------------------------------------------------------------
+
+/** pi's skill-block format: `<skill name="…" location="…">\n…\n</skill>`. */
+const SKILL_BLOCK = /<skill name="([^"]+)" location="([^"]+)">\n[\s\S]*?\n<\/skill>/g;
+/** Pasted-image marker line: a temp clipboard path plus 提取图片. */
+const CLIPBOARD_MARKER = /\S*pi-clipboard-\S*\.png[^\n]*提取图片\n?/g;
+
+/** location → frontmatter description (trimmed, unquoted) or null. Cached per process. */
+const skillDescriptions = new Map<string, string | null>();
+
+/** Best-effort frontmatter `description:` line of a SKILL.md. */
+function readSkillDescription(location: string): string | null {
+	const cached = skillDescriptions.get(location);
+	if (cached !== undefined) return cached;
+	let result: string | null = null;
+	try {
+		const frontmatter = readFileSync(location, "utf8").match(/^---\n([\s\S]*?)\n---/);
+		const line = frontmatter?.[1].match(/^description:[ \t]*(.*)$/m)?.[1]?.trim();
+		if (line) result = line.replace(/^"([\s\S]*)"$/m, "$1").replace(/^'([\s\S]*)'$/m, "$1");
+	} catch {
+		result = null; // unreadable or gone (stale session) — name-only reference
+	}
+	skillDescriptions.set(location, result);
+	return result;
+}
+
+/** One-line `<skill>` reference replacing the injected block. */
+function skillReference(name: string, location: string): string {
+	const description = readSkillDescription(location);
+	if (!description) return `<skill name="${name}"/>`;
+	// Attribute-safe (no double quotes) and budget-aware (descriptions run long).
+	const brief = truncate(description.replace(/"/g, "'"), 200);
+	return `<skill name="${name}" description="${brief}"/>`;
+}
+
+/** Drop machine-generated preamble from one message's text. */
+export function stripInjectedPreamble(text: string): string {
+	return text
+		.replace(SKILL_BLOCK, (_match, name: string, location: string) => skillReference(name, location))
+		.replace(CLIPBOARD_MARKER, "")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+}
+
 /** Default input policy: window + per-message cap + total UTF-8 budget. */
 export const TITLE_INPUT_DEFAULTS = { maxMessages: 8, maxCharsPerMessage: 600, maxInputBytes: 16384 } as const;
 
@@ -126,7 +179,7 @@ export function buildTitleMessages(
 	const maxInputBytes = opts.maxInputBytes ?? TITLE_INPUT_DEFAULTS.maxInputBytes;
 	const msgs = entries
 		.filter((e) => e.type === "message" && e.message?.role === "user")
-		.map((e) => truncate(extractText(e.message!.content).join("\n").trim(), maxCharsPerMessage))
+		.map((e) => truncate(stripInjectedPreamble(extractText(e.message!.content).join("\n").trim()), maxCharsPerMessage))
 		.filter((t) => cleanTitleText(t).length > 0);
 	if (msgs.length === 0) return [];
 	const selected = msgs.length > maxMessages ? [msgs[0], ...msgs.slice(-(maxMessages - 1))] : msgs;
@@ -165,7 +218,7 @@ export function titleSystemPrompt(style: PromptStyle = "concise"): string {
 	const base = [
 		"Create a concise title for an AI coding-assistant session from the supplied human messages.",
 		"Return only the title on one line, **in plain text of natural language**, with no quotes, prefix, explanation, Markdown, XML, or terminal control codes. No code is allowed.",
-		"Use the language of the messages.",
+		"Use the language of the user's own words: ignore quoted file paths, code, and machine-generated references such as skill blocks; a message with no user-written words does not count for the language. When the user's text mixes languages, follow its dominant language.",
 	];
 	if (style === "editorial") {
 		return [
@@ -211,7 +264,7 @@ export function buildVerdictRequest(currentName: string, messages: readonly stri
 		"If the title is still accurate, reply with exactly: KEEP",
 		"If it is inaccurate, outdated, or hard to tell apart from other sessions, reply with a NEW title instead:",
 		"- The new title is one line of plain text: no quotes, no Markdown, no code, no explanation.",
-		"- Use the language of the first human message.",
+		"- Use the language of the user's own words: ignore quoted file paths, code, and machine-generated references such as skill blocks; a message with no user-written words does not count for the language. When mixed, follow the dominant language of the user's text.",
 		...(style === "editorial"
 			? [
 				'- Distinctiveness first: never use generic labels ("bug fix", "code review") as the headline; carry the concrete module, error, or identifier.',
@@ -303,13 +356,96 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 }
 
 // ---------------------------------------------------------------------------
-// generateTitle — model call via ctx.modelRegistry (auth resolved at request
-// time). deepseek-harness discipline: system/user split, output-token cap,
-// end-to-end deadline composed with the caller's signal, and finish-reason
-// checking (anything but "stop" is a failure, not a title).
+// Title model resolution — pi virtual models (catalog entries with
+// `api === "pi-virtual"`, e.g. router models like `glm-5.3-auto`) must not
+// go through `complete()`: that path never routes them, so every nested
+// call fails with stopReason "error" and silently degrades titles to the
+// deterministic fallback. Resolve the selection to a physical model first.
+// ---------------------------------------------------------------------------
+
+/** pi virtual-model api id (`VIRTUAL_MODEL_API` in pi's virtual-models.ts;
+ *  not re-exported from the package entry, so matched literally here). */
+const VIRTUAL_MODEL_API_ID = "pi-virtual";
+
+function isVirtualModel(model: { api?: string }): boolean {
+	return model.api === VIRTUAL_MODEL_API_ID;
+}
+
+/** Ids/names that mark a light-tier chat model (flash/mini/fast/turbo/lite).
+ *  Title generation prefers them: cheap, fast, and — unlike a provider's
+ *  registration-order first entry, which may be an older vision model with
+ *  weaker instruction following (zai-coding-cn's glm-4.6v turned Chinese
+ *  sessions into English titles) — current-generation. */
+const LIGHT_MODEL_HINT = /flash|mini|fast|turbo|lite/i;
+
+const isLightModel = (m: Model<any>): boolean =>
+	LIGHT_MODEL_HINT.test(m.id) || (typeof m.name === "string" && LIGHT_MODEL_HINT.test(m.name));
+
+const inputCostOf = (m: Model<any>): number => m.cost?.input ?? Number.POSITIVE_INFINITY;
+
+/** provider → resolved physical chat model, cached after lookup. */
+const physicalTitleModels = new Map<string, Model<any>>();
+
+/**
+ * The chat model a title request runs on:
+ * - no selection → null;
+ * - physical selection → as-is;
+ * - virtual selection (router model) → the provider's first light-tier
+ *   physical chat model (registration order otherwise), cached per provider
+ *   after the first lookup. Title generation must not depend on a router's
+ *   per-request switching. When the provider has no physical model, the
+ *   virtual model is returned unchanged: `streamSimple` still routes it
+ *   (reason "direct").
+ */
+export async function resolveTitleModel(ctx: ExtensionContext): Promise<Model<any> | null> {
+	const current = ctx.model ?? null;
+	if (!current || !isVirtualModel(current)) return current;
+	const cached = physicalTitleModels.get(current.provider);
+	if (cached) return cached;
+	let available: readonly Model<any>[] = [];
+	try {
+		available = await ctx.modelRegistry.getAvailableOfType("chat", current.provider);
+	} catch {
+		available = [];
+	}
+	const hinted = available.filter((m) => isLightModel(m));
+	// Cheapest among the light tier (e.g. zai lists glm-5-turbo before the
+	// 8× cheaper glm-5.3-flash; registration order must not set the price).
+	const resolved = (hinted.length > 0 ? hinted.reduce((best, m) => (inputCostOf(m) < inputCostOf(best) ? m : best)) : undefined) ?? available[0] ?? null;
+	if (resolved) physicalTitleModels.set(current.provider, resolved);
+	return resolved ?? current;
+}
+
+// ---------------------------------------------------------------------------
+// generateTitle — model call via ctx.modelRegistry.streamSimple (auth
+// resolved at request time). streamSimple, not complete: complete() never
+// routes virtual models, while streamSimple routes them as reason "direct"
+// and is otherwise equivalent for physical models. deepseek-harness
+// discipline: system/user split, output-token cap, end-to-end deadline
+// composed with the caller's signal, and finish-reason checking (anything
+// but "stop" is a failure, not a title).
 // ---------------------------------------------------------------------------
 
 const TITLE_TIMEOUT_MS = 20_000;
+
+// Adapted from deepseek-harness session-title-first-prompt-llm: models that
+// disregard the one-line instruction put the title first and commentary
+// after it, so only the first non-empty line is kept; a line that is entirely
+// asterisk emphasis (`**Title**`) loses the marker pair, while emphasis
+// inside a longer line is preserved (the system instruction forbids Markdown).
+
+/** Asterisk emphasis wrapping a whole line, such as `**Title**`. */
+const EMPHASIS_WRAPPER = /^(?<marker>\*{1,3})(?<inner>\S(?:.*\S)?)\k<marker>$/u;
+
+/** Take the title from model output: the first non-empty line, without
+ *  whole-line asterisk emphasis. */
+export function titleFromOutput(text: string): string {
+	const line = text.split(/\r?\n/u).map((item) => item.trim()).find((item) => item.length > 0) ?? "";
+	const groups = EMPHASIS_WRAPPER.exec(line)?.groups;
+	const marker = groups?.["marker"];
+	const inner = groups?.["inner"];
+	return marker === undefined || inner === undefined || inner.includes(marker) ? line : inner;
+}
 
 /** Compose optional signals (caller abort + timeout) into one abort signal. */
 function composeSignals(signals: Array<AbortSignal | undefined>): AbortSignal {
@@ -333,27 +469,30 @@ export async function generateTitle(
 	signal?: AbortSignal,
 ): Promise<string> {
 	const now = Date.now();
-	const response = await ctx.modelRegistry.complete(
-		model,
-		{
-			messages: [
-				{ role: "system", content: [{ type: "text", text: request.system }], timestamp: now },
-				{ role: "user", content: [{ type: "text", text: request.user }], timestamp: now },
-			],
-		},
-		{
-			// ctx.signal (undefined while idle) lets Esc/abort cancel the nested
-			// call; the deadline keeps a hung provider from blocking the next turn.
-			signal: composeSignals([signal, AbortSignal.timeout(TITLE_TIMEOUT_MS)]),
-			maxTokens: request.maxOutputTokens,
-		},
-	);
+	const response = await ctx.modelRegistry
+		.streamSimple(
+			model,
+			{
+				messages: [
+					{ role: "system", content: [{ type: "text", text: request.system }], timestamp: now },
+					{ role: "user", content: [{ type: "text", text: request.user }], timestamp: now },
+				],
+			},
+			{
+				// ctx.signal (undefined while idle) lets Esc/abort cancel the nested
+				// call; the deadline keeps a hung provider from blocking the next turn.
+				signal: composeSignals([signal, AbortSignal.timeout(TITLE_TIMEOUT_MS)]),
+				maxTokens: request.maxOutputTokens,
+			},
+		)
+		.result();
 	if (response.stopReason !== "stop") return "";
-	return response.content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map((c) => c.text)
-		.join("\n")
-		.trim();
+	return titleFromOutput(
+		response.content
+			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map((c) => c.text)
+			.join("\n"),
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -410,12 +549,27 @@ export async function classifyKeep(
 	}
 }
 
+/** Drop one-line `<skill …/>` reference lines: they are machine context for
+ *  the LLM, not user words, so the deterministic fallback must not slice
+ *  them into a title (dsh's fallback input is likewise human-only). */
+const SKILL_REFERENCE_LINE = /^<skill [^\n]*\/>[ \t]*\n?/gm;
+
+/** First message that still has text after reference-line removal, or null. */
+function fallbackInputOf(messages: readonly string[]): string | null {
+	for (const message of messages) {
+		const text = message.replace(SKILL_REFERENCE_LINE, "").trim();
+		if (text) return text;
+	}
+	return null;
+}
+
 // ---------------------------------------------------------------------------
 // Pi extension entry point
 // ---------------------------------------------------------------------------
 
 export function sessionNameExtension(pi: ExtensionAPI): void {
 	let manuallyLocked = false; // user pinned: /rename or an external session_info_changed
+	let failureWarned = false; // one stderr notice per session when the fallback covers a failed generation
 	let inheritedTitle = false; // session_start found an existing title (resume)
 	let inFlight = false;
 	let lastAutoName: string | undefined;
@@ -426,6 +580,7 @@ export function sessionNameExtension(pi: ExtensionAPI): void {
 		lastAutoName = undefined;
 		cfg = null;
 		manuallyLocked = false;
+		failureWarned = false;
 		inheritedTitle = !!pi.getSessionName();
 	});
 
@@ -449,14 +604,14 @@ export function sessionNameExtension(pi: ExtensionAPI): void {
 
 		inFlight = true;
 		try {
-			// Title generation always uses the current session model; auto mode's
-			// KEEP/NEW verdict still prefers a classifier model when present.
-			const model = ctx.model ?? null;
+			// Title generation runs on the resolved session model (a virtual
+			// selection resolves to the provider's first physical model);
+			// auto mode's KEEP/NEW verdict still prefers a classifier when present.
+			const model = await resolveTitleModel(ctx);
 			if (!model) return;
 
 			const messages = buildTitleMessages(ctx.sessionManager.getBranch());
 			if (messages.length === 0) return;
-			const first = messages[0]!;
 
 			// Generated text, then normalize; on ANY failure — provider error, abort,
 			// timeout, empty or malformed output — the deterministic first-message
@@ -469,8 +624,23 @@ export function sessionNameExtension(pi: ExtensionAPI): void {
 					return "";
 			}
 			};
-			const finalize = (generated: string): string | null =>
-				normalizeSessionTitle(generated, cfg!.maxLength) ?? fallbackSessionTitle(first, 8, cfg!.maxLength);
+			const finalize = (generated: string): string | null => {
+				const accepted = normalizeSessionTitle(generated, cfg!.maxLength);
+				if (accepted !== null) return accepted;
+				// LLM output missing/invalid: deterministic fallback from the first
+				// message with user-written words (skill reference lines excluded).
+				const input = fallbackInputOf(messages);
+				if (input === null) return null;
+				const fallback = fallbackSessionTitle(input, 8, cfg!.maxLength);
+				if (fallback === null) return null;
+				if (!failureWarned) {
+					// Surface the degradation once per session — the silent fallback
+					// was exactly what hid a total generation failure before.
+					failureWarned = true;
+					console.error("[pi-session-name] title generation failed; deterministic fallback in use");
+				}
+				return fallback;
+			};
 
 			let title: string | null;
 			if (cfg.mode === "first" || !currentName) {
@@ -511,8 +681,11 @@ export function sessionNameExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("rename", {
 		description: "Rename this session. Pass a name, or leave empty to auto-generate one from the conversation.",
 		handler: async (args, ctx) => {
-			// /rename is a manual action: take control and stop background auto-naming
-			manuallyLocked = true;
+			// /rename is a manual action: take control and stop background auto-naming.
+			// The lock is taken only when a name is actually set — a warning path
+			// (invalid name, no model, no messages, failed generation) must leave
+			// auto-naming armed, otherwise an early /rename would freeze the
+			// session untitled forever.
 			const cfg = loadConfig();
 			const name = args.trim();
 
@@ -524,13 +697,14 @@ export function sessionNameExtension(pi: ExtensionAPI): void {
 				}
 				const named = withCreationTime(cleaned, safeSessionFile(ctx), cfg.appendCreationTime);
 				lastAutoName = named;
+				manuallyLocked = true;
 				pi.setSessionName(named);
 				ctx.ui.notify(`Renamed to: ${cleaned}`, "info");
 				return;
 			}
 
 			// no argument → generate a name from the conversation
-			const model = ctx.model ?? null;
+			const model = await resolveTitleModel(ctx);
 			if (!model) {
 				ctx.ui.notify("Cannot generate a name: model unavailable", "warning");
 				return;
@@ -540,20 +714,29 @@ export function sessionNameExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("No conversation to generate a name from yet", "warning");
 				return;
 			}
-			const request = buildTitleRequest("first", messages, cfg.prompt);
+			// no argument → generate a name from the conversation. The full window,
+			// not just the first message: a session often opens with a bare skill
+			// invocation, and a first-only window would title the skill's English
+			// reference line instead of the user's actual (often CJK) task.
+			const request = buildTitleRequest("all", messages, cfg.prompt);
 			let generated = "";
 			try {
 				generated = await generateTitle(request, model, ctx, ctx.signal);
 			} catch {
 				// deterministic fallback below still names the session
 			}
-			const title = normalizeSessionTitle(generated, cfg.maxLength) ?? fallbackSessionTitle(messages[0]!, 8, cfg.maxLength);
+			const title = normalizeSessionTitle(generated, cfg.maxLength)
+				?? (() => {
+					const input = fallbackInputOf(messages);
+					return input === null ? null : fallbackSessionTitle(input, 8, cfg.maxLength);
+				})();
 			if (!title) {
 				ctx.ui.notify("Could not generate a name from the model response", "warning");
 				return;
 			}
 			const named = withCreationTime(title, safeSessionFile(ctx), cfg.appendCreationTime);
 			lastAutoName = named;
+			manuallyLocked = true;
 			pi.setSessionName(named);
 			ctx.ui.notify(`Renamed to: ${named}`, "info");
 		},

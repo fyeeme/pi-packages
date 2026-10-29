@@ -18,6 +18,9 @@ import {
 	resolveClassifierModel,
 	classifyKeep,
 	generateTitle,
+	resolveTitleModel,
+	stripInjectedPreamble,
+	titleFromOutput,
 	type SessionEntry,
 } from "../src/core.ts";
 
@@ -98,6 +101,69 @@ describe("buildTitleMessages", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Injection stripping — skill blocks reduce to a one-line reference;
+// clipboard markers drop; a fully stripped message never enters a request
+// ---------------------------------------------------------------------------
+
+describe("injection stripping", () => {
+	const withSkill = (body: string, tail = "") =>
+		`<skill name="demo-skill" location="/nonexistent-${Math.random().toString(36).slice(2)}/SKILL.md">\nReferences are relative to /x.\n\n${body}\n</skill>${tail ? `\n\n${tail}` : ""}`;
+
+	it("reduces an injected skill block to a name-only reference when the file is unreadable", () => {
+		expect(stripInjectedPreamble(withSkill("# 正文".repeat(50), "帮我修 bug"))).toBe(
+			'<skill name="demo-skill"/>\n\n帮我修 bug',
+		);
+	});
+
+	it("keeps the frontmatter description (with Chinese triggers) in the reference", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pisn-skill-"));
+		try {
+			const file = join(dir, "SKILL.md");
+			writeFileSync(file, "---\nname: demo\ndescription: Use when 分析禅道 bug 列表，触发词：bug 根因分析。\n---\n\n# 正文\n");
+			const out = stripInjectedPreamble(`<skill name="demo" location="${file}">\nReferences are relative to /x.\n\n# 正文很长\n</skill>\n\n做环比报告`);
+			expect(out).toBe('<skill name="demo" description="Use when 分析禅道 bug 列表，触发词：bug 根因分析。"/>\n\n做环比报告');
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("unquotes and truncates long descriptions, and neutralizes embedded double quotes", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pisn-skill-"));
+		try {
+			const file = join(dir, "SKILL.md");
+			const long = `说 "引号" and ${"字".repeat(300)}`;
+			writeFileSync(file, `---\nname: demo\ndescription: "${long}"\n---\n\nbody`);
+			const out = stripInjectedPreamble(`<skill name="demo" location="${file}">\nR\n\nb\n</skill>`);
+			expect(out).toMatch(/^<skill name="demo" description="[^"]{0,200}…"\/>$/);
+			expect(out).not.toContain('"引号"');
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("drops clipboard pasted-image markers", () => {
+		const t = "/var/folders/rf/pi-clipboard-9705ad83.png 提取图片\n".repeat(1);
+		expect(stripInjectedPreamble(`${t}看看这张图里的报错`)).toBe("看看这张图里的报错");
+		expect(stripInjectedPreamble(t)).toBe("");
+	});
+
+	it("buildTitleMessages drops a message that strips to empty (no title, not a garbage title)", () => {
+		const entries = [
+			{ type: "message", message: { role: "user", content: "/var/folders/pi-clipboard-x.png 提取图片" } },
+		];
+		expect(buildTitleMessages(entries as SessionEntry[])).toEqual([]);
+	});
+
+	it("real-world shape: skill-injected opener keeps the user's task inside the truncation window", () => {
+		const opener = withSkill("SKILL 正文".repeat(400), "对比 V4.23.0 和 V4.24.0 的 bug 根因并写周报");
+		const entries = [{ type: "message", message: { role: "user", content: opener } }];
+		const [first] = buildTitleMessages(entries as SessionEntry[]);
+		expect(first!.length).toBeLessThan(120);
+		expect(first).toContain("对比 V4.23.0");
+	});
+});
+
+// ---------------------------------------------------------------------------
 // truncateTitleUtf8 / normalizeSessionTitle / fallbackSessionTitle
 // ---------------------------------------------------------------------------
 
@@ -170,7 +236,7 @@ describe("prompt layer", () => {
 		expect(s).toContain("plain text of natural language");
 		expect(s).toContain("no quotes, prefix, explanation, Markdown, XML, or terminal control codes");
 		expect(s).toContain("No code is allowed");
-		expect(s).toContain("Use the language of the messages");
+		expect(s).toContain("Use the language of the user's own words");
 		expect(s).toContain("6 words in non-CJK languages or 18 CJK characters");
 	});
 	it("frameTitleMessages JSON-frames the payload", () => {
@@ -287,7 +353,11 @@ describe("loadConfig", () => {
 
 describe("generateTitle", () => {
 	const mkGenCtx = (impl: (model: any, context: any, options: any) => Promise<any>) =>
-		({ modelRegistry: { complete: vi.fn(impl) } }) as any;
+		({
+			modelRegistry: {
+				streamSimple: vi.fn((model: any, context: any, options: any) => ({ result: () => impl(model, context, options) })),
+			},
+		}) as any;
 
 	it("sends the system/user split with the framed payload and caps output tokens", async () => {
 		let seenCtx: any;
@@ -321,7 +391,7 @@ describe("generateTitle", () => {
 		const ctx = mkGenCtx(async () => ({ stopReason: "length", content: [{ type: "text", text: "trunc" }] }) as any);
 		expect(await generateTitle({ system: "s", user: "u", maxOutputTokens: 512 }, { id: "m" } as any, ctx)).toBe("");
 	});
-	it("joins multiple text parts in order", async () => {
+	it("joins multiple text parts in order, then takes the first non-empty line", async () => {
 		const ctx = mkGenCtx(async () => ({
 			stopReason: "stop",
 			content: [
@@ -329,7 +399,97 @@ describe("generateTitle", () => {
 				{ type: "text", text: "b" },
 			],
 		}) as any);
-		expect(await generateTitle({ system: "s", user: "u", maxOutputTokens: 512 }, { id: "m" } as any, ctx)).toBe("a\nb");
+		expect(await generateTitle({ system: "s", user: "u", maxOutputTokens: 512 }, { id: "m" } as any, ctx)).toBe("a");
+	});
+	it("applies first-line extraction to multi-line model output", async () => {
+		const ctx = mkGenCtx(async () => ({
+			stopReason: "stop",
+			content: [{ type: "text", text: "**Token 周报**\nHere is why: ..." }],
+		}) as any);
+		expect(await generateTitle({ system: "s", user: "u", maxOutputTokens: 512 }, { id: "m" } as any, ctx)).toBe("Token 周报");
+	});
+});
+
+describe("titleFromOutput", () => {
+	it("takes the first non-empty line when commentary follows", () => {
+		expect(titleFromOutput("修复登录超时\n\nExplanation: the session is about auth.")).toBe("修复登录超时");
+		expect(titleFromOutput("\n\n  \nFix login timeout")).toBe("Fix login timeout");
+		expect(titleFromOutput("")).toBe("");
+	});
+
+	it("strips emphasis that wraps the whole line", () => {
+		expect(titleFromOutput("**Bug 根因分析**")).toBe("Bug 根因分析");
+		expect(titleFromOutput("*Fix CSV export*")).toBe("Fix CSV export");
+		expect(titleFromOutput("***Weekly report***")).toBe("Weekly report");
+	});
+
+	it("keeps markers that do not wrap the whole line", () => {
+		expect(titleFromOutput("Fix **bold** inside a line")).toBe("Fix **bold** inside a line");
+		expect(titleFromOutput("a*b*c")).toBe("a*b*c");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// resolveTitleModel — virtual selections resolve to a cached physical model
+// ---------------------------------------------------------------------------
+
+describe("resolveTitleModel", () => {
+	it("returns null without a session model", async () => {
+		expect(await resolveTitleModel({ model: undefined } as any)).toBeNull();
+	});
+
+	it("returns a physical selection unchanged (no registry call)", async () => {
+		const model = { id: "phys", api: "openai-completions", provider: "p" };
+		const getAvailableOfType = vi.fn(async () => [model]);
+		expect(await resolveTitleModel({ model, modelRegistry: { getAvailableOfType } } as any)).toBe(model);
+		expect(getAvailableOfType).not.toHaveBeenCalled();
+	});
+
+	it("resolves a virtual selection to the provider's first light-tier physical model (zai-coding-cn regression: glm-4.6v is first by registration but turns Chinese sessions into English titles)", async () => {
+		const virtual = { id: "glm-5.3-auto", api: "pi-virtual", provider: "zai-reg" + Math.random().toString(36).slice(2) };
+		const vision = { id: "glm-4.6v", name: "GLM-4.6V", api: "openai-completions", provider: virtual.provider };
+		const flagship = { id: "glm-5.3", name: "GLM-5.3", api: "openai-completions", provider: virtual.provider };
+		const flash = { id: "glm-5.3-flash", name: "GLM-5.3-Flash", api: "openai-completions", provider: virtual.provider };
+		const ctx = { model: virtual, modelRegistry: { getAvailableOfType: vi.fn(async () => [vision, flagship, flash]) } } as any;
+		expect(await resolveTitleModel(ctx)).toBe(flash);
+	});
+
+	it("picks the cheapest light-tier model, not the first (zai lists glm-5-turbo before the cheaper glm-5.3-flash)", async () => {
+		const virtual = { id: "auto", api: "pi-virtual", provider: "zai-cost" + Math.random().toString(36).slice(2) };
+		const turbo = { id: "glm-5-turbo", name: "GLM-5-Turbo", api: "openai-completions", provider: virtual.provider, cost: { input: 1.2 } };
+		const flash = { id: "glm-5.3-flash", name: "GLM-5.3-Flash", api: "openai-completions", provider: virtual.provider, cost: { input: 0.15 } };
+		const ctx = { model: virtual, modelRegistry: { getAvailableOfType: vi.fn(async () => [turbo, flash]) } } as any;
+		expect(await resolveTitleModel(ctx)).toBe(flash);
+	});
+
+	it("keeps registration order when no light-tier model exists and caches the lookup", async () => {
+		const virtual = { id: "auto", api: "pi-virtual", provider: "cache-probe" };
+		const first = { id: "first", api: "openai-completions", provider: "cache-probe" };
+		const getAvailableOfType = vi.fn(async () => [first, { id: "second", api: "openai-completions", provider: "cache-probe" }]);
+		const ctx = { model: virtual, modelRegistry: { getAvailableOfType } } as any;
+		expect(await resolveTitleModel(ctx)).toBe(first);
+		expect(await resolveTitleModel(ctx)).toBe(first); // served from cache
+		expect(getAvailableOfType).toHaveBeenCalledTimes(1);
+		expect(getAvailableOfType).toHaveBeenCalledWith("chat", "cache-probe");
+	});
+
+	it("falls back to the virtual model when the provider lists no physical models", async () => {
+		const virtual = { id: "auto", api: "pi-virtual", provider: "no-phys-" + Math.random().toString(36).slice(2) };
+		const ctx = { model: virtual, modelRegistry: { getAvailableOfType: vi.fn(async () => []) } } as any;
+		expect(await resolveTitleModel(ctx)).toBe(virtual);
+	});
+
+	it("falls back to the virtual model when the lookup throws", async () => {
+		const virtual = { id: "auto", api: "pi-virtual", provider: "throws-" + Math.random().toString(36).slice(2) };
+		const ctx = {
+			model: virtual,
+			modelRegistry: {
+				getAvailableOfType: vi.fn(async () => {
+					throw new Error("boom");
+				}),
+			},
+		} as any;
+		expect(await resolveTitleModel(ctx)).toBe(virtual);
 	});
 });
 
@@ -430,7 +590,11 @@ const mkCtxOrch = (
 	model: { id: "m" },
 	sessionManager: { getBranch: () => branch, getSessionFile: () => "/x/2026-10-01T10-06-10-085Z_u.jsonl" },
 	modelRegistry: {
-		complete: completeImpl ?? (async () => ({ stopReason: "stop", content: [{ type: "text", text: "Auto Title" }] })),
+		streamSimple: vi.fn(() => ({
+			result:
+				completeImpl ??
+				(async () => ({ stopReason: "stop", content: [{ type: "text", text: "Auto Title" }] })),
+		})),
 	},
 	ui: { notify: vi.fn() },
 }) as any;
@@ -484,6 +648,82 @@ describe("extension orchestration", () => {
 		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
 		expect(setCalls.map(stripPrefix)).toEqual(["Auto Title"]);
 		expect(setCalls[0]!).toMatch(CREATION_PREFIX);
+	});
+
+	it("LLM failure falls back to the first message with user words (skill reference lines excluded)", async () => {
+		vi.unstubAllEnvs();
+		const { pi, handlers, setCalls } = mkPi();
+		setup(pi);
+		handlers.session_start?.({ type: "session_start", reason: "new" }, mkCtxOrch([]));
+		// Message 1 strips to a bare skill reference line; the LLM call fails.
+		const branchEntries = [
+			{
+				type: "message",
+				message: {
+					role: "user",
+					content: '<skill name="weekly-token-report" location="/nonexistent/SKILL.md">\nBody\n</skill>\n\n上周',
+				},
+			},
+		];
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const ctx = mkCtxOrch(branchEntries as any, async () => ({ stopReason: "error", content: [] }));
+			await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
+			// Fallback derives from the user's own words after the reference line, not from `<skill …/>`.
+			expect(setCalls.map(stripPrefix)).toEqual(["上周"]);
+			expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("title generation failed"));
+			// Warned once per session: a second failing turn re-sets the same
+			// fallback title but stays silent.
+			errSpy.mockClear();
+			await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
+			expect(setCalls.map(stripPrefix)).toEqual(["上周", "上周"]);
+			expect(errSpy).not.toHaveBeenCalled();
+		} finally {
+			errSpy.mockRestore();
+		}
+	});
+
+	it("sets no title when every message strips to a bare reference line and the LLM fails", async () => {
+		vi.unstubAllEnvs();
+		const { pi, handlers, setCalls } = mkPi();
+		setup(pi);
+		handlers.session_start?.({ type: "session_start", reason: "new" }, mkCtxOrch([]));
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const branchEntries = [
+				{
+					type: "message",
+					message: { role: "user", content: '<skill name="s" location="/nonexistent/SKILL.md">\nBody\n</skill>' },
+				},
+			];
+			const ctx = mkCtxOrch(branchEntries as any, async () => ({ stopReason: "error", content: [] }));
+			await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
+			expect(setCalls).toEqual([]); // no title beats a garbage title
+		} finally {
+			errSpy.mockRestore();
+		}
+	});
+
+	it("virtual model selection resolves to the provider's first physical model (glm-5.3-auto regression)", async () => {
+		vi.unstubAllEnvs();
+		const { pi, handlers, setCalls } = mkPi();
+		setup(pi);
+		handlers.session_start?.({ type: "session_start", reason: "new" }, mkCtxOrch([]));
+		const virtual = { id: "glm-5.3-auto", api: "pi-virtual", provider: "orch-virtual" };
+		const physical = { id: "glm-5.3-flash", api: "openai-completions", provider: "orch-virtual" };
+		const streamSimple = vi.fn((_model: any, _context: any, _options: any) => ({
+			result: async () => ({ stopReason: "stop", content: [{ type: "text", text: "Routed Title" }] }),
+		}));
+		const ctx = {
+			...mkCtxOrch(branch(["fix the login bug", "ok"])),
+			model: virtual,
+			modelRegistry: { streamSimple, getAvailableOfType: vi.fn(async () => [physical]) },
+		};
+		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
+		expect(setCalls.map(stripPrefix)).toEqual(["Routed Title"]);
+		// The nested title call ran on the resolved physical model, not the virtual one.
+		expect(streamSimple).toHaveBeenCalled();
+		expect(streamSimple.mock.calls[0]![0]).toBe(physical);
 	});
 
 	it("does not overwrite an existing name (first mode)", async () => {
@@ -653,7 +893,7 @@ describe("rename command", () => {
 		expect(setCalls[0]!).toMatch(CREATION_PREFIX);
 	});
 
-	it("/rename with empty arg and no conversation notifies and does not rename", async () => {
+	it("/rename with empty arg and no conversation notifies, does not rename, and leaves auto-naming armed", async () => {
 		const { pi, handlers, setCalls, commands } = mkPi();
 		setup(pi);
 		handlers.session_start?.({ type: "session_start", reason: "new" }, mkCtxOrch([]));
@@ -661,6 +901,10 @@ describe("rename command", () => {
 		await commands.rename!.handler("", ctx);
 		expect(setCalls).toEqual([]);
 		expect(ctx.ui.notify).toHaveBeenCalled();
+		// A warning-only /rename must not pin the session: once the user sends
+		// messages, the background auto-namer still works.
+		await handlers.agent_settled?.({ type: "agent_settled" }, mkCtxOrch(branch(["fix login", "ok"])));
+		expect(setCalls.map(stripPrefix)).toEqual(["Auto Title"]);
 	});
 
 	it("/rename with empty arg notifies when the model call fails", async () => {

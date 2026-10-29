@@ -19,7 +19,7 @@ Auto-name [pi](https://pi.dev) sessions with a short LLM-generated title so `--r
 
 ## Prerequisites
 
-- [pi](https://pi.dev) >= 0.99.0 (uses `agent_settled` / `session_info_changed` events and `ctx.modelRegistry.complete()` / `classify()`)
+- [pi](https://pi.dev) >= 0.99.0 (uses `agent_settled` / `session_info_changed` events and `ctx.modelRegistry.streamSimple()` / `classify()`)
 
 ## Installation
 
@@ -88,7 +88,9 @@ Add a `session-name` section to the shared global `~/.pi/agent/young.json`
 | `enabled` | `true` | `PI_SESSION_NAME_ENABLED=false` | Master switch to disable auto-naming |
 | `appendCreationTime` | `true` | `PI_SESSION_NAME_TIMESTAMP=false` | Prefix every title with the session's creation time — `yyyy-mm-dd hh:mm - title`. The resume list sorts by last-modified, so an edited old session resurfaces at the top; the prefix keeps its original age visible. Parsed from the session file name (best effort: no stamp, no prefix). |
 
-Titles are generated with the model you're already chatting with (`ctx.model`) — there is no model override. Model calls go through `ctx.modelRegistry.complete()`, which resolves authentication at request time — API keys and OAuth subscription logins both work, with no extra API key configuration.
+Titles are generated with the model you're already chatting with (`ctx.model`) — there is no model override. When the selection is a virtual model (a router such as `glm-5.3-auto`, `api === "pi-virtual"`), it resolves to that provider's first **light-tier** physical chat model (id/name matching `flash|mini|fast|turbo|lite`; registration order otherwise), cached per provider after the first lookup; with no physical model in the provider, the virtual model itself goes through `streamSimple`, which routes it. The light-tier preference matters: registration order is arbitrary, and on `zai-coding-cn` the first entry is `glm-4.6v` — an older vision model whose weaker instruction following produced English titles for Chinese sessions. Model calls go through `ctx.modelRegistry.streamSimple()`, which routes virtual models and resolves authentication at request time — API keys and OAuth subscription logins both work, with no extra API key configuration.
+
+Before a message enters the title window, machine-generated preamble is stripped: an injected skill block (the full SKILL.md body) reduces to a one-line `<skill name="…" description="…"/>` reference (frontmatter description read from the block's `location`, cached; name-only when the file is gone), and pasted-image markers (`…pi-clipboard-<uuid>.png 提取图片`) drop. Titles describe the user's task, not the injected document, and follow the language of the user's own words.
 
 ### Environment variables only
 
@@ -162,6 +164,8 @@ import {
 	buildVerdictRequest,
 	loadConfig,
 	generateTitle,
+	resolveTitleModel,
+	stripInjectedPreamble,
 } from "@fyeeme/pi-session-name";
 ```
 

@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.0.8] - 2026-10-29
+
+### Fixed
+
+- `resolveTitleModel` now picks the **cheapest** light-tier model instead of the first by registration order — on zai the registration-order light model is `glm-5-turbo` ($1.2/M input), 8× the price of `glm-5.3-flash` ($0.15/M).
+
+- `/rename` takes the auto-naming lock only when a name is actually set. Warning paths (invalid name, model unavailable, no conversation yet, failed generation) previously locked anyway, freezing a fresh session untitled forever after an early `/rename`.
+
+- Virtual selections now resolve to the provider's first **light-tier** physical chat model (id/name matching `flash|mini|fast|turbo|lite`; registration order otherwise). The previous "first available" heuristic landed on `zai-coding-cn`'s registration-order entry `glm-4.6v`, an older vision model whose weaker instruction following produced English titles (`Bug Analysis and Retrospective Report`) for Chinese sessions.
+
+- Virtual-model selections (routers such as `glm-5.3-auto`, `api === "pi-virtual"`) never produced LLM titles: `generateTitle` called `modelRegistry.complete()`, which does not route virtual models — every nested call failed with `stopReason "error"` (never a rejected promise) and silently degraded to the deterministic first-message fallback, so sessions whose opening message was a skill preamble or a clipboard-image marker got garbage titles. Model calls now go through `streamSimple()`, which routes virtual models (reason `direct`) and is otherwise equivalent for physical models.
+
+### Added
+
+- Fallback input is now user-words-only: `<skill …/>` reference lines are dropped before the deterministic fallback slices its words, and a window with no user-written words sets no title instead of a garbage one (a stripped opener used to fall back to `<skill name=… description="Use when analyzin…`). Both the `agent_settled` and `/rename` paths are covered.
+- One-time failure notice: when an LLM generation fails and the deterministic fallback covers it, the extension prints `[pi-session-name] title generation failed; deterministic fallback in use` to stderr once per session (deepseek-harness logs every request; pi extensions have no logger channel, so this is the minimal observability that would have exposed the virtual-model failure immediately).
+- `titleFromOutput(text)` (applied inside `generateTitle`), ported from deepseek-harness `session-title-first-prompt-llm`: model output is reduced to its first non-empty line, and a line wrapped entirely in asterisk emphasis (`**Title**`) loses the marker pair — emphasis inside a longer line is kept. Previously multi-line output (title plus trailing commentary) was whitespace-flattened into one title string.
+- `resolveTitleModel(ctx)`: the model a title request runs on. Physical selections pass through; virtual selections resolve to the provider's first available physical chat model (`getAvailableOfType("chat", provider)`), cached per provider after the first lookup; a provider without physical models falls back to the virtual model itself (routed by `streamSimple`). Both `agent_settled` auto-naming and `/rename` use it.
+- `stripInjectedPreamble(text)` (also applied inside `buildTitleMessages`): pi prepends machine-generated text to user messages — expanded skill blocks (the full SKILL.md body, the official `<skill name location>…</skill>` format) and pasted-image markers (`…pi-clipboard-<uuid>.png 提取图片`). A skill block now reduces to a one-line reference — `<skill name="…" description="…"/>` with the frontmatter description read from `location` once and cached (name-only when unreadable) — and clipboard markers drop. Rationale: an 8 KB injected opener consumed the whole 600-char truncation window, so titles described the skill document instead of the user's task, and mixed-language injections flipped titles to the wrong language. A message that strips to empty never enters a title request.
+- Language rule tightened in `titleSystemPrompt` and the auto-mode verdict: "Use the language of the user's own words; ignore quoted file paths, code, and machine-generated references such as skill blocks; when mixed, follow the dominant language of the user's text." (Was "Use the language of the messages", which let English-heavy injections win.)
+- `/rename` with no argument now generates from the full message window (`buildTitleRequest("all", …)`), not just the first message: sessions that open with a bare skill invocation have no user-written words in message #1, so a first-only window titled the skill's English reference line (e.g. "Weekly Token Report Session" for a Chinese conversation).
+
 ## [1.0.7] - 2026-10-16
 
 ### Changed
