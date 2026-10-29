@@ -34,26 +34,16 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 /** Settings file name (both layers). */
 const CONFIG_FILE = "pi-review.json";
 
-/** The dispatchable turn budgets, keyed by what they throttle. */
+/** The dispatchable budgets. `subagent` turn budgets were removed: agent
+ * tasks run to natural completion (only the fix→re-review loop count
+ * remains configurable). */
 export interface TurnBudgets {
-	/** `maxTurns` set on each /code-review finder-batch `subagent` call. */
-	subagent: number;
-	/** `maxTurns` set on each /code-review Phase 2 verifier `subagent` call. */
-	verifier: number;
-	/** `maxTurns` set on the /code-review Phase 3 gap-hunt `subagent` call. */
-	gapHunt: number;
-	/** `maxTurns` set on each /code-simplify PARALLEL cleaner `subagent` call. */
-	simplify: number;
 	/** Max fix→re-review rounds when /code-review runs with --loop. */
 	loop: number;
 }
 
-/** Built-in budgets — identical to the literals in prompts/ and skills/. */
+/** Built-in budget — identical to the literal in prompts/ and skills/. */
 export const DEFAULT_TURN_BUDGETS: TurnBudgets = {
-	subagent: 20,
-	verifier: 15,
-	gapHunt: 15,
-	simplify: 15,
 	loop: 3,
 };
 
@@ -81,14 +71,8 @@ function readBudgetsFile(path: string): Partial<TurnBudgets> {
 		const maxTurns = (raw as Record<string, unknown>).maxTurns;
 		const mt = maxTurns && typeof maxTurns === "object" ? (maxTurns as Record<string, unknown>) : {};
 		const out: Partial<TurnBudgets> = {};
-		const subagent = sanitizeBudget(mt.subagent);
-		if (subagent !== undefined) out.subagent = subagent;
-		const verifier = sanitizeBudget(mt.verifier);
-		if (verifier !== undefined) out.verifier = verifier;
-		const gapHunt = sanitizeBudget(mt.gapHunt);
-		if (gapHunt !== undefined) out.gapHunt = gapHunt;
-		const simplify = sanitizeBudget(mt.simplify);
-		if (simplify !== undefined) out.simplify = simplify;
+		// Legacy maxTurns.subagent/verifier/gapHunt/simplify entries are read
+		// and dropped on purpose: agent turn budgets no longer exist.
 		const loop = sanitizeBudget(mt.loop);
 		if (loop !== undefined) out.loop = loop;
 		return out;

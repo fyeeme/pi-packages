@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { loadTurnBudgets } from "./config.ts";
 import { DIFF_SCOPES, buildContextPackage, countDiffLines, getRepoDiff, verifyLine } from "./diff.ts";
 import { extractLoopFlag, runLoopFixing } from "./loop.ts";
+import { buildReviewNote, readReviewInstructions } from "./review-md.ts";
 import { bundledSkillPath } from "./skills.ts";
 import { parseGuards, selectVariant } from "./strategy.ts";
 
@@ -281,7 +282,47 @@ export function buildLimitNote(
 		: `\nFindings limit: ${effective}${reused} — report at most ${effective} findings, most-severe first. \`--max-findings default\` restores the usual limit.\n`;
 }
 
+/** REVIEW.md resolution for the trigger message — never fails the command
+ *  (readReviewInstructions already degrades internally; this belt-and-suspenders
+ *  guard keeps an unexpected throw from breaking the review). */
+async function buildReviewNoteSafely(cwd: string, signal?: AbortSignal): Promise<string> {
+	try {
+		return buildReviewNote(await readReviewInstructions(cwd, undefined, undefined, signal));
+	} catch {
+		return "";
+	}
+}
+
 export function registerDispatcher(pi: ExtensionAPI): void {
+	// The `subagent` tool ships dormant at the top level (pi-subagents design
+	// dormant-top-level-tool): registered everywhere, declared to the model
+	// nowhere until someone activates it. Review/simplify need it only on the
+	// fan-out paths, so three entry points activate it for the session:
+	//   1. /code-review at xhigh/max (the fan-out effort levels);
+	//   2. /code-simplify when the strategy picks the parallel variant;
+	//   3. the `before_agent_start` hook below, when a user-triggered run's
+	//      prompt carries a code-review/code-simplify skill injection (the
+	//      skill body tells the model to call `subagent` directly at xhigh/max,
+	//      without a command).
+	// Staying active after the run is harmless and keeps follow-up reviews
+	// in the same session tool-continuous.
+	const ensureSubagentTool = (): void => {
+		const active = pi.getActiveTools();
+		if (!active.includes("subagent")) pi.setActiveTools([...active, "subagent"]);
+	};
+	const REVIEW_SKILL_MARKERS = ['<skill name="code-review"', '<skill name="code-simplify"'];
+	pi.on("before_agent_start", (event) => {
+		// Only user-triggered runs: the skill block reaches this hook expanded in
+		// `prompt` (pi expands /skill:name before the run starts), and this event
+		// fires BEFORE the run's tool declarations are snapshotted, so the
+		// activation lands in the SAME request (a `context` hook would fire one
+		// loadout-generation too late). Custom messages (extension-driven sends)
+		// are covered by their own command-time activation above.
+		if (event.messageType !== "user") return;
+		if (pi.getActiveTools().includes("subagent")) return;
+		if (REVIEW_SKILL_MARKERS.some((marker) => event.prompt.includes(marker))) ensureSubagentTool();
+	});
+
 	pi.registerCommand("code-review", {
 		description:
 			"Review the current diff using the code-review skill. low/medium/high review in a single pass in this session; xhigh/max fan out finder/verifier agents. Usage: /code-review [low|medium|high|xhigh|max] [--fix] [--loop] [--comment] [--share] [--max-findings <n>|all|default] [<pr#>|<branch>|<path>]",
@@ -319,6 +360,8 @@ export function registerDispatcher(pi: ExtensionAPI): void {
 			if (explicit) writeLastEffort(explicit); // remember the explicit level
 			const { level, source } = resolveEffort(explicit, lastUsed);
 			const budgets = loadTurnBudgets();
+			// Fan-out efforts need the dormant `subagent` tool declared to the model.
+			if (level === "xhigh" || level === "max") ensureSubagentTool();
 
 			// Sticky --max-findings (CC 2.1.291 Io/Oo): an explicit value persists,
 			// `default` clears it, and no value reuses the persisted one — including
@@ -375,6 +418,8 @@ export function registerDispatcher(pi: ExtensionAPI): void {
 				verify: verifyLine(ctx.cwd),
 				// The skill's Output contract consumes the effective findings limit.
 				"limit-note": limitNote,
+				// REVIEW.md (base-resolved by the dispatcher) — empty when absent.
+				"review-note": await buildReviewNoteSafely(ctx.cwd, ctx.signal),
 			};
 			void pi.sendUserMessage(
 				render(
@@ -382,9 +427,6 @@ export function registerDispatcher(pi: ExtensionAPI): void {
 					fanout
 						? {
 								...shared,
-								"finder-max-turns": String(budgets.subagent),
-								"verifier-max-turns": String(budgets.verifier),
-								"gap-hunt-max-turns": String(budgets.gapHunt),
 								"budget-note": budgetNote,
 							}
 						: {
@@ -440,6 +482,8 @@ export function registerDispatcher(pi: ExtensionAPI): void {
 					diffChars: outcome.diff.length,
 					fanoutAvailable: isFanoutToolAllowed(),
 				});
+				// The parallel variant fans out through the dormant `subagent` tool.
+				if (variant !== "single-pass") ensureSubagentTool();
 				const pct = usage && usage.percent != null ? `${Math.round(usage.percent)}%` : "?";
 				const target = args || "(whole diff)";
 				const skill = bundledSkillPath("code-simplify/SKILL.md");
@@ -476,7 +520,6 @@ export function registerDispatcher(pi: ExtensionAPI): void {
 						"context-package": contextPackage,
 						skill,
 						verify,
-						"simplify-max-turns": String(budgets.simplify),
 					}),
 				);
 			} catch (err) {

@@ -29,8 +29,8 @@ Call the `subagent` tool in parallel mode with 4 tasks, one per agent —
 cleaner-reuse, cleaner-simplification, cleaner-efficiency, cleaner-altitude —
 each task being: "Review the changed code of {{target}} for <angle> findings.
 Run this first to see the diff: {{git-command}}. Report file:line — one-line
-summary — the concrete cost." Set `maxTurns: {{simplify-max-turns}}` on the call (the slowest
-agent pins the wave's wall time; a capped agent still owes partial output).
+summary — the concrete cost." (the call carries no turn budget — the
+agents run to natural completion).
 The agents' angle guidance rides their own definitions — do not write the
 agent prompts yourself or inline the diff anywhere. The tool's result carries
 the four findings reports.

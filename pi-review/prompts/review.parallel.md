@@ -1,6 +1,6 @@
 ---
 description: "/code-review trigger — xhigh/max deep sweep: finder/verifier/gap-hunt fan-out via the code-review skill"
-vars: [effort, effort-source, extra-args, skill, finder-max-turns, verifier-max-turns, gap-hunt-max-turns, verify, limit-note, budget-note]
+vars: [effort, effort-source, extra-args, skill, finder-max-turns, verifier-max-turns, gap-hunt-max-turns, verify, limit-note, budget-note, review-note]
 ---
 Run a code review now. Effective effort: {{effort}} ({{effort-source}}){{extra-args}}.
 
@@ -10,9 +10,9 @@ calls for through the `subagent` tool (bundled agents: finder-diff-scan,
 finder-removed-behavior, finder-cross-file, finder-language-pitfall,
 finder-wrapper-proxy, cleaner-reuse, cleaner-simplification,
 cleaner-efficiency, cleaner-altitude, finder-conventions, verifier,
-gap-hunter), with `maxTurns: {{finder-max-turns}}` per finder batch,
-`maxTurns: {{verifier-max-turns}}` per verifier and `maxTurns: {{gap-hunt-max-turns}}`
-for the gap-hunt as the skill instructs.
+gap-hunter) as the skill instructs; the calls carry no turn budget — the
+agents run to natural completion.
+{{review-note}}
 {{budget-note}}
 {{limit-note}}
 The `subagent` tool is a pi extension tool in your session toolset — judge

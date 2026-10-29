@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.1.4] - 2026-10-29
+
+### Added
+
+- REVIEW.md support (ported from the CC cloud Code Review service, 2026-11 docs — the in-session CLI `/review` has no counterpart): a freeform markdown file at the repository root calibrating what to flag, at what severity, and what to skip. The dispatcher resolves the BASE version (`git show @{upstream}:REVIEW.md`, then `main`, then the worktree — CC's "from the base or default branch and never from the PR's own changes"; locally the worktree fallback is a fidelity degradation, not an injection surface), clamps it at 16k chars, and injects it as the `{{review-note}}` variable of both review triggers; the skill's Phase 0.5 scope block carries it verbatim into every finder/verifier prompt, and the skill itself never reads the worktree copy. Resolution is bounded (5s per git call) and every failure degrades to the next source — absence injects nothing.
+- Re-review convergence for `--loop` (CC cloud "how to behave when a PR has already been reviewed" pattern, built in): from the second re-review on, the re-review prompt suppresses re-reporting P2/P3 findings that are already in the previous report and remain unfixed (re-list only when location or failure changed), while still surfacing every NEW finding and every still-open P0/P1 — the loop's blocking check keeps reading them.
+
+### Fixed
+
+- The skill-marker activation hook moved from `context` to `before_agent_start`: a `context`-time `setActiveTools` lands one loadout generation too late (tool declarations are snapshotted before the context event fires), so a skill-triggered xhigh/max fan-out started with `subagent` missing from the model's tool list. The hook now reads the run's expanded `prompt` (skill blocks are expanded before the run starts) and activates in the same request. This also stops the per-request full-transcript rescan and narrows activation to runs that actually carry the marker (resuming an old review session no longer exposes the tool globally).
+
+### Removed
+
+- Agent turn budgets: the `maxTurns.subagent` / `verifier` / `gapHunt` / `simplify` config entries, the `{{finder-max-turns}}` / `{{verifier-max-turns}}` / `{{gap-hunt-max-turns}}` / `{{simplify-max-turns}}` prompt variables, and every "Set `maxTurns: N` on the call" instruction in the bundled prompts and skills. The `subagent` tool no longer accepts the parameter at all, so agents run to natural completion (the dispatch core's stall and wall-clock aborts still bound runaways). `maxTurns.loop` (fix→re-review round cap) is unchanged; legacy budget entries in `pi-review.json` are read and dropped.
+
+### Added
+
+- The dispatcher activates the now top-level-dormant `subagent` tool (pi-subagents `defaultActive: false` design) on exactly the fan-out paths: `/code-review` at xhigh/max, `/code-simplify` when the strategy picks the parallel variant, and a `context` hook when a `code-review`/`code-simplify` skill injection is present in the transcript (the skill body tells the model to call `subagent` directly at xhigh/max without a command). The tool stays active for the session afterwards — follow-up reviews in the same session are tool-continuous.
+
+### Changed
+
+- The extension entry composes `@fyeeme/pi-subagents`' factory again (subagent tool + agent UI + `/agents`, from the pinned dependency copy — no standalone install needed). The tool stays dormant at top level; only the dispatcher's fan-out paths activate it (see Added). A standalone extension registering a same-named `subagent` tool (e.g. a tmux-backed one) now conflicts fatally again — disable it before upgrading.
+
 ## [2.1.3] - 2026-10-16
 
 ### Breaking Changes

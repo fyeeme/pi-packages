@@ -175,9 +175,8 @@ describe("prompt template assets", () => {
 		expect(body).toContain("Phase 2");
 		expect(body).toContain("{{git-command}}");
 		expect(body).toContain("change-intent summary");
-		// Turn budgets are config-injected placeholders (src/config.ts), not literals.
-		expect(body).toContain("maxTurns: {{simplify-max-turns}}");
-		expect(body).not.toContain("maxTurns: 15");
+		// No turn budget anywhere: the calls carry none and the literal is gone too.
+		expect(body).not.toContain("maxTurns");
 		expect(body).toContain("fanned_out: true");
 	});
 
@@ -204,6 +203,20 @@ describe("prompt template assets", () => {
 		expect(parallel).toContain("subagent");
 	});
 
+	it("both review triggers declare and render the REVIEW.md note", () => {
+		for (const rel of ["review.single.md", "review.parallel.md"]) {
+			const t = template(rel);
+			expect(t.frontmatter.vars).toContain("review-note");
+			expect(t.body).toContain("{{review-note}}");
+		}
+		const armed = render(template("review.single.md").body, {
+			"review-note": "\nRepository review instructions (REVIEW.md, resolved from the base revision):\n",
+		});
+		expect(armed).toContain("Repository review instructions (REVIEW.md");
+		const absent = render(template("review.single.md").body, { "review-note": "" });
+		expect(absent).not.toContain("Repository review instructions");
+	});
+
 	it("the single-pass trigger renders the loop notice only when armed", () => {
 		const body = template("review.single.md").body;
 		expect(body).toContain("{{loop-note}}");
@@ -215,35 +228,24 @@ describe("prompt template assets", () => {
 });
 
 	describe("turn-budget injection", () => {
-		const reviewVars = (finder: string, verifier: string, gapHunt: string) => ({
+		const reviewVars = () => ({
 			effort: "low",
 			"effort-source": "default",
 			"extra-args": "",
 			skill: "/skills/code-review/SKILL.md",
-			"finder-max-turns": finder,
-			"verifier-max-turns": verifier,
-			"gap-hunt-max-turns": gapHunt,
 			verify: "",
 		});
 
-		it("defaults render the pre-config literals byte-for-byte", () => {
-			const out = render(template("review.parallel.md").body, reviewVars("20", "15", "15"));
-			expect(out).toContain("with `maxTurns: 20` per finder batch");
-			expect(out).toContain("`maxTurns: 15` per verifier");
-			expect(out).toContain("`maxTurns: 15`\nfor the gap-hunt as the skill instructs");
-		});
-
-		it("configured budgets replace the defaults in the rendered message", () => {
-			const out = render(template("review.parallel.md").body, reviewVars("30", "25", "50"));
-			expect(out).toContain("with `maxTurns: 30` per finder batch");
-			expect(out).toContain("`maxTurns: 25` per verifier");
-			expect(out).toContain("`maxTurns: 50`\nfor the gap-hunt as the skill instructs");
+		it("the parallel review trigger states no turn budget and leaves no placeholders", () => {
+			const out = render(template("review.parallel.md").body, reviewVars());
+			expect(out).toContain("the calls carry no turn budget");
 			expect(out).not.toContain("{{finder-max-turns}}");
 			expect(out).not.toContain("{{verifier-max-turns}}");
 			expect(out).not.toContain("{{gap-hunt-max-turns}}");
+			expect(out).not.toContain("maxTurns:");
 		});
 
-		it("renders the simplify cleaner budget from the var", () => {
+		it("renders the simplify trigger without any turn budget var", () => {
 			const out = render(template("simplify.parallel.md").body, {
 				target: "src/",
 				"scope-label": "unpushed+uncommitted",
@@ -252,10 +254,10 @@ describe("prompt template assets", () => {
 				"context-package": "(diff)",
 				skill: "/skills/code-simplify/SKILL.md",
 				verify: "",
-				"simplify-max-turns": "15",
 			});
-			expect(out).toContain("Set `maxTurns: 15` on the call");
+			expect(out).toContain("no turn budget");
 			expect(out).not.toContain("{{simplify-max-turns}}");
+			expect(out).not.toContain("maxTurns:");
 		});
 	});
 

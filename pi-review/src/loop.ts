@@ -194,13 +194,32 @@ function fixPrompt(findings: BlockingFinding[]): string {
 	].join("\n");
 }
 
-function reReviewPrompt(level: string): string {
+/** The re-review prompt sent between fix rounds. Carries the re-review
+ *  convergence rule (CC cloud REVIEW.md pattern, built in): round 2+
+ *  re-reports only NEW findings and still-open P0/P1 — the loop's blocking
+ *  check reads the report, so blocking findings must stay visible, while
+ *  already-reported P2/P3 cleanups must not resurrect every round. */
+export function reReviewPrompt(level: string, round: number): string {
+	const convergence =
+		round >= 2
+			? [
+					"Re-review convergence:",
+					"- Do NOT re-report P2/P3 findings that are already in the previous",
+					"  report and remain unfixed — re-list one only when its location or",
+					"  failure changed.",
+					"- Still surface every NEW finding and every still-open P0/P1 (the",
+					"  loop's blocking check reads your report).",
+			  ].join("\n")
+			: "";
 	return [
 		`Fixes applied. Re-run the code-review SINGLE-PASS flow for effort ${level} now`,
 		"— the diff has changed: re-resolve it, re-check the fixed locations and",
 		"sweep for regressions or newly exposed issues, then report via the",
 		"`review_report` tool again (fresh findings list, empty array if clean).",
-	].join("\n");
+		convergence,
+	]
+		.filter((part) => part !== "")
+		.join("\n");
 }
 
 export interface LoopOptions {
@@ -263,6 +282,6 @@ export async function runLoopFixing(
 		);
 		await pi.sendUserMessage(fixPrompt(findings), { deliverAs: "followUp" });
 		if (!(await waitForTurnSettled(ctx, baseline))) return fixes;
-		pi.sendUserMessage(reReviewPrompt(level), { deliverAs: "followUp" });
+		pi.sendUserMessage(reReviewPrompt(level, fixes), { deliverAs: "followUp" });
 	}
 }

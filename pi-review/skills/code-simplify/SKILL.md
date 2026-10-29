@@ -132,8 +132,7 @@ review that target instead. Treat this diff as the review scope.)
 After your Phase 0 summary, call the `subagent` tool exactly as the trigger
 message instructs: parallel mode, 4 tasks, one per bundled agent —
 cleaner-reuse, cleaner-simplification, cleaner-efficiency, cleaner-altitude —
-each with `maxTurns: 15` (set it on the call; 15 is the built-in default — a
-different budget stated in the trigger message wins). The agents' angle guidance
+each with no turn budget — the agents run to natural completion. The agents' angle guidance
 rides their own definitions (read-only tool whitelist read/grep/find/ls/bash);
 each returns its findings with `file`, `line`, a one-line `summary`, and the
 concrete cost (what is duplicated, wasted, or harder to maintain). The agent

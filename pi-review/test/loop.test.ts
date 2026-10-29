@@ -8,7 +8,30 @@ import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { blockingFindings, extractLoopFlag, latestReportFile, runLoopFixing, waitForQuiescent } from "../src/loop.ts";
+import {
+	blockingFindings,
+	extractLoopFlag,
+	latestReportFile,
+	reReviewPrompt,
+	runLoopFixing,
+	waitForQuiescent,
+} from "../src/loop.ts";
+
+describe("reReviewPrompt (re-review convergence)", () => {
+	it("round 1 keeps the full fresh-pass scope (no convergence rule yet)", () => {
+		const out = reReviewPrompt("high", 1);
+		expect(out).toContain("effort high");
+		expect(out).toContain("fresh findings list");
+		expect(out).not.toContain("Re-review convergence");
+	});
+
+	it("round 2+ adds the convergence rule: old P2/P3 stay silent, blocking stays visible", () => {
+		const out = reReviewPrompt("high", 2);
+		expect(out).toContain("Re-review convergence");
+		expect(out).toContain("P2/P3");
+		expect(out).toContain("still-open P0/P1");
+	});
+});
 
 describe("extractLoopFlag", () => {
 	it("detects and strips --loop, keeping the rest", () => {

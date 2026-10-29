@@ -39,8 +39,8 @@ composition is idempotent.
 
 ## Commands
 
-- `/code-review [low|medium|high|xhigh|max] [--fix] [--loop] [--comment] [--share] [--max-findings <n>|all|default] [<pr#>|<branch>|<path>|<instructions>]` — effort-level code review via the code-review skill. low/medium/high run as a single pass in this session (fast path, default); xhigh/max fan out finder/verifier/gap-hunt agents through `subagent` (CC re-sync 2026-10: finder paths are canonFile-normalized against the changed-file list before verify grouping; free-form instruction targets ride the scope block with CC's anti-injection framing; medium/high use CC's 8-angle set; xhigh/max reports carry `refuted` + `stats`). Effort is sticky: an explicit level is remembered; the next bare `/code-review` reuses it, and a near-miss token ("meduim") is warned about, not mistaken for a target. `--loop` (single-pass levels only) drives extension-orchestrated fix→re-review rounds (≤ `maxTurns.loop`, default 3) until no P0/P1 findings remain. `--max-findings` (CC 2.1.291) caps the report at n findings (sticky until `default`; `all` lifts the numeric cap but a single report is hard-capped at 32 — `review_report` truncates and stamps past it; invalid values warn and are ignored). At xhigh/max the dispatcher measures the committed range with `git diff --numstat` and the trigger carries a "Finder budget:" note (`ceil(lines/150)` clamped to 2–8 finder agents); after the report, a gated chain (`/code-simplify` not yet run this session + runtime-surface diff + no further user instruction) auto-invokes `/code-simplify`, else suggests it in one line.
-- `/code-simplify [<target>]` — cleanup of the changed code (reuse/simplification/efficiency/altitude). The dispatcher resolves the diff (upstream merge-base → HEAD worktree → staged → unstaged; submodule-aware), evaluates the strategy declared in `prompts/simplify.parallel.md` frontmatter (context usage < 80%, diff < 400k chars, fan-out available), and renders either the PARALLEL template (Phase 0 visible diff read → `subagent` parallel dispatch of the 4 cleaner agents with `maxTurns: 15` → Phase 2 apply/verify/report) or the SINGLE-PASS template (angles worked inline).
+- `/code-review [low|medium|high|xhigh|max] [--fix] [--loop] [--comment] [--share] [--max-findings <n>|all|default] [<pr#>|<branch>|<path>|<instructions>]` — effort-level code review via the code-review skill. low/medium/high run as a single pass in this session (fast path, default); xhigh/max fan out finder/verifier/gap-hunt agents through `subagent` (CC re-sync 2026-10: finder paths are canonFile-normalized against the changed-file list before verify grouping; free-form instruction targets ride the scope block with CC's anti-injection framing; medium/high use CC's 8-angle set; xhigh/max reports carry `refuted` + `stats`). Effort is sticky: an explicit level is remembered; the next bare `/code-review` reuses it, and a near-miss token ("meduim") is warned about, not mistaken for a target. `--loop` (single-pass levels only) drives extension-orchestrated fix→re-review rounds (≤ `maxTurns.loop`, default 3) until no P0/P1 findings remain. `--max-findings` (CC 2.1.291) caps the report at n findings (sticky until `default`; `all` lifts the numeric cap but a single report is hard-capped at 32 — `review_report` truncates and stamps past it; invalid values warn and are ignored). At xhigh/max the dispatcher measures the committed range with `git diff --numstat` and the trigger carries a "Finder budget:" note (`ceil(lines/150)` clamped to 2–8 finder agents); after the report, a gated chain (`/code-simplify` not yet run this session + runtime-surface diff + no further user instruction) auto-invokes `/code-simplify`, else suggests it in one line. If the repo has a `REVIEW.md` at its root (CC cloud Code Review feature, ported), the dispatcher injects the BASE version (`@{upstream}`, then `main`, then the worktree — a branch that edits REVIEW.md is reviewed under the rules it is merging INTO) as "Repository review instructions": freeform markdown calibrating what to flag, at what severity, and what to skip; the Phase 0.5 scope block carries it verbatim to every finder/verifier.
+- `/code-simplify [<target>]` — cleanup of the changed code (reuse/simplification/efficiency/altitude). The dispatcher resolves the diff (upstream merge-base → HEAD worktree → staged → unstaged; submodule-aware), evaluates the strategy declared in `prompts/simplify.parallel.md` frontmatter (context usage < 80%, diff < 400k chars, fan-out available), and renders either the PARALLEL template (Phase 0 visible diff read → `subagent` parallel dispatch of the 4 cleaner agents, no turn budget → Phase 2 apply/verify/report) or the SINGLE-PASS template (angles worked inline).
 
 Reports land via the `review_report` tool: Chinese Markdown back to the conversation plus machine-readable JSON under `<cwd>/.pi/review/`.
 
@@ -69,19 +69,15 @@ pattern as pi-subagents' `pi-subagent.json` (project overrides global):
 // <any layer>/pi-review.json — all keys optional
 {
   "maxTurns": {
-    "subagent": 20,   // each /code-review finder-batch subagent call
-    "verifier": 15,   // each /code-review Phase 2 verifier call
-    "gapHunt": 15,   // the /code-review Phase 3 gap-hunter (xhigh/max)
-    "simplify": 15,  // each /code-simplify PARALLEL cleaner agent
-    "loop": 3        // --loop fix→re-review round cap (single-pass levels)
+    "loop": 3 // --loop fix→re-review round cap (single-pass levels)
   }
 }
 ```
 
-Values must be positive integers; anything else (or an absent file) falls back
-to the built-in defaults — `20` / `15` / `15` / `15` / `3`, the numbers the bundled
-prompts and skills were written with — so with no configuration the rendered
-instructions are byte-identical to the pre-config behavior. Files are read at
+(The former `subagent` / `verifier` / `gapHunt` / `simplify` entries are read
+and dropped — agent tasks carry no turn budget and run to natural
+completion.) Values must be positive integers; anything else (or an absent
+file) falls back to the built-in default (`3`). Files are read at
 command time: an edit takes effect on the next `/code-review` or `/code-simplify`
 without a restart. When a budget is configured, the trigger message states it
 and the skills defer to it over their built-in defaults.

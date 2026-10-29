@@ -87,7 +87,9 @@ export type GitRunner = (args: string[], opts: { cwd: string; signal?: AbortSign
 
 const execFileAsync = promisify(execFile);
 
-const defaultGitRunner: GitRunner = async (args, opts) =>
+/** The shared real runner (array argv, no shell, 10MB buffer). Exported for
+ *  the sibling modules (review-md.ts) so git invocation stays in one shape. */
+export const defaultGitRunner: GitRunner = async (args, opts) =>
 	(await execFileAsync("git", args, {
 		cwd: opts.cwd,
 		encoding: "utf8",
@@ -96,8 +98,9 @@ const defaultGitRunner: GitRunner = async (args, opts) =>
 	})).stdout;
 
 /** An abort signal that fires after `ms` or when `outer` aborts, whichever
- *  comes first (bounded numstat — a slow repo must not stall the command). */
-function timeoutSignal(ms: number, outer?: AbortSignal): AbortSignal {
+ *  comes first (bounded numstat / REVIEW.md reads — a slow repo must not
+ *  stall the command). */
+export function timeoutSignal(ms: number, outer?: AbortSignal): AbortSignal {
 	const ctl = new AbortController();
 	const timer = setTimeout(() => ctl.abort(), ms);
 	outer?.addEventListener(
