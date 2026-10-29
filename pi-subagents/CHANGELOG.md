@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.1.5] - 2026-10-29
 
+### Changed
+
+- Source layout unified: the root-level `agents.ts` moved under `src/` (bundled agent discovery now resolves `<pkg>/agents` from `src/`); `index.ts` stays at the package root as the extension entry. No behavior change.
+
 ### Fixed
 
 - `runSingleAgent` no longer takes the dead `maxTurns` parameter (every call site passed `undefined` after the budget removal); `spawnAgent` options are unchanged.

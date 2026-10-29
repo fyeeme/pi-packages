@@ -56,13 +56,13 @@ export interface AgentDiscoveryResult {
 }
 
 /**
- * This file lives at the package root → the bundled agents directory is
+ * This file lives in `src/` → the bundled agents directory is
  * `<pkg>/agents`. realpath collapses install-path symlinks (the package is
  * often symlinked into the pi extensions dir), matching how pi-review
  * resolves its bundled skills.
  */
-const PKG_ROOT = fs.realpathSync(path.dirname(fileURLToPath(import.meta.url)));
-const BUNDLED_AGENTS_DIR = path.join(PKG_ROOT, "agents");
+const PKG_ROOT = path.dirname(fs.realpathSync(fileURLToPath(import.meta.url)));
+const BUNDLED_AGENTS_DIR = path.join(PKG_ROOT, "..", "agents");
 
 /**
  * Extra agent directories registered by other extensions (e.g. pi-review

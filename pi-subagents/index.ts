@@ -96,8 +96,8 @@ export type { SubagentCoreSettings } from "./src/concurrency.ts";
 export { contentText, contentTextBlocks, lastAssistantText, lastMessageText } from "./src/text.ts";
 
 // three-source agent discovery (+ extension-registered extra dirs)
-export { addAgentDir, discoverAgents } from "./agents.ts";
-export type { AgentConfig, AgentDiscoveryResult, AgentScope, AgentSource } from "./agents.ts";
+export { addAgentDir, discoverAgents } from "./src/agents.ts";
+export type { AgentConfig, AgentDiscoveryResult, AgentScope, AgentSource } from "./src/agents.ts";
 
 
 /**

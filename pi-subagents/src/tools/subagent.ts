@@ -22,7 +22,7 @@ import type { AgentToolResult, ThinkingLevel } from "@earendil-works/pi-agent-co
 import type { JsonValue, Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
-import { type AgentConfig, discoverAgents } from "../../agents.ts";
+import { type AgentConfig, discoverAgents } from "../agents.ts";
 import { loadCoreSettings } from "../concurrency.ts";
 import {
 	createSpawnRegistry,
