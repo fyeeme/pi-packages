@@ -1,6 +1,6 @@
 {
 	"name": "@fyeeme/pi-thinking-ui",
-	"version": "1.1.4",
+	"version": "1.1.5",
 	"description": "Faithful, terminal-native three-mode thinking visualization for Pi.",
 	"type": "module",
 	"license": "MIT",
@@ -28,11 +28,7 @@
 	],
 	"files": [
 		"index.ts",
-		"markdown-render.ts",
-		"parse.ts",
-		"persistence.ts",
-		"state.ts",
-		"types.ts",
+		"src/**/*.ts",
 		"README.md",
 		"LICENSE",
 		"CHANGELOG.md"

@@ -7,7 +7,7 @@ import {
 	parseThinkingMode,
 	splitThinkingIntoStepTexts,
 	summarizeThinkingText,
-} from "../parse.ts";
+} from "../src/parse.ts";
 
 // ---------------------------------------------------------------------------
 // parseThinkingMode

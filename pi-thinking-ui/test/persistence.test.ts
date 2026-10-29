@@ -16,7 +16,7 @@ import {
 	clearThinkingUIModePreference,
 	readThinkingUIModePreference,
 	writeThinkingUIModePreference,
-} from "../persistence.ts";
+} from "../src/persistence.ts";
 
 // persistence.ts resolves the "global" scope via getAgentDir(), which honors
 // PI_CODING_AGENT_DIR. We point it at a throwaway dir so tests never touch

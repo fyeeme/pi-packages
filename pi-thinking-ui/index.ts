@@ -1,16 +1,16 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { Key } from "@earendil-works/pi-tui";
-import { clearThinkingUIModePreference, readThinkingUIModePreference, writeThinkingUIModePreference } from "./persistence.ts";
-import { parseThinkingMode } from "./parse.ts";
-import { streamingThinkingMarkdown, thinkingToMarkdown } from "./markdown-render.ts";
+import { clearThinkingUIModePreference, readThinkingUIModePreference, writeThinkingUIModePreference } from "./src/persistence.ts";
+import { parseThinkingMode } from "./src/parse.ts";
+import { streamingThinkingMarkdown, thinkingToMarkdown } from "./src/markdown-render.ts";
 import {
 	getThinkingUIMode,
 	nextThinkingRefreshLabel,
 	setCurrentThinkingScopeKey,
 	setThinkingUIMode,
-} from "./state.ts";
-import type { PersistedThinkingUIPreferenceScope, ThinkingUIMode } from "./types.ts";
+} from "./src/state.ts";
+import type { PersistedThinkingUIPreferenceScope, ThinkingUIMode } from "./src/types.ts";
 
 type ThinkingUICommandScope = "session" | PersistedThinkingUIPreferenceScope;
 type ThinkingUICommandAction =

@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+## [1.1.5] - 2026-10-29
+
+### Changed
+
+- Source layout unified: the root-level modules (`state.ts`, `parse.ts`, `markdown-render.ts`, `types.ts`, `persistence.ts`) moved under `src/`; `index.ts` stays at the package root as the extension entry. Import paths and the published `files` set follow; no behavior change.
+
 ## [1.1.4] - 2026-10-16
 
 ### Fixed

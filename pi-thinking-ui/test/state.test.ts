@@ -6,7 +6,7 @@ import {
 	resetThinkingUIViewState,
 	setCurrentThinkingScopeKey,
 	setThinkingUIMode,
-} from "../state.ts";
+} from "../src/state.ts";
 
 // state.ts keeps a singleton store on globalThis (keyed by a well-known
 // Symbol) so module reloads share state. resetThinkingUIViewState() restores

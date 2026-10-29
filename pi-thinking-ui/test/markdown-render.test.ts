@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { streamingThinkingMarkdown, thinkingToMarkdown } from "../markdown-render.ts";
+import { streamingThinkingMarkdown, thinkingToMarkdown } from "../src/markdown-render.ts";
 
 // Fixture: a realistic thinking run with a couple of recognisable steps so
 // the heuristic engine produces non-trivial summaries and roles.
