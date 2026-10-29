@@ -119,6 +119,55 @@ describe("views", () => {
 		expect(fragment).not.toContain("<html");
 	});
 
+	it("chat view renders the main path and collapses sibling branches", () => {
+		const ts = "2026-10-29T10:00:00.000Z";
+		const tree: any[] = [
+			{
+				entry: { id: "e1", type: "message", timestamp: ts, message: { role: "user", content: "root question" } },
+				children: [
+					{
+						entry: { id: "e2", type: "message", timestamp: ts, message: { role: "assistant", content: "branch answer A" } },
+						children: [],
+					},
+					{
+						entry: { id: "e3", type: "message", timestamp: ts, message: { role: "assistant", content: "branch answer B" } },
+						children: [],
+					},
+				],
+			},
+		];
+		const manager = {
+			getHeader: () => ({ id: "sess-2", timestamp: 0, cwd: "/repo" }),
+			getEntries: () => tree.map((n) => n.entry),
+			getLeafId: () => "e2",
+			getTree: () => tree,
+		};
+		const fragment = renderSessionFragment(manager as any, "chat");
+		const b64 = (text: string) => Buffer.from(text, "utf8").toString("base64");
+		expect(fragment).toContain("root question");
+		// Assistant text travels as a base64 data-md payload (client-side markdown).
+		expect(fragment).toContain(`data-md="${b64("branch answer A")}"`);
+		expect(fragment).toContain(`data-md="${b64("branch answer B")}"`);
+		// Off-path siblings render as collapsed branch blocks.
+		expect(fragment).toContain('details class="branch"');
+	});
+
+	it("chat view folds assistant thinking into collapsed strips", () => {
+		const entries: any[] = [
+			{ type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "long reasoning" }, { type: "text", text: "visible answer" }] } },
+		];
+		const manager = {
+			getHeader: () => ({ id: "s", timestamp: 0 }),
+			getEntries: () => entries,
+			getLeafId: () => "e",
+			getTree: () => entries.map((entry, i) => ({ entry: { ...entry, id: `e${i}` }, children: [] })),
+		};
+		const fragment = renderSessionFragment(manager as any, "chat");
+		expect(fragment).toContain("思考过程");
+		expect(fragment).toContain("long reasoning");
+		expect(fragment).toContain(`data-md="${Buffer.from("visible answer", "utf8").toString("base64")}"`);
+	});
+
 	it("loadStaticScript resolves the vendored renderer sources from the pi package", () => {
 		expect(loadStaticScript("marked")).toContain("marked");
 		expect(loadStaticScript("highlight").length).toBeGreaterThan(1000);
