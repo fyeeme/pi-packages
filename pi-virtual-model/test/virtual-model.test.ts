@@ -4,8 +4,8 @@ import {
 	hasImageContent,
 	userMessageHasImages,
 	routeAuto,
-	default as virtualModelsExtension,
-} from "../index.ts";
+	virtualModelExtension,
+} from "../src/virtual-model.ts";
 
 const PROVIDER = "zai-coding-cn";
 const TEXT = { provider: PROVIDER, id: "glm-5.3" };
@@ -190,7 +190,7 @@ describe("routeAuto", () => {
 describe("extension registration", () => {
 	it("registers the glm-5.3-auto virtual model with routeAuto", () => {
 		const calls: any[] = [];
-		virtualModelsExtension({ registerVirtualModel: (def: any) => calls.push(def) } as any);
+		virtualModelExtension({ registerVirtualModel: (def: any) => calls.push(def) } as any);
 		expect(calls).toHaveLength(1);
 		expect(calls[0]).toMatchObject({ provider: PROVIDER, id: "glm-5.3-auto" });
 		expect(calls[0].route).toBe(routeAuto);

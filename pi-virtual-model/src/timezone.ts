@@ -45,7 +45,7 @@ export async function enforce(pi: ExtensionAPI, ctx: ExtensionContext, now = new
 	}
 }
 
-export default function timezoneModelExtension(pi: ExtensionAPI) {
+export function timezoneModelExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		await enforce(pi, ctx);
 	});

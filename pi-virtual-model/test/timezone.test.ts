@@ -3,8 +3,8 @@ import {
 	beijingSecondsOfDay,
 	targetModelId,
 	enforce,
-	default as timezoneModelExtension,
-} from "../index.ts";
+	timezoneModelExtension,
+} from "../src/timezone.ts";
 
 const PROVIDER = "zai-coding-cn";
 const FLASH = { provider: PROVIDER, id: "glm-5.3-flash" };

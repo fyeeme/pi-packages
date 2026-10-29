@@ -1,7 +1,7 @@
 {
-	"name": "@fyeeme/pi-timezone-model",
+	"name": "@fyeeme/pi-virtual-model",
 	"version": "0.1.0",
-	"description": "Pick the pi session model by wall-clock time: glm-5.3-flash before 14:18:00 Beijing time, glm-5.3-auto after.",
+	"description": "Model selection routing for pi: the glm-5.3-auto virtual model switches between glm-5.3 and glm-5.3-flash by image presence, and the session model is picked by Beijing wall-clock time (flash before 14:18:00, glm-5.3-auto after).",
 	"type": "module",
 	"license": "MIT",
 	"author": "fyeeme",
@@ -10,6 +10,7 @@
 	},
 	"files": [
 		"index.ts",
+		"src/**/*.ts",
 		"README.md",
 		"LICENSE"
 	],

@@ -145,7 +145,7 @@ export function routeAuto(request: ModelRouteRequest, ctx: ExtensionContext): Mo
 	return routeTo(request, ctx, TEXT_MODEL);
 }
 
-export default function (pi: ExtensionAPI) {
+export function virtualModelExtension(pi: ExtensionAPI) {
 	pi.registerVirtualModel({
 		provider: PROVIDER,
 		id: "glm-5.3-auto",
