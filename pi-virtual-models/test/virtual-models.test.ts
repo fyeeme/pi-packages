@@ -149,6 +149,42 @@ describe("routeAuto", () => {
 		// Cache hit or identity-only stub — identity is all the dispatcher needs.
 		expect(route.model).toMatchObject({ provider: PROVIDER, id: "glm-5.3" });
 	});
+
+	it("toasts on a model switch, not on direct requests or unchanged models", () => {
+		// reason "direct": background request, always silent.
+		const direct = { reason: "direct", messages: [{ role: "user", content: "hi" }], thinkingLevel: "high" } as any;
+		const directCtx = mkCtx();
+		routeAuto(direct, directCtx);
+		expect(directCtx.ui.notify).not.toHaveBeenCalled();
+
+		// reason "user" with a different previous model: "Switched to".
+		const switched = {
+			reason: "user",
+			messages: [{ role: "user", content: "hi" }],
+			thinkingLevel: "high",
+			previous: { model: FLASH, thinkingLevel: "high" as const },
+		} as any;
+		const switchedCtx = mkCtx();
+		routeAuto(switched, switchedCtx);
+		expect(switchedCtx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Switched to glm-5.3"));
+
+		// Same physical model as previous turn: silent.
+		const unchanged = {
+			reason: "user",
+			messages: [{ role: "user", content: "hi" }],
+			thinkingLevel: "high",
+			previous: { model: TEXT, thinkingLevel: "high" as const },
+		} as any;
+		const unchangedCtx = mkCtx();
+		routeAuto(unchanged, unchangedCtx);
+		expect(unchangedCtx.ui.notify).not.toHaveBeenCalled();
+
+		// First routed request without a previous: "Routed to".
+		const first = { reason: "user", messages: [{ role: "user", content: "see a.png" }], thinkingLevel: "high" } as any;
+		const firstCtx = mkCtx();
+		routeAuto(first, firstCtx);
+		expect(firstCtx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Routed to glm-5.3-flash"));
+	});
 });
 
 describe("extension registration", () => {
