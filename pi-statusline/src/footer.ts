@@ -63,6 +63,27 @@ export function formatCwd(cwd: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Usage-level coloring
+// ---------------------------------------------------------------------------
+
+/** Usage severity for quota percentages. */
+export type UsageLevel = "none" | "ok" | "warn" | "danger";
+
+/** Below or equal 60% → none (no color), safety >60% and ≤80%, warning >80% and ≤90%, danger >90%. */
+export function usageLevel(pct: number): UsageLevel {
+	if (pct > 90) return "danger";
+	if (pct > 80) return "warn";
+	if (pct > 60) return "ok";
+	return "none";
+}
+
+/** Theme-aware stylers handed down to footer segment builders. */
+export interface FooterStyle {
+	dim: (s: string) => string;
+	colorize: (level: UsageLevel, s: string) => string;
+}
+
+// ---------------------------------------------------------------------------
 // Footer line builders
 // ---------------------------------------------------------------------------
 
@@ -73,7 +94,10 @@ export function buildStatLine(
 	providers: Record<string, UsageProvider>,
 	getElapsedSec: () => number,
 	lastTps: number,
+	style?: FooterStyle,
 ): string {
+	const identity = (s: string) => s;
+	const dim = style?.dim ?? identity;
 	const mods: string[] = [];
 
 	// tokens 45.2%(↑29k ↓22k R515k)
@@ -84,7 +108,7 @@ export function buildStatLine(
 		if (stats.cacheRead) tok.push(`R${fmt(stats.cacheRead)}`);
 		if (tok.length > 0) {
 			const pct = stats.hitRate > 0 ? ` ${(stats.hitRate * 100).toFixed(1)}%` : "";
-			mods.push(`tokens${pct}(${tok.join(" ")})`);
+			mods.push(dim(`tokens${pct}(${tok.join(" ")})`));
 		} else if (stats.total) {
 			mods.push(`tokens ${fmt(stats.total)}`);
 		}
@@ -95,12 +119,14 @@ export function buildStatLine(
 		const providerName = providerResult.provider;
 		const provider = providers[providerName];
 		if (provider) {
-			const formatted = provider.formatForFooter(providerResult, stats.cost, stats.currency);
+			// The provider styles its own segment (usage parts are level-colored,
+			// labels stay dim); don't blanket-dim over its ANSI escapes.
+			const formatted = provider.formatForFooter(providerResult, stats.cost, stats.currency, style);
 			if (formatted) mods.push(formatted);
 		}
 	} else {
 		if (stats.cost > 0) {
-			mods.push(`${stats.currency}${stats.cost.toFixed(2)}`);
+			mods.push(dim(`${stats.currency}${stats.cost.toFixed(2)}`));
 		}
 	}
 
@@ -108,9 +134,11 @@ export function buildStatLine(
 	if (contextUsage) {
 		const w = fmt(contextUsage.contextWindow);
 		mods.push(
-			contextUsage.percent !== null
-				? `Ctx ${contextUsage.percent.toFixed(1)}%/${w}`
-				: `Ctx ?/${w}`,
+			dim(
+				contextUsage.percent !== null
+					? `Ctx ${contextUsage.percent.toFixed(1)}%/${w}`
+					: `Ctx ?/${w}`,
+			),
 		);
 	}
 
@@ -120,7 +148,7 @@ export function buildStatLine(
 		const elapsed = getElapsedSec();
 		if (elapsed > 0) t.push(formatDuration(elapsed));
 		if (lastTps > 0) t.push(`${lastTps.toFixed(1)}tok/s`);
-		if (t.length) mods.push(t.join(" "));
+		if (t.length) mods.push(dim(t.join(" ")));
 	}
 
 	// MCP status: no pi version emits mcp:status/mcp:disconnect events.

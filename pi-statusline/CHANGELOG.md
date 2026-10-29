@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.2.9] - 2026-10-29
+
+### Changed
+
+- Source layout unified: the root-level modules (`footer.ts`, `week.ts`, `session-scanner.ts`, `types.ts`, `cache.ts`, `token-usage.ts`) and the `providers/`/`pricing/` directories moved under `src/`; `index.ts` stays at the package root as the extension entry. Import paths and the published `files` set follow; no behavior change.
+
+### Added
+
+- ZAI quota segments are level-colored by usage percentage inside the parentheses: safety ≤60% renders in `success` (green), warning >60% and ≤80% in `warning` (yellow), danger >80% in `error` (red). Applies to both `5h p%(…)` and `wk p%(…)`; labels and parentheses stay dim, and the no-style output is byte-identical to the previous plain format.
+
+### Changed
+
+- `buildStatLine()` now dims each segment individually instead of blanket-dimming the whole line, so quota inner text keeps its level color (SGR 2 would gray it out and its reset would break nested attributes). Behavior is unchanged when no style is passed.
+
 ## [1.2.8] - 2026-10-16
 
 ### Changed

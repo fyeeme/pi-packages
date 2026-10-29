@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ZaiUsageProvider } from "../providers/zai.ts";
-import type { ProviderUsageResult, ZaiResult } from "../types.ts";
+import { ZaiUsageProvider } from "../src/providers/zai.ts";
+import type { ProviderUsageResult, ZaiResult } from "../src/types.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers to build mock context

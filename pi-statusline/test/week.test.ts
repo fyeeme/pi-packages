@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { startOfCurrentWeekLocal, startOfNextWeekLocal } from "../week.ts";
+import { startOfCurrentWeekLocal, startOfNextWeekLocal } from "../src/week.ts";
 
 describe("startOfCurrentWeekLocal", () => {
 	it("returns Monday 00:00 local for a mid-week date", () => {

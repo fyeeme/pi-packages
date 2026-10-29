@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DeepSeekUsageProvider } from "../providers/deepseek.ts";
-import type { ProviderUsageResult, DeepSeekResult } from "../types.ts";
-import { deepSeekPricing } from "../pricing/deepseek.ts";
+import { DeepSeekUsageProvider } from "../src/providers/deepseek.ts";
+import type { ProviderUsageResult, DeepSeekResult } from "../src/types.ts";
+import { deepSeekPricing } from "../src/pricing/deepseek.ts";
 
 // ---------------------------------------------------------------------------
 // Mock session-scanner
 // ---------------------------------------------------------------------------
-vi.mock("../session-scanner.ts", () => ({
+vi.mock("../src/session-scanner.ts", () => ({
 	scanWeeklyTokens: vi.fn(() => 42_000),
 }));
 

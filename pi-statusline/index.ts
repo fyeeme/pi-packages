@@ -18,13 +18,13 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
-import { DeepSeekUsageProvider } from "./providers/deepseek.ts";
-import { ZaiUsageProvider } from "./providers/zai.ts";
-import type { UsageProvider } from "./providers/types.ts";
-import { SessionTokenUsageCalculator } from "./token-usage.ts";
-import { deepSeekPricing } from "./pricing/deepseek.ts";
-import { refreshUsage, getCachedUsage, getUsageCacheAge, resetUsageCache } from "./cache.ts";
-import { formatCwd, buildStatLine, buildInfoLine } from "./footer.ts";
+import { DeepSeekUsageProvider } from "./src/providers/deepseek.ts";
+import { ZaiUsageProvider } from "./src/providers/zai.ts";
+import type { UsageProvider } from "./src/providers/types.ts";
+import { SessionTokenUsageCalculator } from "./src/token-usage.ts";
+import { deepSeekPricing } from "./src/pricing/deepseek.ts";
+import { refreshUsage, getCachedUsage, getUsageCacheAge, resetUsageCache } from "./src/cache.ts";
+import { formatCwd, buildStatLine, buildInfoLine, type FooterStyle } from "./src/footer.ts";
 
 // ---------------------------------------------------------------------------
 // Provider registry
@@ -243,6 +243,13 @@ export default function (pi: ExtensionAPI) {
 					const level = pi.getThinkingLevel();
 					const providerResult = getCachedUsage(providers, lastCtx, lastModel);
 					const dim = (s: string) => theme.fg("dim", s);
+					// Quota segments color their paren-inner text by usage level:
+					// below or equal 60% → no color, safety ≤80% → success, warning ≤90% → warning, danger >90% → error.
+					const style: FooterStyle = {
+						dim,
+						colorize: (level, s) =>
+							level === "none" ? dim(s) : theme.fg(level === "danger" ? "error" : level === "warn" ? "warning" : "success", s),
+					};
 					const lines: string[] = [];
 
 					// Line 0: cwd + git branch (left)  |  model · thinking (right)
@@ -261,7 +268,9 @@ export default function (pi: ExtensionAPI) {
 					}
 
 					// Line 1: tokens + cost + provider usage + context + elapsed + tps + mcp
-					let statLine = dim(buildStatLine(stats, cu, providerResult, providers, getElapsedSec, lastTps));
+					// Segments are dimmed individually in buildStatLine (quota inner text
+					// stays level-colored), so no blanket dim() over the whole line.
+					let statLine = buildStatLine(stats, cu, providerResult, providers, getElapsedSec, lastTps, style);
 					if (waitingForUser) statLine += theme.fg("warning", " · waiting for user");
 					lines.push(truncateToWidth(
 						statLine,

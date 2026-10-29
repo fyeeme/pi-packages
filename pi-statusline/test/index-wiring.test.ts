@@ -9,21 +9,21 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../providers/deepseek.ts", () => ({
+vi.mock("../src/providers/deepseek.ts", () => ({
 	DeepSeekUsageProvider: class {
 		fetchUsage = async () => null;
 		formatForFooter = () => "";
 		debugDump = () => {};
 	},
 }));
-vi.mock("../providers/zai.ts", () => ({
+vi.mock("../src/providers/zai.ts", () => ({
 	ZaiUsageProvider: class {
 		fetchUsage = async () => null;
 		formatForFooter = () => "";
 		debugDump = () => {};
 	},
 }));
-vi.mock("../cache.ts", () => ({
+vi.mock("../src/cache.ts", () => ({
 	refreshUsage: vi.fn(async () => null),
 	getCachedUsage: vi.fn(() => null),
 	getUsageCacheAge: vi.fn((): number | null => null),
@@ -32,8 +32,8 @@ vi.mock("../cache.ts", () => ({
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import defaultExport from "../index.ts";
-import { refreshUsage, resetUsageCache } from "../cache.ts";
-import { deepSeekPricing } from "../pricing/deepseek.ts";
+import { refreshUsage, resetUsageCache } from "../src/cache.ts";
+import { deepSeekPricing } from "../src/pricing/deepseek.ts";
 
 interface FooterHandle {
 	render(width: number): string[];

@@ -4,8 +4,8 @@ import {
 	DeepSeekPricingStrategy,
 	deepSeekPricing,
 	isDeepSeekPeakTime,
-} from "../pricing/deepseek.ts";
-import { getPricingStrategy, pricingStrategies } from "../pricing/index.ts";
+} from "../src/pricing/deepseek.ts";
+import { getPricingStrategy, pricingStrategies } from "../src/pricing/index.ts";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 
 /** 北京时间（UTC+8）构造测试时刻。 */

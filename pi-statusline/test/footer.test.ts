@@ -7,9 +7,9 @@ import {
 	formatCwd,
 	buildInfoLine,
 	buildStatLine,
-} from "../footer.ts";
-import type { ProviderUsageResult, TokenUsage } from "../types.ts";
-import type { UsageProvider } from "../providers/types.ts";
+} from "../src/footer.ts";
+import type { ProviderUsageResult, TokenUsage } from "../src/types.ts";
+import type { UsageProvider } from "../src/providers/types.ts";
 
 // ---------------------------------------------------------------------------
 // fmt

@@ -10,7 +10,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 }));
 
 // Import after the mock is registered.
-const { scanWeeklyTokens } = await import("../session-scanner.ts");
+const { scanWeeklyTokens } = await import("../src/session-scanner.ts");
 
 function todayUTC(): string {
 	return new Date().toISOString().slice(0, 10);

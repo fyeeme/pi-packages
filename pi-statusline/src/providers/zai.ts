@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ZaiResult, ProviderUsageResult } from "../types.ts";
 import type { UsageProvider } from "./types.ts";
-import { fmt, formatCountdown, formatWeeklyCountdown } from "../footer.ts";
+import { fmt, formatCountdown, formatWeeklyCountdown, usageLevel, type FooterStyle } from "../footer.ts";
 import { startOfCurrentWeekLocal, startOfNextWeekLocal } from "../week.ts";
 
 /** Check if the provider name is a ZAI/GLM variant. */
@@ -112,23 +112,35 @@ export class ZaiUsageProvider implements UsageProvider {
 		}
 	}
 
-	formatForFooter(result: NonNullable<ProviderUsageResult>, _sessionCost: number, _currency: string): string {
+	formatForFooter(result: NonNullable<ProviderUsageResult>, _sessionCost: number, _currency: string, style?: FooterStyle): string {
 		if (!isZaiProvider(result.provider)) return "";
 		const zai = result as ZaiResult;
 		const parts: string[] = [];
+		const identity = (s: string) => s;
+		const dim = style?.dim ?? identity;
+		const colorize = style?.colorize ?? ((_level, s) => s);
 
 		// 5h 42%(1.2M,1h23m) — 5-hour rolling window: pct(in-window tokens,reset countdown)
+		// Inner paren text is level-colored by usage pct (≤60% dim, safety ≤80%, warning ≤90%, danger >90%).
 		if (zai.tokensResetAt > 0) {
-			parts.push(`5h ${zai.tokensLimitPct}%(${fmt(zai.fiveHourTokens)},${formatCountdown(zai.tokensResetAt)})`);
+			parts.push(
+				`${dim(`5h ${zai.tokensLimitPct}%(`)}` +
+				colorize(usageLevel(zai.tokensLimitPct), `${fmt(zai.fiveHourTokens)},${formatCountdown(zai.tokensResetAt)}`) +
+				dim(")"),
+			);
 		}
 
 		// wk 35%(12M,3d4h) — weekly quota; natural-week fallback has no pct → wk 1.2M
 		if (zai.isNaturalWeek) {
 			if (zai.weeklyTokens > 0) {
-				parts.push(`wk ${fmt(zai.weeklyTokens)}`);
+				parts.push(dim(`wk ${fmt(zai.weeklyTokens)}`));
 			}
 		} else if (zai.weeklyResetAt > 0) {
-			parts.push(`wk ${zai.weeklyPct}%(${fmt(zai.weeklyTokens)},${formatWeeklyCountdown(zai.weeklyResetAt)})`);
+			parts.push(
+				`${dim(`wk ${zai.weeklyPct}%(`)}` +
+				colorize(usageLevel(zai.weeklyPct), `${fmt(zai.weeklyTokens)},${formatWeeklyCountdown(zai.weeklyResetAt)}`) +
+				dim(")"),
+			);
 		}
 
 		return parts.join(" · ");

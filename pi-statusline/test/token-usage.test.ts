@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { SessionTokenUsageCalculator } from "../token-usage.ts";
+import { SessionTokenUsageCalculator } from "../src/token-usage.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { refreshUsage, getCachedUsage, getUsageCacheAge, resetUsageCache } from "../cache.ts";
-import type { ProviderUsageResult } from "../types.ts";
-import type { UsageProvider } from "../providers/types.ts";
+import { refreshUsage, getCachedUsage, getUsageCacheAge, resetUsageCache } from "../src/cache.ts";
+import type { ProviderUsageResult } from "../src/types.ts";
+import type { UsageProvider } from "../src/providers/types.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
