@@ -10,7 +10,7 @@
 	},
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/fyeeme/pi-packages"
+		"url": "git+https://github.com/fyeeme/pi-packages.git"
 	},
 	"bugs": {
 		"url": "https://github.com/fyeeme/pi-packages/issues"
