@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.1.5] - 2026-10-29
+
+### Fixed
+
+- `runSingleAgent` no longer takes the dead `maxTurns` parameter (every call site passed `undefined` after the budget removal); `spawnAgent` options are unchanged.
+
+### Removed
+
+- The `subagent` tool's `maxTurns` parameter: tasks run to natural completion, bounded only by the dispatch core's stall watchdog and wall-clock ceiling. The tool layer now also strips a caller-sent `maxTurns` at execute entry (pi forwards model args unvalidated), so models trained on the old schema cannot re-introduce a turn budget.
+
+### Changed
+
+- **The `subagent` tool is now dormant at the top level** (`defaultActive: currentSpawnDepth() > 0`): it registers everywhere a host composes this package but is no longer declared to the model in depth-0 processes, keeping the global tool list clean for hosts that expose it behind their own commands (pi-review activates it for review/simplify runs). Fan-out children (depth > 0, recursion allowed) activate as before, so nested fan-out is unchanged. Naming `subagent` in `--tools` or the `defaultTools` setting still activates it globally.
+
 ## [2.1.4] - 2026-10-16
 
 ### Added

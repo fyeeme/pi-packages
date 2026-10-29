@@ -89,32 +89,6 @@ afterEach(() => {
 });
 
 describe("subagent tool parameter validation", () => {
-	it("rejects maxTurns: 0 with a range message (throws: returning never sets isError)", async () => {
-		await expect(
-			subagentTool.execute!(
-				"call-1",
-				{ agent: "scout", task: "t", maxTurns: 0 } as never,
-				new AbortController().signal,
-				undefined,
-				fakeCtx() as never,
-			),
-		).rejects.toThrow("Invalid maxTurns: 0");
-	});
-
-	it("rejects negative and non-integer maxTurns (throws)", async () => {
-		for (const bad of [-3, 2.5]) {
-			await expect(
-				subagentTool.execute!(
-					"call-1",
-					{ agent: "scout", task: "t", maxTurns: bad } as never,
-					new AbortController().signal,
-					undefined,
-					fakeCtx() as never,
-				),
-			).rejects.toThrow(`Invalid maxTurns: ${bad}`);
-		}
-	});
-
 	// pi passes args through unvalidated, so a task entry missing required
 	// fields used to slip through as a wasted dispatch wave returning N
 	// "Unknown agent: undefined" results — it must be rejected up front.

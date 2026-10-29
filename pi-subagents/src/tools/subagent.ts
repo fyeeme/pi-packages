@@ -7,7 +7,7 @@
  *
  * Execution surface is this package's dispatch core (src/dispatch.ts): real
  * `pi --mode json -p --no-session` subprocesses via spawnAgent, per-callId
- * abort, maxTurns budget, the shared concurrency ceiling, and monitor
+ * abort, the shared concurrency ceiling, and monitor
  * notifications (agent widget / FleetView / /agents).
  *
  * Recursion guard: the extension entry registers this tool only when
@@ -28,6 +28,7 @@ import {
 	createSpawnRegistry,
 	type AgentProgressSnapshot,
 	type AgentSpawnRegistry,
+	currentSpawnDepth,
 	getMaxConcurrency,
 	mapWithConcurrencyLimit,
 	type AgentFailureClass,
@@ -62,15 +63,6 @@ const PER_TASK_OUTPUT_CAP = 50 * 1024;
 /** Per-task line ceiling — the tool-output contract is 50KB AND 2000 lines;
  *  both dimensions are enforced here, not just on the parallel aggregate. */
 const PER_TASK_MAX_LINES = 2000;
-
-/**
- * Default turn budget for a subagent when the agent definition omits one. A
- * runaway agent cannot otherwise be bounded. Generous (well above the ~10–15
- * turns recon/review agents need) so legitimate work is not truncated; agent
- * definitions may override with a smaller or larger explicit value.
- * 50 = CC's FORKED_AGENT_DEFAULT_MAX_TURNS.
- */
-const DEFAULT_FANOUT_MAX_TURNS = 50;
 
 // Module-level registry so abortAgent can reach in-flight calls. callIds are
 // unique per tool call (toolCallId#index), so a single registry is safe.
@@ -457,7 +449,6 @@ async function runSingleAgent(
 	agents: AgentConfig[],
 	agentName: string,
 	task: string,
-	maxTurns: number,
 	cwd: string | undefined,
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
@@ -534,7 +525,6 @@ async function runSingleAgent(
 		systemPrompt: [agent.systemPrompt, RESULT_CONTRACT_PROMPT, policy.schema ? schemaInstruction(policy.schema) : ""]
 			.filter(Boolean)
 			.join("\n\n"),
-		maxTurns,
 		allowChildRecursion,
 		displayName: agentName,
 		signal,
@@ -623,12 +613,6 @@ const SubagentParams = Type.Object({
 	tasks: Type.Optional(
 		Type.Array(TaskItem, {
 			description: "Array of {agent, task} for parallel execution (max 16 tasks per call; concurrency still capped by the shared ceiling)",
-		}),
-	),
-	maxTurns: Type.Optional(
-		Type.Number({
-			description:
-				"Max assistant turns per agent. When reached, the subprocess is aborted (partial output preserved, marked budget-aborted). Must be a positive integer.",
 		}),
 	),
 	outputSchema: Type.Optional(JsonSchemaValue),
@@ -723,7 +707,7 @@ function buildEnvelope(mode: "single" | "parallel", results: SingleResult[]): Su
 
 export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 	name: "subagent",
-	label: "Subagent",
+	label: "Subagent(parallel)",
 	description: [
 		"Delegate tasks to specialized subagents with isolated context.",
 		"Modes: single (agent + task), parallel (tasks array).",
@@ -732,6 +716,15 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 	].join(" "),
 	promptSnippet: "subagent — delegate to specialized agents (single/parallel)",
 	parameters: SubagentParams,
+	// Dormant at the top level (design: dormant-top-level-tool): the tool
+	// registers everywhere but a depth-0 process leaves it inactive, so the
+	// model's global tool list stays clean for hosts that compose this
+	// package behind their own commands (pi-review's dispatcher activates it
+	// via setActiveTools for the duration of its /code-review flow). Fan-out
+	// children (depth > 0, recursion allowed) activate as before, so nested
+	// fan-out keeps working. Naming "subagent" in --tools or the defaultTools
+	// setting still activates it globally.
+	defaultActive: currentSpawnDepth() > 0,
 	// pi 1.0 (spec: subagent-structured-output): codemode scripts and nested
 	// callers receive the structured envelope instead of the Markdown text.
 	outputSchema: SubagentEnvelope,
@@ -789,18 +782,14 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 	},
 
 	async execute(_toolCallId, params, signal, onUpdate, ctx) {
-		if (params.maxTurns !== undefined && (!Number.isInteger(params.maxTurns) || params.maxTurns <= 0)) {
-			// Parameter errors are tool errors: throw so pi sets isError (a
-			// returned value never sets the error flag).
-			throw new Error(
-				`Invalid maxTurns: ${params.maxTurns}. Must be a positive integer (the per-agent assistant-turn budget).`,
-			);
-		}
-
 		// pi passes model args through unvalidated (the TypeBox schema is wire
 		// documentation only), so the required task fields are enforced here:
 		// a thrown shape error reaches the model in the same turn, instead of
 		// one wasted dispatch wave returning N "Unknown agent: undefined".
+		// The wire schema dropped `maxTurns` (agents run to natural completion),
+		// but models trained on the old schema keep sending it — strip it here
+		// so a caller-provided turn budget can never reach the dispatch layer.
+		delete (params as Record<string, unknown>).maxTurns;
 		const tasks = params.tasks ?? [];
 		for (let i = 0; i < tasks.length; i++) {
 			const t = tasks[i];
@@ -933,7 +922,6 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 					agents,
 					t.agent,
 					taskWithContext,
-					params.maxTurns ?? DEFAULT_FANOUT_MAX_TURNS,
 					t.cwd,
 					signal,
 					(partial) => {
@@ -1007,7 +995,6 @@ export const subagentTool = defineTool<typeof SubagentParams, SubagentDetails>({
 				agents,
 				params.agent,
 				taskWithContext,
-				params.maxTurns ?? DEFAULT_FANOUT_MAX_TURNS,
 				params.cwd,
 				signal,
 				onUpdate,

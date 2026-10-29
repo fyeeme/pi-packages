@@ -14,7 +14,7 @@ General-purpose subagent fan-out for [pi](https://github.com/earendil-works/pi-m
 |---|---|---|
 | Tool | `src/tools/subagent.ts` | `subagent` — single `{agent, task}`, parallel `{tasks[]}` (max 16 per call, shared concurrency ceiling), shared `context`, `<result>` contract extraction, structured output via `outputSchema` (+ `schemaMode`) and agent frontmatter `output:` |
 | Agents | `agents.ts` + `agents/` | Discovery: project `.pi/agents` > user `~/.pi/agent/agents` > bundled `agents/` (scout / planner / reviewer / worker). Drop-in registration, re-discovered per call |
-| Dispatch core | `src/dispatch.ts` | `spawnAgent` (stable ids, stall watchdog + wall-clock ceiling, failure classification, full-output artifacts), `mapWithConcurrencyLimit`, `createSpawnRegistry`, `abortAgent`, per-callId abort, maxTurns budget, whitelist-by-default recursion guard |
+| Dispatch core | `src/dispatch.ts` | `spawnAgent` (stable ids, stall watchdog + wall-clock ceiling, failure classification, full-output artifacts), `mapWithConcurrencyLimit`, `createSpawnRegistry`, `abortAgent`, per-callId abort, whitelist-by-default recursion guard |
 | Settings | `src/concurrency.ts` | The `subagents` section of the shared global `<agentDir>/young.json`: `fleet`, `maxConcurrency` (any positive integer, default 5), `confirmProjectAgents`, `stallMs` (default 60000), `wallClockMs` (default 0 = disabled). No environment-variable configuration channel |
 | UI | `index.ts` + `src/ui/` | Single below-editor fleet surface (`main` + every agent, full stat rows) with Enter-to-open conversation viewer — event-driven rendering on monitor notifications; ↓/← at an empty editor activates it |
 

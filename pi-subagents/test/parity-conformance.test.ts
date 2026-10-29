@@ -18,7 +18,7 @@
  *  - mode conflicts / failures / invalid params throw (vs isError returns)
  *  - <result> contract extraction, Succeeded/Failed grouping, aggregate cap
  *  - watchdogs, full-output artifacts, stable ids, failure classification,
- *    context/maxTurns/outputSchema params, usage reporting, stderr tail,
+ *    context/outputSchema params, usage reporting, stderr tail,
  *    @file large tasks, StringDecoder, orphan-free concurrency
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
