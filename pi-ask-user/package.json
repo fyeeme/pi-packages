@@ -1,6 +1,6 @@
 {
 	"name": "@fyeeme/pi-ask-user",
-	"version": "2.0.5",
+	"version": "2.0.6",
 	"description": "oh-my-pi's `ask` tool migrated to a pi extension — tabbed multi-question dialog with a Submit review page, inactivity countdown, RPC degradation, and headless hiding.",
 	"type": "module",
 	"license": "MIT",
@@ -17,7 +17,7 @@
 	},
 	"homepage": "https://github.com/fyeeme/pi-packages#readme",
 	"engines": {
-		"node": ">=18"
+		"node": ">=22.19.0"
 	},
 	"keywords": [
 		"pi-package",
@@ -51,8 +51,8 @@
 		"typebox": ">=1.0.0"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-coding-agent": "1.3.0",
-		"@earendil-works/pi-tui": "1.3.0",
+		"@earendil-works/pi-coding-agent": "1.5.0",
+		"@earendil-works/pi-tui": "1.5.0",
 		"@types/node": "22.19.19",
 		"typebox": "1.1.38",
 		"typescript": "5.9.3",

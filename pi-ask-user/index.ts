@@ -83,7 +83,7 @@ const AskQuestionSchema = Type.Object({
 	id: Type.String({ description: "question id" }),
 	question: Type.String({ description: "question text" }),
 	header: Type.Optional(Type.String({ description: "optional short display chip for rich ask dialogs" })),
-	options: Type.Array(OptionSchema, { description: "available options" }),
+	options: Type.Array(OptionSchema, { minItems: 1, description: "available options (at least one)" }),
 	multi: Type.Optional(Type.Boolean({ description: "allow multiple selections" })),
 	recommended: Type.Optional(Type.Integer({ minimum: 0, description: "recommended option index" })),
 });
@@ -217,7 +217,7 @@ export default function ompAskExtension(pi: ExtensionAPI): void {
 			// extension edition: the tool should already have been stripped at
 			// session_start; if it still runs, tell the model the question was
 			// never displayed instead of letting it read a cancel as an answer.
-			if (!ctx.hasUI || !ctx.ui) {
+			if (!ctx.hasUI) {
 				ctx.abort();
 				throw new Error(
 					"ask: this session has no interactive UI host, so the question was never shown to the user. " +
@@ -308,16 +308,10 @@ export default function ompAskExtension(pi: ExtensionAPI): void {
 					ctx.abort();
 					throw new Error("Ask tool was cancelled by the user");
 				}
-				if (richResult.results.length !== params.questions.length) {
-					throw new Error("Ask dialog returned a result count that does not match the requested questions");
-				}
 				const results: QuestionResult[] = [];
 				for (let index = 0; index < params.questions.length; index++) {
 					const question = params.questions[index];
 					const result = richResult.results[index];
-					if (!question || !result || result.id !== question.id) {
-						throw new Error("Ask dialog returned results that do not match the requested question order");
-					}
 					results.push({
 						id: question.id,
 						question: question.question,
@@ -427,7 +421,11 @@ export default function ompAskExtension(pi: ExtensionAPI): void {
 				const previous = resultsByIndex[questionIndex];
 				const navigation: NavigationControls = {
 					allowBack: questionIndex > 0,
-					allowForward: true,
+					// pi's ui.select cannot fire onLeft/onRight (ExtensionUIDialogOptions
+					// carries only {signal, timeout}), so ←/→ navigation is unreachable.
+					// allowForward: true would suppress the "Done selecting" exit from
+					// multi questions and strand RPC users mid-loop.
+					allowForward: false,
 					progressText: `${questionIndex + 1}/${params.questions.length}`,
 				};
 				const {
@@ -556,6 +554,3 @@ export default function ompAskExtension(pi: ExtensionAPI): void {
 		}
 	});
 }
-
-/** Resolve `undefined` when the signal aborts before the dialog settles;
- *  rejections propagate untouched (omp untilAborted semantics). */

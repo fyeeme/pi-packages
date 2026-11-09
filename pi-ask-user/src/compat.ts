@@ -20,8 +20,6 @@
  * (both exported by @earendil-works/pi-coding-agent), which match omp 1:1.
  */
 
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-
 export { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 /** omp Ellipsis.Unicode ("…"). pi's truncateToWidth takes the glyph directly. */
@@ -43,7 +41,7 @@ export function padding(n: number): string {
 
 /** omp theme symbol defaults (modes/theme/symbols.ts). */
 export const SYMBOLS = {
-	nav: { cursor: "❯", selected: "➤" },
+	nav: { cursor: "❯" },
 	radio: { selected: "◉", unselected: "○" },
 	checkbox: { checked: "☑", unchecked: "☐" },
 	boxRound: {
@@ -56,14 +54,12 @@ export const SYMBOLS = {
 		teeRight: "├",
 		teeLeft: "┤",
 	},
-	status: { success: "+", warning: "~" },
-	format: { bullet: "•" },
+	status: { success: "+" },
 } as const;
 
 /** omp renderInlineMarkdown is backed by a full marked lexer pi-tui does not
  *  export; labels render as plain (ANSI-passthrough) text with the base color. */
 export function renderInlineMarkdown(text: string, baseColor?: (t: string) => string): string {
-	if (typeof text !== "string") return (baseColor ?? (t => t))(text != null ? String(text) : "");
 	return (baseColor ?? (t => t))(text);
 }
 

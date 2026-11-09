@@ -390,7 +390,10 @@ describe("ask tool legacy path (RPC)", () => {
 	it("walks questions through native selects with progress titles", async () => {
 		const pi = createFakePi();
 		const ui = new FakeRpcUi();
-		ui.selectScript.push("JWT", "+ Done selecting");
+		// Multi question: toggle "staging", then exit via Done. Regression guard
+		// for the RPC dead-end: pi's select cannot fire ←/→, so allowForward on a
+		// multi question would suppress Done and strand the user mid-loop.
+		ui.selectScript.push("JWT", "staging", "+ Done selecting");
 		const result = await runAsk(pi, ui, {
 			questions: [
 				...SINGLE_PARAMS.questions,
@@ -400,7 +403,11 @@ describe("ask tool legacy path (RPC)", () => {
 		expect(ui.selects[0]?.title).toBe("Which auth method? (1/2)");
 		expect(ui.selects[0]?.options).toEqual(["JWT (Recommended)", "Session", "Other (type your own)"]);
 		expect(ui.selects[1]?.title).toBe("Where? (2/2)");
-		expect(result.content[0].text).toBe("User answers:\nauth: JWT\ndeploy: []");
+		// No Done exit before anything is selected.
+		expect(ui.selects[1]?.options).not.toContain("+ Done selecting");
+		// Done appears once a selection exists and finishes the question.
+		expect(ui.selects[2]?.options).toContain("+ Done selecting");
+		expect(result.content[0].text).toBe("User answers:\nauth: JWT\ndeploy: [staging]");
 	});
 
 	it("descriptions are dropped from pi's string[] select options", async () => {

@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased]
+
+## [2.0.6] - 2026-11-09
+
+### Changed
+
+- Removed redundant defensive checks that contradict the type system: the rich-dialog result reconciliation throws in `index.ts` (`#buildResults` builds results 1:1 in `#questions` order), the impossible-input guards in `normalizeDialogQuestions` (typed parameters, typebox-validated upstream), six null guards over the equal-length `#questions`/`#states` loop reads in `src/ask-dialog.ts`, and the non-string branch of `renderInlineMarkdown` (string parameter).
+- Removed provably-unreachable guards: the redundant `!ctx.ui` check in `index.ts` (`ui` is required on `ExtensionContext`) and the interval-clear guard in `CountdownTimer#startInterval` (its only caller `#start` runs before `#intervalId` is ever set; `dispose()` keeps its guard).
+- Dev dependencies now pin `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` at 1.5.0 (was 1.3.0), so type-check and tests run against the pi 1.5.0 types.
+
+### Fixed
+
+- RPC legacy path: multi questions inside multi-question asks no longer strand the user. pi's `ui.select` cannot fire ←/→ navigation, so the per-question loop now passes `allowForward: false` and the `✓ Done selecting` exit appears once a selection exists; the walk test asserts the option lists.
+- Embedded Other-prompt title wraps at the dialog's live render width instead of `process.stdout.columns`, so it is no longer truncated twice inside the frame.
+- `ask` schema: question `options` now require at least one item (`minItems: 1`); an empty list previously rendered an Other-only dialog with nothing to auto-select on timeout.
+- `engines.node` raised to `>=22.19.0`, matching pi's own floor (the `.ts` source cannot run on Node 18).
+
+### Removed
+
+- `AskDialogOptions.onTimeout` option from `src/ask-dialog.ts` (no caller passed it; timeout auto-pick is internal to the dialog).
+- Unused `import { truncateToWidth, visibleWidth }` from `src/compat.ts` (the re-export stays) and unreferenced `SYMBOLS` keys: `nav.selected`, `status.warning`, and the whole `format` entry.
+- Dangling trailing JSDoc at the end of `index.ts` (its subject, `untilAborted`, lives in `src/ask-legacy.ts`).
+
 ## [2.0.5] - 2026-10-16
 
 ### Changed

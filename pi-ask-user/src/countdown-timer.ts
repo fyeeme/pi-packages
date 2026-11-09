@@ -50,10 +50,6 @@ export class CountdownTimer {
 	}
 
 	#startInterval(): void {
-		if (this.#intervalId) {
-			clearInterval(this.#intervalId);
-			this.#intervalId = undefined;
-		}
 		this.#intervalId = setInterval(() => {
 			const remainingSeconds = this.#calculateRemainingSeconds();
 			if (remainingSeconds !== this.#remainingSeconds) {

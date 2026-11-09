@@ -43,7 +43,8 @@ import {
 } from "./compat.ts";
 import { CountdownTimer, type TuiRenderHandle } from "./countdown-timer.ts";
 import { OTHER_OPTION, stripRecommendedSuffix } from "./ask-legacy.ts";
-import { bottomBorder, divider, fit, row, topBorder } from "./overlay-box.ts";import type {
+import { bottomBorder, divider, fit, row, topBorder } from "./overlay-box.ts";
+import type {
 	ExtensionAskDialogOption,
 	ExtensionAskDialogQuestion,
 	ExtensionAskDialogResultItem,
@@ -51,6 +52,8 @@ import { bottomBorder, divider, fit, row, topBorder } from "./overlay-box.ts";im
 } from "./types.ts";
 
 const SUBMIT_OPTION = "Submit";
+/** Title prefix for the embedded Other-input prompt. */
+const PROMPT_TITLE_PREFIX = "Custom answer: ";
 
 /** Fraction of the terminal the dialog may occupy. The box height is fixed
  *  at spawn from the tallest tab's content (re-measured only on viewport
@@ -77,7 +80,6 @@ interface AskDialogCallbacks {
 
 interface AskDialogOptions {
 	timeout?: number;
-	onTimeout?: () => void;
 	tui?: TuiRenderHandle;
 }
 
@@ -118,7 +120,6 @@ type PreviewRenderCache = Map<string, Map<number, readonly string[]>>;
  *  positioning), horizontal scroll, grapheme edits, paste, undo — while the
  *  dialog keeps the question/state snapshot. */
 interface EmbeddedPrompt {
-	title: string;
 	input: Input;
 	prefill: string | undefined;
 	/** State snapshot of the question the prompt belongs to. */
@@ -311,10 +312,8 @@ function renderRowLabel(
  * loop — normalize first. (omp ask-dialog.ts)
  */
 function normalizeDialogQuestions(questions: ExtensionAskDialogQuestion[]): ExtensionAskDialogQuestion[] {
-	if (!Array.isArray(questions)) return [];
 	const out: ExtensionAskDialogQuestion[] = [];
 	for (const entry of questions) {
-		if (!entry || typeof entry !== "object") continue;
 		const q = entry as Partial<ExtensionAskDialogQuestion>;
 		const options: ExtensionAskDialogOption[] = [];
 		if (Array.isArray(q.options)) {
@@ -340,15 +339,16 @@ function normalizeDialogQuestions(questions: ExtensionAskDialogQuestion[]): Exte
 	return out;
 }
 
-/** Bound a prompt title to a fixed row budget (omp boundPromptTitle). */
-function boundPromptTitle(theme: Theme, prefix: string, question: string): string[] {
-	const cols = process.stdout.columns ?? 80;
-	const width = Math.max(1, cols - 4);
+/** Bound a prompt title to a fixed row budget (omp boundPromptTitle). Width is
+ *  the dialog's live render width, not process.stdout.columns: the title renders
+ *  inside the frame body, so measuring the terminal would double-truncate. */
+function boundPromptTitle(theme: Theme, prefix: string, question: string, width: number): string[] {
+	const boundedWidth = Math.max(1, width);
 	const flat = `${prefix}${normalizedInlineInput(question)}`;
-	const wrapped = wrapTextWithAnsi(theme.fg("text", flat), width);
+	const wrapped = wrapTextWithAnsi(theme.fg("text", flat), boundedWidth);
 	if (wrapped.length <= MAX_PROMPT_TITLE_ROWS) return wrapped;
 	const kept = wrapped.slice(0, MAX_PROMPT_TITLE_ROWS - 1);
-	const last = truncateToWidth(wrapped[MAX_PROMPT_TITLE_ROWS - 1] ?? "", width, ELLIPSIS);
+	const last = truncateToWidth(wrapped[MAX_PROMPT_TITLE_ROWS - 1] ?? "", boundedWidth, ELLIPSIS);
 	return [...kept, last];
 }
 
@@ -506,7 +506,6 @@ export class AskDialogComponent {
 		for (let index = 0; index < this.#questions.length; index++) {
 			const question = this.#questions[index];
 			const state = this.#states[index];
-			if (!question || !state) continue;
 			const headerRows = tabBarRows + renderQuestionTitle(this.#theme, question, width).length;
 			const rowItems = this.#questionRows(question);
 			let body = 0;
@@ -606,7 +605,7 @@ export class AskDialogComponent {
 		this.#questions.forEach((question, index) => {
 			const label = questionTabLabel(question, index);
 			const active = index === this.#activeTabIndex;
-			const answered = this.#states[index]?.selectedOptions.size || this.#states[index]?.customInput !== undefined;
+			const answered = this.#states[index].selectedOptions.size || this.#states[index].customInput !== undefined;
 			const dot = answered ? theme.fg("success", "●") : theme.fg("dim", "○");
 			chips.push(active ? theme.fg("accent", `${SYMBOLS.nav.cursor} ${label} `) : `${dot}${theme.fg("muted", ` ${label} `)}`);
 		});
@@ -783,7 +782,6 @@ export class AskDialogComponent {
 	// --- embedded prompt (replaces omp's nested HookEditorComponent) --------
 
 	#openEmbeddedPrompt(question: ExtensionAskDialogQuestion, state: QuestionState): void {
-		const prefix = "Custom answer: ";
 		const prefill = state.customInput;
 		const input = new Input();
 		if (prefill !== undefined) input.setValue(prefill);
@@ -791,13 +789,7 @@ export class AskDialogComponent {
 		input.onEscape = () => this.#closeEmbeddedPrompt();
 		input.focused = this.#focused;
 		this.#promptActive = true;
-		this.#embeddedPrompt = {
-			title: boundPromptTitle(this.#theme, prefix, question.question).join("\n"),
-			input,
-			prefill,
-			question,
-			state,
-		};
+		this.#embeddedPrompt = { input, prefill, question, state };
 		this.#requestRender();
 	}
 
@@ -849,8 +841,9 @@ export class AskDialogComponent {
 		const prompt = this.#embeddedPrompt;
 		if (!prompt) return { lines: windowLines([], 0, rows), scrollOffset: 0, indicator: "" };
 		const lines: string[] = [];
-		for (const titleLine of prompt.title.split("\n")) {
-			lines.push(theme.fg("text", titleLine));
+		// Re-wrap per render: the live width wins over a snapshot taken at open.
+		for (const titleLine of boundPromptTitle(theme, PROMPT_TITLE_PREFIX, prompt.question.question, width)) {
+			lines.push(titleLine);
 		}
 		lines.push("");
 		// pi-tui Input renders the input line itself: "> " prompt, horizontal
@@ -988,7 +981,6 @@ export class AskDialogComponent {
 		for (let index = 0; index < this.#questions.length; index++) {
 			const question = this.#questions[index];
 			const state = this.#states[index];
-			if (!question || !state) continue;
 			const label = questionTabLabel(question, index);
 			const answer = renderAnswerSummary(theme, question, state);
 			allLines.push(`${theme.fg("dim", `${index + 1}. ${label}:`)} ${answer}`);
@@ -1028,9 +1020,7 @@ export class AskDialogComponent {
 	#unansweredCount(): number {
 		let count = 0;
 		for (let index = 0; index < this.#questions.length; index++) {
-			const question = this.#questions[index];
 			const state = this.#states[index];
-			if (!question || !state) continue;
 			if (state.selectedOptions.size === 0 && state.customInput === undefined) count += 1;
 		}
 		return count;
@@ -1042,11 +1032,9 @@ export class AskDialogComponent {
 			this.#timeoutExpired = true;
 			return;
 		}
-		this.#options.onTimeout?.();
 		for (let index = 0; index < this.#questions.length; index++) {
 			const question = this.#questions[index];
 			const state = this.#states[index];
-			if (!question || !state) continue;
 			if (state.selectedOptions.size === 0 && state.customInput === undefined) {
 				const fallbackIndex = clamp(question.recommended ?? 0, 0, Math.max(0, question.options.length - 1));
 				const fallback = question.options[fallbackIndex];
@@ -1092,7 +1080,6 @@ export class AskDialogComponent {
 		for (let index = 0; index < this.#questions.length; index++) {
 			const question = this.#questions[index];
 			const state = this.#states[index];
-			if (!question || !state) continue;
 			const selectedOptions = question.options
 				.map(option => option.label)
 				.filter(label => state.selectedOptions.has(label));
