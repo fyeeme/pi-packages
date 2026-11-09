@@ -5,4 +5,4 @@
 3. 更新 changelog（新条目使用英文；已发布版本条目不可修改）
 4. 跑 typecheck + 全量测试
 5. push 代码
-6. 发布 npm
+6. 发布 npm 使用 'npm stage publish'
