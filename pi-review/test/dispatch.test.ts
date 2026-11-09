@@ -17,6 +17,7 @@ import {
 	parseReviewArgs,
 	readStateFile,
 	render,
+	resolveFanoutName,
 	resolveEffort,
 	updateStateFile,
 	usesFanout,
@@ -200,7 +201,12 @@ describe("prompt template assets", () => {
 		expect(single).toContain("do NOT dispatch finder or verifier agents");
 		const parallel = template("review.parallel.md").body;
 		expect(parallel).toContain("XHIGH/MAX FLOW");
-		expect(parallel).toContain("subagent");
+		// Fan-out tool binding (openspec fanout-tool-binding): the tool name is
+		// a variable resolved from pi-review.json fanout.tool (default subagent).
+		expect(parallel).toContain("{{fanout-tool}}");
+		expect(template("review.parallel.md").frontmatter.vars).toContain("fanout-tool");
+		expect(template("simplify.parallel.md").body).toContain("{{fanout-tool}}");
+		expect(template("simplify.parallel.md").frontmatter.vars).toContain("fanout-tool");
 	});
 
 	it("both review triggers declare and render the REVIEW.md note", () => {
@@ -234,6 +240,7 @@ describe("prompt template assets", () => {
 			"extra-args": "",
 			skill: "/skills/code-review/SKILL.md",
 			verify: "",
+			"fanout-tool": "subagent",
 		});
 
 		it("the parallel review trigger states no turn budget and leaves no placeholders", () => {
@@ -254,6 +261,7 @@ describe("prompt template assets", () => {
 				"context-package": "(diff)",
 				skill: "/skills/code-simplify/SKILL.md",
 				verify: "",
+				"fanout-tool": "subagent",
 			});
 			expect(out).toContain("no turn budget");
 			expect(out).not.toContain("{{simplify-max-turns}}");
@@ -392,5 +400,25 @@ describe("--max-findings (CC 2.1.291 re-sync)", () => {
 		} finally {
 			rmSync(tmp, { force: true });
 		}
+	});
+});
+
+describe("resolveFanoutName (fanout-tool binding, openspec fanout-tool-binding)", () => {
+	const tools = [{ name: "subagent-parallel" }, { name: "read" }];
+
+	it("configured name wins and reports registration", () => {
+		expect(resolveFanoutName("subagent-parallel", tools)).toEqual({
+			name: "subagent-parallel",
+			registered: true,
+		});
+		expect(resolveFanoutName("nope", tools)).toEqual({ name: "nope", registered: false });
+	});
+
+	it("falls back to the default subagent when unbound", () => {
+		expect(resolveFanoutName(undefined, [{ name: "subagent" }])).toEqual({
+			name: "subagent",
+			registered: true,
+		});
+		expect(resolveFanoutName(undefined, tools)).toEqual({ name: "subagent", registered: false });
 	});
 });

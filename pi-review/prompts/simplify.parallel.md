@@ -3,7 +3,7 @@ description: "/code-simplify trigger — PARALLEL mode (4-agent fan-out via the 
 parallel-when:
   context-below: 0.8
   diff-chars-below: 400000
-vars: [target, scope-label, pct, git-command, context-package, skill, verify, simplify-max-turns]
+vars: [target, scope-label, pct, git-command, context-package, skill, verify, fanout-tool]
 ---
 Clean up the changed code now. Target: {{target}}.
 
@@ -25,7 +25,7 @@ will use to merge, dedup, and judge the agents' findings in Phase 2.
 
 ## Phase 1 — launch the 4 cleanup agents
 
-Call the `subagent` tool in parallel mode with 4 tasks, one per agent —
+Call the `{{fanout-tool}}` tool in parallel mode with 4 tasks, one per agent —
 cleaner-reuse, cleaner-simplification, cleaner-efficiency, cleaner-altitude —
 each task being: "Review the changed code of {{target}} for <angle> findings.
 Run this first to see the diff: {{git-command}}. Report file:line — one-line

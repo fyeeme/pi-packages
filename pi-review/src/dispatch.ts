@@ -14,13 +14,13 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { isFanoutToolAllowed } from "@fyeeme/pi-subagents";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadTurnBudgets } from "./config.ts";
+import { loadFanoutTool, loadTurnBudgets } from "./config.ts";
 import { DIFF_SCOPES, buildContextPackage, countDiffLines, getRepoDiff, verifyLine } from "./diff.ts";
 import { extractLoopFlag, runLoopFixing } from "./loop.ts";
+import { recursionAllowed } from "./fanout.ts";
 import { buildReviewNote, readReviewInstructions } from "./review-md.ts";
 import { bundledSkillPath } from "./skills.ts";
 import { parseGuards, selectVariant } from "./strategy.ts";
@@ -293,34 +293,57 @@ async function buildReviewNoteSafely(cwd: string, signal?: AbortSignal): Promise
 	}
 }
 
+/** The default fan-out tool name when no binding is configured. */
+const DEFAULT_FANOUT_TOOL = "subagent";
+
+/**
+ * Resolve the fan-out tool binding to a concrete registered tool. The
+ * configured name (pi-review.json `fanout.tool`) wins; without one the
+ * default `subagent` applies. Pure — unit-testable.
+ */
+export function resolveFanoutName(
+	configured: string | undefined,
+	tools: readonly { name: string }[],
+): { name: string; registered: boolean } {
+	const name = configured ?? DEFAULT_FANOUT_TOOL;
+	return { name, registered: tools.some((t) => t.name === name) };
+}
+
 export function registerDispatcher(pi: ExtensionAPI): void {
-	// The `subagent` tool ships dormant at the top level (pi-subagents design
-	// dormant-top-level-tool): registered everywhere, declared to the model
-	// nowhere until someone activates it. Review/simplify need it only on the
-	// fan-out paths, so three entry points activate it for the session:
+	// The bound fan-out tool ships dormant until a review path needs it:
+	// registered by its provider everywhere, declared to the model nowhere
+	// until someone activates it. Three entry points activate it for the
+	// session:
 	//   1. /code-review at xhigh/max (the fan-out effort levels);
 	//   2. /code-simplify when the strategy picks the parallel variant;
 	//   3. the `before_agent_start` hook below, when a user-triggered run's
 	//      prompt carries a code-review/code-simplify skill injection (the
-	//      skill body tells the model to call `subagent` directly at xhigh/max,
+	//      skill body tells the model to fan out directly at xhigh/max,
 	//      without a command).
 	// Staying active after the run is harmless and keeps follow-up reviews
 	// in the same session tool-continuous.
-	const ensureSubagentTool = (): void => {
+	const ensureSubagentTool = (name: string): void => {
 		const active = pi.getActiveTools();
-		if (!active.includes("subagent")) pi.setActiveTools([...active, "subagent"]);
+		if (!active.includes(name)) pi.setActiveTools([...active, name]);
 	};
+	/** Resolve the fan-out binding for a working directory: the configured
+	 *  name (fanout.tool, default `subagent`) checked against the registry. */
+	const boundFanoutTool = (cwd: string) => resolveFanoutName(loadFanoutTool(cwd), pi.getAllTools());
 	const REVIEW_SKILL_MARKERS = ['<skill name="code-review"', '<skill name="code-simplify"'];
-	pi.on("before_agent_start", (event) => {
+	pi.on("before_agent_start", (event, ctx) => {
 		// Only user-triggered runs: the skill block reaches this hook expanded in
 		// `prompt` (pi expands /skill:name before the run starts), and this event
 		// fires BEFORE the run's tool declarations are snapshotted, so the
 		// activation lands in the SAME request (a `context` hook would fire one
 		// loadout-generation too late). Custom messages (extension-driven sends)
-		// are covered by their own command-time activation above.
+		// are covered by their own command-time activation above. The marker
+		// check runs first — it is pure memory work, unlike the config reads
+		// behind the binding resolution.
 		if (event.messageType !== "user") return;
-		if (pi.getActiveTools().includes("subagent")) return;
-		if (REVIEW_SKILL_MARKERS.some((marker) => event.prompt.includes(marker))) ensureSubagentTool();
+		if (!REVIEW_SKILL_MARKERS.some((marker) => event.prompt.includes(marker))) return;
+		const bound = boundFanoutTool(ctx.cwd);
+		if (!bound.registered || pi.getActiveTools().includes(bound.name)) return;
+		ensureSubagentTool(bound.name);
 	});
 
 	pi.registerCommand("code-review", {
@@ -360,8 +383,18 @@ export function registerDispatcher(pi: ExtensionAPI): void {
 			if (explicit) writeLastEffort(explicit); // remember the explicit level
 			const { level, source } = resolveEffort(explicit, lastUsed);
 			const budgets = loadTurnBudgets();
-			// Fan-out efforts need the dormant `subagent` tool declared to the model.
-			if (level === "xhigh" || level === "max") ensureSubagentTool();
+			// Fan-out binding (openspec fanout-tool-binding): resolve the bound
+			// tool name only when the level can fan out — low/medium/high never
+			// dispatch agents, so they skip the config reads and registry scan.
+			const bound = usesFanout(level) ? boundFanoutTool(ctx.cwd) : undefined;
+			if (bound) {
+				if (bound.registered) ensureSubagentTool(bound.name);
+				else
+					ctx.ui.notify(
+						`/code-review: fan-out tool \`${bound.name}\` is not registered — falling back to a single-pass review. Bind an installed tool via pi-review.json "fanout": { "tool": "<name>" }.`,
+						"warning",
+					);
+			}
 
 			// Sticky --max-findings (CC 2.1.291 Io/Oo): an explicit value persists,
 			// `default` clears it, and no value reuses the persisted one — including
@@ -379,8 +412,11 @@ export function registerDispatcher(pi: ExtensionAPI): void {
 			const limitNote = buildLimitNote(maxFindings, effectiveMax);
 
 			// Effort split: low/medium/high review in ONE pass in the main session
-			// (no subprocess fan-out); xhigh/max keep the finder/verifier pipeline.
-			const fanout = usesFanout(level);
+			// (no subprocess fan-out); xhigh/max keep the finder/verifier pipeline —
+			// only when the bound fan-out tool is actually registered (e.g. a
+			// spawned child under the recursion guard registers none); otherwise
+			// the fan-out levels degrade to the single pass.
+			const fanout = bound !== undefined && bound.registered && recursionAllowed();
 
 			// --loop is extension-level (drives fix→re-review rounds against the
 			// structured report), so it never reaches the skill text. It needs a
@@ -424,11 +460,13 @@ export function registerDispatcher(pi: ExtensionAPI): void {
 			void pi.sendUserMessage(
 				render(
 					body,
-					fanout
-						? {
-								...shared,
-								"budget-note": budgetNote,
-							}
+				fanout
+					? {
+							...shared,
+							"budget-note": budgetNote,
+							// The bound fan-out tool name (default "subagent").
+							"fanout-tool": bound.name,
+						}
 						: {
 								...shared,
 								// Told to the session so every finding carries a P0–P3 priority.
@@ -474,16 +512,19 @@ export function registerDispatcher(pi: ExtensionAPI): void {
 				}
 
 				const usage = ctx.getContextUsage();
-				const budgets = loadTurnBudgets(ctx.cwd);
 				const parallelTemplate = loadTemplate("simplify.parallel.md");
+				// Fan-out binding (openspec fanout-tool-binding): resolve the bound
+				// tool name; an unregistered binding (or a recursion-guarded child)
+				// makes the strategy fall back to single-pass below.
+				const bound = boundFanoutTool(ctx.cwd);
 				const { variant, reasons } = selectVariant(parseGuards(parallelTemplate.frontmatter), {
 					tokens: usage?.tokens ?? null,
 					contextWindow: usage?.contextWindow ?? 0,
 					diffChars: outcome.diff.length,
-					fanoutAvailable: isFanoutToolAllowed(),
+					fanoutAvailable: bound.registered && recursionAllowed(),
 				});
-				// The parallel variant fans out through the dormant `subagent` tool.
-				if (variant !== "single-pass") ensureSubagentTool();
+				// The parallel variant fans out through the resolved fan-out tool.
+				if (variant !== "single-pass") ensureSubagentTool(bound.name);
 				const pct = usage && usage.percent != null ? `${Math.round(usage.percent)}%` : "?";
 				const target = args || "(whole diff)";
 				const skill = bundledSkillPath("code-simplify/SKILL.md");
@@ -520,6 +561,7 @@ export function registerDispatcher(pi: ExtensionAPI): void {
 						"context-package": contextPackage,
 						skill,
 						verify,
+						"fanout-tool": bound.name,
 					}),
 				);
 			} catch (err) {

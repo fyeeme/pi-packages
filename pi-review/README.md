@@ -4,7 +4,7 @@
 
 - **Sandwich architecture** — skills carry the methodology, `prompts/` carries the orchestration strategy as data (parallel-when guards in frontmatter, phases in the body), `agents/` carries the 12 review roles (finder A–E, cleaner-reuse/simplification/efficiency, altitude, conventions, verifier, gap-hunter), and a thin plugin entry composes the stack.
 
-- **Batteries-included fan-out** — the entry composes [`@fyeeme/pi-subagents`](https://www.npmjs.com/package/@fyeeme/pi-subagents) 2.1.4 from its npm dependency: the `subagent` tool, real `pi` subprocess spawning, and the live agent UI (widget / FleetView / `/agents`) work out of the box.
+- **Provider-decoupled fan-out** — the finder/verifier pipeline rides whichever extension registers the bound tool name (`fanout.tool` in the `young.json` `"pi-review"` section, default `subagent`). No provider import, no provider npm dependency; an unregistered binding degrades to a single-pass review with a warning.
 
 - **`review_report` structured findings sink** — Chinese Markdown rendered back to the conversation plus machine-readable JSON under `<cwd>/.pi/review/` for CI, `--fix` re-reports, and `--comment`.
 
@@ -21,7 +21,8 @@ skills/    methodology (code-review, code-simplify) — registered natively via 
 prompts/   orchestration strategy as data — parallel-when guards in frontmatter,
            CC-parity phase structure in the body; rendered by the generic dispatcher
 agents/    the review roles as subagent definitions (finder-*, cleaner-*, verifier,
-           gap-hunter) invoked via the `subagent` tool of @fyeeme/pi-subagents
+           gap-hunter) invoked via the bound fan-out tool (default
+           `subagent`; see fanout.tool in Configuration)
 index.ts   plugin entry: the review_report structured findings sink + the
            /code-review and /code-simplify dispatcher commands
 src/       dispatch.ts (variable gathering, guard evaluation, rendering),
@@ -29,13 +30,14 @@ src/       dispatch.ts (variable gathering, guard evaluation, rendering),
            strategy.ts (guard evaluator), tools/review_report.ts
 ```
 
-**Batteries included**: installing this package is enough. Its extension
-factory composes [`@fyeeme/pi-subagents`](../pi-subagents) (the `subagent`
-tool, spawning, and the live agent UI — widget / FleetView / `/agents`) from
-the version-pinned dependency copy, so every fan-out the skills orchestrate
-works out of the box. A standalone pi-subagents install is optional
-(general-purpose scout/planner/reviewer/worker agents) and coexists —
-composition is idempotent.
+**Provider-decoupled**: this package neither registers a fan-out tool nor
+depends on any provider package. Install a provider (canonically
+[`@fyeeme/pi-subagents`](../pi-subagents)) alongside it and bind the tool
+name via `fanout.tool` when it differs from `subagent`; the agent
+definitions ship with this package and register into the provider's shared
+discovery registry via the documented symbol contract (no import). Without
+a provider, every fan-out path degrades to single-pass with an install-hint
+warning — never a silently weaker review.
 
 ## Commands
 
@@ -59,20 +61,41 @@ Edit the file, the strategy changes. The dispatcher only executes what the templ
 
 ## Configuration
 
-Turn budgets are configurable via a JSON file, following the same two-layer
-pattern as pi-subagents' `pi-subagent.json` (project overrides global):
+Turn budgets and the fan-out binding are configurable via the shared
+`young.json` convention (project overrides global):
 
-- Global: `<agentDir>/pi-review.json`
-- Project: `<cwd>/.pi/pi-review.json`
+- Global: `<agentDir>/young.json` → the `"pi-review"` section (top-level
+  keys isolate extensions — the same file pi-subagents' `"subagents"`
+  section lives in)
+- Project: `<cwd>/.pi/pi-review.json` (whole file)
 
 ```jsonc
-// <any layer>/pi-review.json — all keys optional
+// <agentDir>/young.json → "pi-review" section, or <cwd>/.pi/pi-review.json — all keys optional
+// (same shape at both layers; at the global layer this is the CONTENTS of the section)
 {
-  "maxTurns": {
-    "loop": 3 // --loop fix→re-review round cap (single-pass levels)
+  "pi-review": {
+    "maxTurns": {
+      "loop": 3 // --loop fix→re-review round cap (single-pass levels)
+    },
+    "fanout": {
+      "tool": "subagent-parallel" // which registered tool carries the finder/verifier/cleaner dispatch
+    }
   }
 }
 ```
+
+Note: sticky runtime STATE (`codeReviewLastEffort`, `--max-findings` memory)
+stays in `<agentDir>/pi-review.json` — that file is state, not config; the
+extension writes it and it is never read as configuration.
+
+**Fan-out tool binding**: `fanout.tool` names the registered tool that runs
+the fan-out paths (`/code-review xhigh|max`, the parallel cleanup variant).
+Default `subagent`; set it when your provider extension registers its tool
+under a different name. Project overrides global. At command time the bound
+name is resolved against the registry: registered → activated and used
+(the parallel triggers address it as `{{fanout-tool}}`); unregistered →
+the fan-out levels fall back to a single-pass review with a warning naming
+the configured tool (`--loop` still works on the degraded review).
 
 (The former `subagent` / `verifier` / `gapHunt` / `simplify` entries are read
 and dropped — agent tasks carry no turn budget and run to natural
@@ -84,12 +107,17 @@ and the skills defer to it over their built-in defaults.
 
 ## Requirements
 
-None beyond this package. `@fyeeme/pi-subagents` 2.1.3 is a regular npm dependency (exact-pinned) whose extension factory this entry composes (tool + UI). The four cleaner agents and the finder/verifier/gap-hunter definitions ship with this package, registered via `addAgentDir` at extension load.
+None for single-pass use. The fan-out paths (xhigh/max reviews, the
+parallel cleanup variant) need an extension that registers the bound tool —
+canonically a standalone [`@fyeeme/pi-subagents`](../pi-subagents) install;
+bind a non-default name via `fanout.tool`. There is **no** npm dependency
+on any provider. The review agents ship with this package, registered into
+the provider's shared discovery registry at extension load.
 
 ## Development
 
 ```
-npm install --ignore-scripts   # @fyeeme/pi-subagents resolves from the npm registry
+npm install --ignore-scripts   # dev deps only — no runtime provider dependency
 npm test                       # vitest
 npm run typecheck
 ```

@@ -13,32 +13,33 @@
  *           effort) and picks the template variant.
  *   Agents  agents/ — the review angles materialized as subagent definitions
  *           (finder-*, cleaner-*, verifier, gap-hunter) invoked via the
- *           `subagent` tool.
- *   Plugin  this entry composes @fyeeme/pi-subagents' extension factory
- *           (subagent tool + agent UI + /agents, from the SAME dependency
- *           copy this package's imports resolve to — version-pinned, no
- *           manifest path wiring and no separate install step), registers
- *           this package's agents directory as a discovery source, and adds
- *           the `review_report` structured findings sink plus the
+ *           bound fan-out tool (fanout.tool config, default `subagent`).
+ *   Plugin  this entry registers this package's agents directory into the
+ *           provider's shared discovery registry, and adds the
+ *           `review_report` structured findings sink plus the
  *           /code-review and /code-simplify dispatcher commands.
  *
- * The `subagent` tool registers exactly once per process: if pi-subagents
- * is ALSO installed standalone (or another consumer composes it), the guard
- * in pi-subagents' index.ts keeps ownership single (pi fatal-exits on
- * the same tool name in two extensions' maps).
+ * Provider-decoupled (openspec change fanout-tool-binding): this package
+ * holds NO import and NO npm dependency on @fyeeme/pi-subagents or any
+ * other fan-out provider. The fan-out tool comes from whichever extension
+ * registers the bound name (young.json "pi-review" → fanout.tool, default
+ * `subagent`); an unregistered binding degrades fan-out to single-pass
+ * with a warning (see src/dispatch.ts). The agents/ dir is registered
+ * into the provider's shared discovery registry via the documented
+ * symbol contract (src/fanout.ts) — no import.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import piSubagents, { addAgentDir } from "@fyeeme/pi-subagents";
 import { fileURLToPath } from "node:url";
 import * as path from "node:path";
 import { registerDispatcher } from "./src/dispatch.ts";
+import { registerAgentsDir } from "./src/fanout.ts";
 import { reviewReportTool } from "./src/tools/review_report.ts";
 
 export default function (pi: ExtensionAPI): void {
-	// subagent tool + live agent UI, from this package's pinned dependency
-	// copy. <pkg>/index.ts → sibling agents/ dir registers the review roles.
-	piSubagents(pi);
-	addAgentDir(path.join(path.dirname(fileURLToPath(import.meta.url)), "agents"));
+	// <pkg>/index.ts → sibling agents/ dir into the shared discovery
+	// registry (documented symbol contract), so whichever provider owns
+	// the bound tool discovers the review roles. Inert when none does.
+	registerAgentsDir(path.join(path.dirname(fileURLToPath(import.meta.url)), "agents"));
 
 	pi.registerTool(reviewReportTool);
 	registerDispatcher(pi);

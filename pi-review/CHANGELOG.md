@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.5] - 2026-11-09
+
+### Added
+
+- Fan-out tool binding (openspec change `fanout-tool-binding`): configuration now follows the shared `young.json` convention — the global layer is the `"pi-review"` section of `<agentDir>/young.json` (same file pi-subagents' `"subagents"` section uses; project layer `<cwd>/.pi/pi-review.json` unchanged). The section gains `"fanout": { "tool": "<name>" }` to name which registered tool carries the fan-out dispatch — set it when your provider registers its tool under a non-default name (e.g. `subagent-parallel`). Default `subagent` (unchanged behavior). The bound name is resolved against the registry at command time: activation, the skill-marker hook, and both parallel triggers use it; an unregistered binding (absent provider, or a recursion-guarded child) degrades the fan-out levels to a single-pass review with a warning naming the configured tool. Sticky runtime state (`codeReviewLastEffort` / `--max-findings` memory) stays in `<agentDir>/pi-review.json`, now purely a state file.
+- npm `files` now includes `CHANGELOG.md`, so published packages ship the changelog and pi 1.5.0 shows it under "Extension Updates" on the first fresh launch after an update (pi reads `CHANGELOG.md` from the package root by default; no `pi.changelogPath` needed).
+
+### Changed
+
+- pi-review no longer composes `@fyeeme/pi-subagents`' extension factory and carries **no npm dependency on any fan-out provider**: the `subagent` tool, spawning, and the fleet UI come only from a provider extension installed alongside (canonically pi-subagents). The bound tool name is resolved against the registry at command time; an unregistered binding degrades fan-out to single-pass with a warning. The package's agent definitions register into the provider's shared discovery registry via the documented symbol contract (`src/fanout.ts`, no import), and the recursion guard follows the spawn env protocol inline (documented in pi-subagents' README).
+- Dev dependencies now pin `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` at 1.5.0 (was 1.3.0), and `@earendil-works/pi-agent-core` at 1.5.0 (was 1.3.0), so type-check and tests run against the pi 1.5.0 types.
+- `tsconfig.json` maps `@earendil-works/pi-ai` to pi-coding-agent's extension view (`dist/core/extensions/pi-ai-extension-view.d.ts`). pi-ai 1.5.0 no longer re-exports TypeBox and its published `StringEnum` returns a pi-schema `Schema<T>`, which broke `Static` inference inside `Type.Object()`; the view is the same module pi maps the import to at run time, so `StringEnum` infers as TypeBox `TUnsafe<T>` again. Source imports are unchanged.
+
 ## [2.1.4] - 2026-10-29
 
 ### Added
