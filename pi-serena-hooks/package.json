@@ -1,0 +1,54 @@
+{
+	"name": "@fyeeme/pi-serena-hooks",
+	"version": "1.0.0",
+	"description": "Serena bridge for pi: maps pi extension events to the serena-hooks CLI (activate, remind, cleanup) so Serena nudges the agent toward its symbolic tools.",
+	"type": "module",
+	"license": "MIT",
+	"author": "fyeeme",
+	"publishConfig": {
+		"access": "public"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/fyeeme/pi-packages"
+	},
+	"bugs": {
+		"url": "https://github.com/fyeeme/pi-packages/issues"
+	},
+	"homepage": "https://github.com/fyeeme/pi-packages#readme",
+	"engines": {
+		"node": ">=18"
+	},
+	"keywords": [
+		"pi-package",
+		"pi",
+		"serena",
+		"serena-hooks",
+		"hooks",
+		"mcp"
+	],
+	"files": [
+		"index.ts",
+		"pi.yml",
+		"README.md",
+		"LICENSE",
+		"CHANGELOG.md"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"scripts": {
+		"test": "vitest --run",
+		"typecheck": "tsc"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.99.0"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "1.5.0",
+		"@types/node": "22.19.19",
+		"typescript": "5.9.3"
+	}
+}
