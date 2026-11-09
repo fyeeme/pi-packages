@@ -524,6 +524,9 @@ export async function generateTitle(
 				// call; the deadline keeps a hung provider from blocking the next turn.
 				signal: composeSignals([signal, AbortSignal.timeout(TITLE_TIMEOUT_MS)]),
 				maxTokens: request.maxOutputTokens,
+				// One-off side request, like pi's own summaries: no cache writes, and
+				// subscription bridges (pi-claude-bridge) reject cached non-chat prompts.
+				cacheRetention: "none",
 			},
 		)
 		.result();
