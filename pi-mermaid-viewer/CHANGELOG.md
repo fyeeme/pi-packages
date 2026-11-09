@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+## [1.0.4] - 2026-11-09
+
+### Fixed
+
+- **Dead CSS removed; disabled state restored on the live structure.** The zoom controls had been restructured into `.bar .grp` pills, but six `.zoom-bar*` rules and `.bar .title{display:none}` stayed behind and matched nothing (no element carries `zoom-bar` or the `title` class). They are gone; a `.bar .grp button:disabled` rule now styles the zoom in/out buttons that `updateZoomButtons` disables at the zoom range limits (no other toolbar button is ever disabled). The unreferenced `id="zb"` was removed with them.
+- **Permanently hidden `#title` element removed**, together with its two dead `textContent` writes in the page script (render errors already surface through the visible `#er` banner; diagram labels remain visible in the tab bar and the download filename).
+- Simplified the page script's `__name` polyfill to an unconditional identity fallback: `var` hoisting made the `typeof __name === "function"` guard always false, so the guard was dead code. The identity fallback itself is still required (esbuild/tsx keepNames may make the injected healer reference `__name`).
+- **Windows `start` now opens the preview.** `start "${path}"` makes cmd.exe treat the quoted path as the new window's title and no file opens; the command is now `start "" "${path}"`.
+
+### Changed
+
+- Dev dependencies now pin `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` at 1.5.0 (was 1.3.0), so type-check and tests run against the pi 1.5.0 types.
+
 ## [1.0.3] - 2026-10-16
 
 ### Added

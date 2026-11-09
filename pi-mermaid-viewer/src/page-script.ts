@@ -139,11 +139,13 @@ function switchTab(idx) {
   document.getElementById("srcLabel").textContent = "SOURCE #" + (idx + 1);
 }
 
-// esbuild/tsx keepNames wraps transpiled inner functions with __name(obj, name)
+// esbuild/tsx keepNames wraps transpiled inner functions with __name(fn, name)
 // (an identity wrapper that only sets the name property). The injected
-// quoteBareLabels source below may reference it depending on the host
-// transpiler — provide the identity fallback so it runs in any browser.
-var __name = typeof __name === "function" ? __name : function (fn) { return fn; };
+// quoteBareLabels source below may reference __name depending on the host
+// transpiler, so this identity fallback is required in any browser. It is
+// defined unconditionally: var hoisting makes any earlier typeof guard
+// always see undefined, so the guard was dead code.
+var __name = function (fn) { return fn; };
 ${quoteBareLabels.toString()}
 
 async function render(theme) {
@@ -189,10 +191,8 @@ async function render(theme) {
   if (err) {
     const el = document.getElementById("er");
     el.textContent = err.message; el.style.display = "block";
-    document.getElementById("title").textContent = "Error";
   } else {
     document.getElementById("svg").innerHTML = svg; // replaces any stale/last-good render
-    document.getElementById("title").textContent = d.label;
 
     // Fit + center fresh renders — but during live editing keep the view
     // the user has panned/zoomed (svg-pan-zoom keeps pan across re-renders).

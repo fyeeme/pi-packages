@@ -117,12 +117,14 @@ describe("renderHtml", () => {
 			expect(page(sample())).toMatch(/canvas-viewport\{[^}]*overflow:hidden/);
 		});
 
-		it("zoom bar is grouped inside the toolbar (.grp), not fixed-centered", () => {
+		it("zoom controls are grouped inside the toolbar (.grp), not fixed-centered", () => {
 			const html = page(sample());
-			expect(html).not.toMatch(/\.zoom-bar\{position:fixed/);
+			expect(html).not.toContain("zoom-bar"); // stale class: no rule or markup may keep it
 			expect(html).not.toContain("transform:translateX(-50%)");
-			// It lives inside .bar now, as a .grp sibling of the main button group.
-			expect(html).toContain('class="grp" id="zb"');
+			// It lives inside .bar now, as a .grp sibling of the main button group;
+			// the unreferenced id="zb" is gone.
+			expect(html).not.toContain('id="zb"');
+			expect(html).toContain('<div class="grp">');
 		});
 
 		it("canvas viewport has top padding for floating bars", () => {
@@ -133,10 +135,11 @@ describe("renderHtml", () => {
 			expect(page(sample())).toMatch(/\.tabs\{position:fixed/);
 		});
 
-		it("zoom bar is nested inside .bar (no longer a standalone fixed element)", () => {
+		it("zoom controls are nested inside .bar (no standalone fixed element)", () => {
 			const html = page(sample());
-			expect(html).not.toContain('class="zoom-bar" id="zb"');
-			expect(html).toContain('class="grp" id="zb"');
+			const bar = html.slice(html.indexOf('<div class="bar">'), html.indexOf('<div class="tabs"'));
+			expect(bar).toContain('id="zout"');
+			expect(bar).toContain('id="zin"');
 		});
 
 		it("loading indicator exists with Loading diagram... text", () => {
@@ -234,12 +237,21 @@ describe("renderHtml", () => {
 			expect(page(sample())).toMatch(/id="zl"[^>]*role="status"/);
 		});
 
-		it("buttons have focus-visible style for keyboard nav", () => {
-			expect(page(sample())).toContain("focus-visible");
+		it("keyboard focus stays visible (nothing suppresses the outline)", () => {
+			// The dead .zoom-bar focus-visible rule never applied (no element
+			// carries that class). Only the source textarea (#src) suppresses
+			// outline — its caret is the focus indicator; buttons keep the
+			// browser's default focus ring.
+			const offenders = page(sample()).match(/[^{};]*\{[^}]*outline:\s*none[^}]*\}/g) ?? [];
+			expect(offenders.length).toBeGreaterThan(0); // the match itself works
+			for (const rule of offenders) {
+				const selector = rule.slice(0, rule.indexOf("{")).trim();
+				expect(selector.startsWith("#src"), `unexpected outline suppression in "${selector}"`).toBe(true);
+			}
 		});
 
-		it("zoom bar is a rounded pill (mermaid.live floating toolbar)", () => {
-			expect(page(sample())).toMatch(/zoom-bar\{[^}]*border-radius:9999px/);
+		it("toolbar groups are rounded pills (mermaid.live floating toolbar)", () => {
+			expect(page(sample())).toMatch(/\.bar \.grp\{[^}]*border-radius:9999px/);
 		});
 
 		it("zoom bar buttons use currentColor for SVGs", () => {
@@ -253,7 +265,7 @@ describe("renderHtml", () => {
 		});
 
 		it("disabled buttons have reduced opacity and no pointer events", () => {
-			expect(page(sample())).toMatch(/button:disabled\{opacity:\.3;pointer-events:none\}/);
+			expect(page(sample())).toMatch(/\.bar \.grp button:disabled\{opacity:\.3;pointer-events:none\}/);
 		});
 	});
 

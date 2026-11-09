@@ -24,7 +24,6 @@ body{font-family:-apple-system,sans-serif;color:var(--text,#c9d1d9);padding:0;tr
   box-shadow:0 2px 12px var(--shadow)}
 /* thin vertical divider between icon groups inside one pill */
 .bar .vsep{width:1px;height:18px;background:var(--divider);margin:0 4px;flex:none}
-.bar .title{display:none}
 .bar button,.bar select{padding:3px 8px;border:none;border-radius:6px;font-size:11px;font-weight:600;
   cursor:pointer;color:var(--text);transition:.15s;background:transparent;line-height:1;
   display:inline-flex;align-items:center;gap:4px}
@@ -64,7 +63,6 @@ body{font-family:-apple-system,sans-serif;color:var(--text,#c9d1d9);padding:0;tr
   cursor:pointer;color:var(--text);background:transparent;display:inline-flex;align-items:center;transition:.15s}
 .bar .dl-toggle:hover{background:var(--hover)}
 .dl-toggle svg{width:10px;height:10px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-/* zoom-bar now lives inside .bar as a .grp; legacy fixed positioning removed */
 .tabs{position:fixed;top:16px;left:16px;right:auto;z-index:98;
   display:flex;gap:4px;align-items:center;height:32px;padding:0;overflow-x:auto;
   max-width:calc(100vw - 320px)}
@@ -111,17 +109,9 @@ body{overflow:hidden}
 .src-header button{background:var(--field);border:none;border-radius:4px;color:var(--text);
   padding:4px 10px;font-size:11px;cursor:pointer}
 .src-header button:hover{background:var(--field-hover)}
-.zoom-bar{display:flex;align-items:center;gap:2px;height:40px;padding:4px 8px;border-radius:9999px;
-  background:rgba(22,27,34,.85);backdrop-filter:blur(12px);
-  border:1px solid rgba(48,54,61,.6);box-shadow:0 2px 12px rgba(0,0,0,.3)}
-.zoom-bar button{background:transparent;border:none;border-radius:9999px;width:32px;height:32px;
-  padding:0;cursor:pointer;color:var(--text,#c9d1d9);display:flex;align-items:center;justify-content:center;
-  transition:all .15s}
-.zoom-bar button:hover{color:var(--text,#c9d1d9);background:var(--field-hover,rgba(48,54,61,.5))}
-.zoom-bar button:disabled{opacity:.3;pointer-events:none}
-.zoom-bar button:focus-visible{outline:2px solid #58a6ff;outline-offset:2px}
-.zoom-bar svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;
-  stroke-linecap:round;stroke-linejoin:round}
+/* Only the zoom in/out buttons are ever disabled (updateZoomButtons sets
+   them at the zoom range limits); no other .grp button is disabled. */
+.bar .grp button:disabled{opacity:.3;pointer-events:none}
 /* View toggles (hand-drawn look, grid): plain icons, active = accent icon */
 #vt button.on{color:var(--accent)}
 /* visually-hidden zoom % — keeps the a11y live region without breaking the
@@ -138,8 +128,7 @@ export function renderHtml(diagrams: DiagramData[], theme: "dark" | "light"): st
 <link rel="stylesheet" href="${FA_CSS_URL}">
 <style>${PAGE_CSS}</style></head><body class="bg-${theme}">
 <div class="bar">
-  <span id="title" style="display:none"></span>
-  <div class="grp" id="zb">
+  <div class="grp">
     <button class="ib" id="fs_btn" title="Fullscreen" aria-label="Toggle fullscreen" aria-pressed="false">
       <svg viewBox="0 0 24 24"><path d="M4 9V6a2 2 0 0 1 2-2h3"/><path d="M15 4h3a2 2 0 0 1 2 2v3"/><path d="M20 15v3a2 2 0 0 1-2 2h-3"/><path d="M9 20H6a2 2 0 0 1-2-2v-3"/></svg>
     </button>
