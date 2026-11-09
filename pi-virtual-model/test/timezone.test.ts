@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, type Mock } from "vitest";
 import {
 	beijingSecondsOfDay,
+	beijingDayOfWeek,
 	targetModelId,
 	enforce,
 	timezoneModelExtension,
@@ -10,9 +11,14 @@ const PROVIDER = "zai-coding-cn";
 const FLASH = { provider: PROVIDER, id: "glm-5.3-flash" };
 const AUTO = { provider: PROVIDER, id: "glm-5.3-auto" };
 
-/** UTC timestamp for the given UTC h:m:s on a fixed date. */
+/** UTC timestamp for the given UTC h:m:s on a fixed date (2026-10-29, a Thursday). */
 function utc(h: number, m: number, s: number): Date {
 	return new Date(Date.UTC(2026, 9, 29, h, m, s));
+}
+
+/** Same, but shifted `dayOffset` days from the base date (1=Fri, 2=Sat, 3=Sun). */
+function utcOnDay(dayOffset: number, h: number, m: number, s: number): Date {
+	return new Date(Date.UTC(2026, 9, 29 + dayOffset, h, m, s));
 }
 
 describe("beijingSecondsOfDay", () => {
@@ -34,19 +40,56 @@ describe("beijingSecondsOfDay", () => {
 	});
 });
 
-describe("targetModelId (cutoff 14:18:00 Beijing time)", () => {
-	it("before the cutoff picks flash", () => {
-		// Beijing 14:17:59 == UTC 06:17:59
-		expect(targetModelId(utc(6, 17, 59))).toBe("glm-5.3-flash");
-		// Beijing 00:00:00 == UTC 16:00:00 (previous day)
-		expect(targetModelId(utc(16, 0, 0))).toBe("glm-5.3-flash");
+describe("targetModelId (peak window: Mon-Fri [14:00:00, 18:00:00) Beijing time)", () => {
+	it("the window start itself picks flash (inclusive)", () => {
+		// Beijing 14:00:00 == UTC 06:00:00
+		expect(targetModelId(utc(6, 0, 0))).toBe("glm-5.3-flash");
 	});
 
-	it("the cutoff itself and later pick auto", () => {
-		// Beijing 14:18:00 == UTC 06:18:00 — inclusive switch
-		expect(targetModelId(utc(6, 18, 0))).toBe("glm-5.3-auto");
+	it("inside the window picks flash", () => {
+		// Beijing 14:17:59 == UTC 06:17:59
+		expect(targetModelId(utc(6, 17, 59))).toBe("glm-5.3-flash");
+		// Beijing 17:59:59 == UTC 09:59:59
+		expect(targetModelId(utc(9, 59, 59))).toBe("glm-5.3-flash");
+	});
+
+	it("the window end and later pick auto (exclusive)", () => {
+		// Beijing 18:00:00 == UTC 10:00:00
+		expect(targetModelId(utc(10, 0, 0))).toBe("glm-5.3-auto");
 		// Beijing 23:59:59 == UTC 15:59:59
 		expect(targetModelId(utc(15, 59, 59))).toBe("glm-5.3-auto");
+	});
+
+	it("before the window and after midnight pick auto", () => {
+		// Beijing 13:59:59 == UTC 05:59:59
+		expect(targetModelId(utc(5, 59, 59))).toBe("glm-5.3-auto");
+		// Beijing 00:00:00 == UTC 16:00:00 (previous day)
+		expect(targetModelId(utc(16, 0, 0))).toBe("glm-5.3-auto");
+	});
+
+	it("the last weekday still picks flash (Friday)", () => {
+		// Beijing Friday 14:00 == UTC Fri 06:00
+		expect(targetModelId(utcOnDay(1, 6, 0, 0))).toBe("glm-5.3-flash");
+		// Beijing Friday 17:59:59 == UTC Fri 09:59:59
+		expect(targetModelId(utcOnDay(1, 9, 59, 59))).toBe("glm-5.3-flash");
+	});
+
+	it("weekends pick auto even inside the clock window", () => {
+		// Beijing Saturday 14:00 == UTC Sat 06:00
+		expect(targetModelId(utcOnDay(2, 6, 0, 0))).toBe("glm-5.3-auto");
+		// Beijing Saturday 17:59:59 == UTC Sat 09:59:59
+		expect(targetModelId(utcOnDay(2, 9, 59, 59))).toBe("glm-5.3-auto");
+		// Beijing Sunday 15:00 == UTC Sun 07:00
+		expect(targetModelId(utcOnDay(3, 7, 0, 0))).toBe("glm-5.3-auto");
+	});
+});
+
+describe("beijingDayOfWeek", () => {
+	it("maps UTC instants to the Beijing weekday (UTC+8)", () => {
+		// UTC Friday 2026-10-30 20:00 == Beijing Saturday 04:00
+		expect(beijingDayOfWeek(utcOnDay(1, 20, 0, 0))).toBe(6);
+		// UTC Sunday 2026-11-01 16:00 == Beijing Monday 00:00
+		expect(beijingDayOfWeek(utcOnDay(3, 16, 0, 0))).toBe(1);
 	});
 });
 
@@ -62,7 +105,7 @@ function mkCtx(model: unknown, registryModels: unknown[] = [FLASH, AUTO]) {
 }
 
 describe("enforce", () => {
-	// Fixed instant: UTC 06:00 == Beijing 14:00 — before the cutoff, target is flash.
+	// Fixed instant: UTC 06:00 == Beijing 14:00 — inside the flash window, target is flash.
 	const NOW = utc(6, 0, 0);
 
 	it("is a no-op while the current model already matches the rule", async () => {

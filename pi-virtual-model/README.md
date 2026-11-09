@@ -17,10 +17,10 @@ The extension keeps a cache of resolved `Model` objects so routing still works w
 
 | Beijing time (UTC+8) | Session model |
 |---|---|
-| before 14:18:00 | `zai-coding-cn/glm-5.3-flash` |
-| 14:18:00 and later | `zai-coding-cn/glm-5.3-auto` |
+| Monday-Friday 14:00:00 – 17:59:59 (peak hours) | `zai-coding-cn/glm-5.3-flash` |
+| everything else (including weekends) | `zai-coding-cn/glm-5.3-auto` |
 
-- The rule runs on `session_start` and before every agent run, so a session left open across the cutoff switches on the next message.
+- The rule runs on `session_start` and before every agent run, so a session left open across a window boundary switches on the next message.
 - Switching is idempotent: no `model_change` entry is appended when the current model already matches the rule.
 - A successful switch (or a missing model) is reported through one `ui.notify` line.
 - Manual `/model` picks are overridden on the next prompt — both enabled models are governed by the rule, so this is intentional.
@@ -28,7 +28,7 @@ The extension keeps a cache of resolved `Model` objects so routing still works w
 
 ## Usage
 
-The timezone rule takes effect on load. Select `zai-coding-cn/glm-5.3-auto` in `/model` (or add it to `enabledModels`) for the image routing to be reachable after the cutoff.
+The timezone rule takes effect on load. Select `zai-coding-cn/glm-5.3-auto` in `/model` (or add it to `enabledModels`) for the image routing to be reachable outside the flash window.
 
 ## Install for development
 

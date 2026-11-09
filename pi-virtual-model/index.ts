@@ -6,10 +6,10 @@
  * 1. Virtual model `zai-coding-cn/glm-5.3-auto` (src/virtual-model.ts):
  *    routes by image presence — glm-5.3-flash for image messages, glm-5.3
  *    for text. Retries and continuations stay on the turn's model.
- * 2. Wall-clock switching (src/timezone.ts): before 14:18:00 Beijing time
- *    the session runs on glm-5.3-flash, from 14:18:00 on the virtual
- *    glm-5.3-auto takes over. Enforced on session_start and before every
- *    agent run.
+ * 2. Wall-clock switching (src/timezone.ts): peak hours — Monday-Friday
+ *    14:00:00-18:00:00 Beijing time — run the session on glm-5.3-flash;
+ *    outside peak hours (including weekends) the virtual glm-5.3-auto takes
+ *    over. Enforced on session_start and before every agent run.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -18,6 +18,7 @@ import { virtualModelExtension } from "./src/virtual-model.ts";
 
 export {
 	beijingSecondsOfDay,
+	beijingDayOfWeek,
 	targetModelId,
 	enforce as enforceTimezoneModel,
 } from "./src/timezone.ts";
