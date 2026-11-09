@@ -145,7 +145,7 @@ The extension registers a `UsageProvider` per supported provider and refreshes u
 
 All network calls are best-effort with a 5-second timeout — failures stay silent and never block the status bar.
 
-> **Platform API note:** the custom footer relies on `ctx.ui.setFooter`'s third parameter — `footerData: ReadonlyFooterDataProvider` (for `getGitBranch`/`getExtensionStatuses`/`onBranchChange`) — and on returning `dispose` from the footer factory. These are part of the 0.84.x `ExtensionAPI` surface (see `dist/core/extensions/types.d.ts`), but pi's `docs/extensions.md` currently documents only the `(tui, theme)` form. If a future pi release changes the `setFooter` signature, check this extension's footer wiring first.
+> **Platform API note:** the custom footer relies on `ctx.ui.setFooter`'s third parameter — `footerData: ReadonlyFooterDataProvider` (for `getGitBranch`/`getExtensionStatuses`/`onBranchChange`) — and on returning `dispose` from the footer factory. This three-parameter form is the declared `ExtensionAPI` contract (see pi's `dist/core/extensions/types.d.ts`); pi's `docs/extensions.md` does not document `setFooter` at all. Registration is guarded with `ctx.mode === "tui"` because `setFooter` is a documented no-op in RPC mode. If a future pi release changes the `setFooter` signature, check this extension's footer wiring first.
 
 ## Changelog
 

@@ -211,19 +211,24 @@ export default function (pi: ExtensionAPI) {
 
 	// ---- Footer ----
 	pi.on("session_start", (_event, ctx) => {
-		if (!ctx.hasUI) return;
-
 		// Reset cumulative timing for new session
 		lastElapsedSec = 0;
 		lastTps = 0;
 
-		// 根治：运行时修正 deepseek 定价（pi 内置定价低估约 7 倍），使后续 usage.cost 记录全局正确
+		// 根治：运行时修正 deepseek 定价（pi 内置定价低估约 7 倍），使后续 usage.cost 记录全局正确。
+		// 定价修正与用量预取都不是 footer 专属：/status-debug 在任何模式读缓存，model_select /
+		// agent_end 的刷新也无守卫，故这里同样不设守卫。
 		deepSeekPricing.applyPricingPatch(ctx.modelRegistry);
 
 		// Prime usage cache on startup (non-blocking)
 		lastCtx = ctx;
 		lastModel = ctx.model;
 		void refreshUsage(providers, ctx.modelRegistry, ctx.model);
+
+		// The custom footer is a TUI-only surface: in RPC mode hasUI is true but
+		// setFooter is a documented no-op (rpc-extension-ui.md), so guard on mode —
+		// otherwise RPC sessions register a footer component no host will render.
+		if (ctx.mode !== "tui") return;
 
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			const unsub = footerData.onBranchChange(() => tui.requestRender());

@@ -2,7 +2,8 @@
  * index-wiring.test.ts — the extension entry (index.ts) event wiring:
  * agent_start/end timing + tok/s accumulation, the ui_prompt freeze span
  * ("waiting for user"), /currency command semantics, usage-cache triggers
- * (session_start / model_select / session_shutdown), and the no-UI guard.
+ * (session_start / model_select / session_shutdown), and the mode-based
+ * footer guard (tui-only footer, mode-independent cache prefetch).
  *
  * Providers and the usage cache are module-mocked so no network or local
  * session scanning ever runs; footer builders and pricing stay real.
@@ -46,7 +47,10 @@ type FooterFactory = (
 	footerData: unknown,
 ) => FooterHandle;
 
-function makeHarness(hasUI = true) {
+function makeHarness(opts: { mode?: string; hasUI?: boolean } = {}) {
+	const mode = opts.mode ?? "tui";
+	// pi contract: hasUI is true in TUI and RPC modes, false in print/json.
+	const hasUI = opts.hasUI ?? (mode === "tui" || mode === "rpc");
 	const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
 	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
 	const pi = {
@@ -71,6 +75,7 @@ function makeHarness(hasUI = true) {
 	};
 	const ctx = {
 		hasUI,
+		mode,
 		cwd: "/tmp/pi-statusline-proj",
 		model: { provider: "anthropic", id: "claude-x" },
 		modelRegistry: registry,
@@ -194,9 +199,24 @@ describe("statusline extension wiring", () => {
 		expect(resetUsageCache).toHaveBeenCalledTimes(1);
 	});
 
-	it("registers no footer without a UI host", () => {
-		const h = makeHarness(false);
-		h.fire("session_start", { type: "session_start" });
-		expect(h.hasFooter()).toBe(false);
+	it("registers the footer only in tui mode; usage prefetch runs in every mode", () => {
+		const tui = makeHarness();
+		tui.fire("session_start", { type: "session_start" });
+		expect(tui.hasFooter()).toBe(true);
+		expect(refreshUsage).toHaveBeenCalledTimes(1);
+
+		// RPC: hasUI is true but setFooter is a documented no-op — no footer is
+		// registered, while the cache prefetch still runs (the /status-debug
+		// command reads the cache in any mode, like model_select/agent_end).
+		const rpc = makeHarness({ mode: "rpc" });
+		rpc.fire("session_start", { type: "session_start" });
+		expect(rpc.hasFooter()).toBe(false);
+		expect(refreshUsage).toHaveBeenCalledTimes(2);
+
+		// Headless print/json mode: no UI, prefetch still runs.
+		const headless = makeHarness({ mode: "print" });
+		headless.fire("session_start", { type: "session_start" });
+		expect(headless.hasFooter()).toBe(false);
+		expect(refreshUsage).toHaveBeenCalledTimes(3);
 	});
 });

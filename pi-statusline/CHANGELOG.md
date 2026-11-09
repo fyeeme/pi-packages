@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.10] - 2026-11-09
+
+### Fixed
+
+- `session_start` no longer guards the footer registration and the usage-cache prefetch with a single `ctx.hasUI` check. The custom footer is registered only when `ctx.mode === "tui"` — in RPC mode `hasUI` is true but `setFooter` is a documented no-op (`rpc-extension-ui.md`), so RPC sessions used to register a footer component no host would render. The startup prefetch and pricing patch are now unguarded instead: their real consumers are mode-independent (`/status-debug` reads the usage cache in any mode; `model_select`/`agent_end` refresh unguarded too), so RPC sessions now get a warm cache and correct `usage.cost` pricing instead of a network fetch only the TUI consumed.
+- `vitest` is declared in `devDependencies` (3.2.7, matching pi-session-name) — `npm test` referenced it without declaring it, so a clean install could not run the suite.
+
+### Changed
+
+- README "Platform API note" updated to the current contract: the three-parameter `setFooter` form (`footerData: ReadonlyFooterDataProvider`) is the declared `ExtensionAPI` surface in pi's `types.d.ts`; pi's `docs/extensions.md` does not document `setFooter` at all (it previously claimed only the `(tui, theme)` form was documented). Also notes the `ctx.mode === "tui"` registration guard.
+- Dev dependencies now pin `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` at 1.5.0 (was 1.3.0), so type-check and tests run against the pi 1.5.0 types.
+
 ## [1.2.9] - 2026-10-29
 
 ### Changed
