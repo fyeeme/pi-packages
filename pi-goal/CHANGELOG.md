@@ -1,5 +1,41 @@
 # Changelog
 
+## [Unreleased]
+
+## [1.0.7] - 2026-11-09
+
+### Breaking Changes
+
+- Rewritten from [mitsuhiko/agent-stuff](https://github.com/mitsuhiko/agent-stuff) `extensions/goal.ts` (Apache-2.0): the implementation replaces the oh-my-pi port entirely (single-file `index.ts`, behavior identical to the source). Sessions written by 1.x restore as having no goal — the persisted entry format changed from `goal-state`/`goal-cleared` snapshots to versioned `goal` action entries (`{ version: 2, action: set|edit|status|clear|account, goal }`).
+- Tool surface: the single `goal` tool (create/get/complete/resume/drop/impossible) is now three tools — `get_goal`, `create_goal`, `update_goal` (`complete`/`blocked` only).
+- Statuses: `budget-limited` → `budgetLimited`; `dropped` removed (goals are `clear`ed); new `blocked` and `usageLimited` statuses. Every goal now carries a token budget (default 2,000,000, matching the source; omp allowed budgetless goals).
+- `/goal` UX: menu + `set`/`show`/`budget <N|off>`/`drop` subcommands replaced by goal.ts semantics — bare `/goal` shows the summary, an argument sets a goal, subcommands are `clear`/`edit`/`pause`/`resume`.
+- Completion is self-graded again (per the source): the evaluator gate and `impossible` channel are gone; completion/blocked audits live in the injected prompts instead.
+
+### Removed
+
+- Independent evaluator subprocess (`complete` evidence gate, `impossible` op with dispute cap).
+- `/guided-goal` interview command.
+- `goal_updated` extension event bus.
+- pi-todo integration (`todo_updated` events, `todo-phases` entries, footer task progress, `<todo_context>` block).
+- Budget-limit one-shot steering message; `agent_before_settle` continuation drafts; `context_with_system` per-request injection (goal.ts injects via `before_agent_start` systemPrompt append); context slimming; `goal-completed` transcript entry renderer.
+
+### Changed
+
+- Peer dependencies reduced to `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, `typebox` (dropped `pi-tui`, `pi-agent-core`).
+- Test suite rebuilt around the new behavior (43 fake-host wiring tests; was 160).
+- Dev dependencies now pin `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` at 1.5.0 (was 1.3.0), so type-check and tests run against the pi 1.5.0 types.
+- `tsconfig.json` maps `@earendil-works/pi-ai` to pi-coding-agent's extension view (`dist/core/extensions/pi-ai-extension-view.d.ts`). pi-ai 1.5.0 no longer re-exports TypeBox and its published `StringEnum` returns a pi-schema `Schema<T>`, which broke `Static` inference inside `Type.Object()`; the view is the same module pi maps the import to at run time, so `StringEnum` infers as TypeBox `TUnsafe<T>` again. Source imports are unchanged.
+
+### Added
+
+- `outputSchema` + `structuredContent` on the three data tools (`get_goal`, `create_goal`, `update_goal`): the schema mirrors the wire response (`goal` object or null, `remainingTokens`, `completionBudgetReport`), and every result now carries `structuredContent` so codemode scripts receive structured data instead of parsing the text content.
+
+### Fixed
+
+- Removed an unreachable status guard from `update_goal`: the parameter schema is `StringEnum(["complete", "blocked"])` and typebox validation rejects other values before `execute` runs, so the in-executor check could never fire.
+- README now states the default token budget as 2,000,000 tokens, matching `DEFAULT_TOKEN_BUDGET`, the test suite, and the package description (it said 5,000,000).
+
 ## [1.0.6] - 2026-10-16
 
 ### Fixed

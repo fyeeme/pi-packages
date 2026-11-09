@@ -1,852 +1,948 @@
 /**
  * pi-goal — extension wiring tests (fake host, pi-ask-user test style).
  *
- * Drives the default export through a fake ExtensionAPI to pin the event
- * wiring: toolset toggling, context injection, continuation loop, suppression,
- * interrupt pausing, completion exit, and restore.
+ * Drives the default export through a fake ExtensionAPI to pin the goal.ts
+ * behavior: session-entry persistence and restore, system-prompt injection,
+ * agent_end token/time accounting, budget-limit flips, error/abort handling,
+ * single-flight continuation queueing, context pruning, the /goal command,
+ * and the get_goal/create_goal/update_goal tools.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import defaultExport from "../index.ts";
-import { GOAL_CLEARED_ENTRY_TYPE, GOAL_COMPLETED_ENTRY_TYPE, GOAL_STATE_ENTRY_TYPE } from "../src/restore.ts";
-import type { Goal } from "../src/state.ts";
 
-// The real evaluator spawns a `pi -p` subprocess; wiring tests pin event
-// flow, not spawning — confirm every evaluation.
-vi.mock("../src/evaluator.ts", () => ({
-	runGoalEvaluator: async () => ({ status: "confirmed", reason: "wiring" }),
-}));
+interface CapturedEntry {
+	type: "custom";
+	customType: string;
+	data: unknown;
+}
 
-// ---------------------------------------------------------------------------
-// Fake host
-// ---------------------------------------------------------------------------
+interface SentMessage {
+	message: {
+		customType?: string;
+		content: string;
+		display?: boolean;
+		details?: { goalId?: string };
+	};
+	options?: { triggerTurn?: boolean; deliverAs?: string };
+}
+
+interface FakeUI {
+	notify: (text: string, severity?: string) => void;
+	confirm: (title: string, message?: string) => Promise<boolean>;
+	editor: (title: string, prefill?: string) => Promise<string | undefined>;
+	setStatus: (key: string, value: string | undefined) => void;
+	theme: { fg: (color: string, text: string) => string };
+}
+
+interface FakeCtx {
+	hasUI: boolean;
+	isIdle: () => boolean;
+	hasPendingMessages: () => boolean;
+	sessionManager: { getBranch: () => CapturedEntry[]; getSessionId: () => string };
+	ui: FakeUI;
+}
+
+type Handler = (event: unknown, ctx: FakeCtx) => unknown | Promise<unknown>;
 
 interface FakeHost {
-	pi: ExtensionAPI;
-	tools: Array<Record<string, unknown>>;
-	commands: Record<
-		string,
-		{ handler: (args: string, ctx: unknown) => Promise<void>; getArgumentCompletions?: (prefix: string) => unknown }
-	>;
-	handlers: Map<string, Array<(event: unknown, ctx: unknown) => unknown>>;
-	busHandlers: Map<string, Array<(data: unknown) => void>>;
-	entries: Array<{ type: string; customType: string; data?: unknown; id: string }>;
-	sentMessages: Array<{
-		customType: string;
-		content: string;
-		display: boolean;
-		details?: unknown;
-		options?: { deliverAs?: string; triggerTurn?: boolean };
-	}>;
-	sentUserMessages: Array<{ content: string; options?: { deliverAs?: string } }>;
-	emitted: Array<{ channel: string; data: unknown }>;
-	activeTools: string[];
+	pi: unknown;
+	tools: Map<string, { name: string; execute: (...args: unknown[]) => Promise<unknown> }>;
+	commands: Map<string, { handler: (args: string, ctx: FakeCtx) => Promise<void>; getArgumentCompletions?: (prefix: string) => Array<{ value: string; label: string; description?: string }> | null }>;
+	handlers: Map<string, Handler[]>;
+	entries: CapturedEntry[];
+	sent: SentMessage[];
+	notifications: Array<{ text: string; severity?: string }>;
 	statuses: Map<string, string | undefined>;
-	notifications: string[];
-	entryRenderers: Map<string, (entry: unknown, options: unknown, theme: unknown) => unknown>;
+	makeCtx: (overrides?: Partial<Omit<FakeCtx, "ui">> & { ui?: Partial<FakeUI> }) => FakeCtx;
+	fire: (event: string, ev: unknown, ctx?: FakeCtx) => Promise<void>;
 }
 
 function fakeHost(): FakeHost {
 	const host: FakeHost = {
-		pi: {} as ExtensionAPI,
-		tools: [],
-		commands: {},
+		pi: {},
+		tools: new Map(),
+		commands: new Map(),
 		handlers: new Map(),
-		busHandlers: new Map(),
 		entries: [],
-		sentMessages: [],
-		sentUserMessages: [],
-		emitted: [],
-		activeTools: ["read", "bash", "edit"],
-		statuses: new Map(),
+		sent: [],
 		notifications: [],
-		entryRenderers: new Map(),
+		statuses: new Map(),
+		makeCtx: () => {
+			throw new Error("not initialized");
+		},
+		fire: async () => {
+			throw new Error("not initialized");
+		},
 	};
-	let entryCounter = 0;
-	host.pi = {
-		registerTool: (tool: unknown) => {
-			host.tools.push(tool as Record<string, unknown>);
-			host.activeTools.push((tool as { name: string }).name);
+	const pi = {
+		registerTool: (tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }) => {
+			host.tools.set(tool.name, tool);
 		},
-		registerCommand: (name: string, options: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
-			host.commands[name] = options;
+		registerCommand: (
+			name: string,
+			options: { handler: (args: string, ctx: FakeCtx) => Promise<void>; getArgumentCompletions?: (prefix: string) => Array<{ value: string; label: string; description?: string }> | null },
+		) => {
+			host.commands.set(name, options);
 		},
-		on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+		on: (event: string, handler: Handler) => {
 			const list = host.handlers.get(event) ?? [];
 			list.push(handler);
 			host.handlers.set(event, list);
 		},
-		registerEntryRenderer: (
-			customType: string,
-			renderer: (entry: unknown, options: unknown, theme: unknown) => unknown,
-		) => {
-			host.entryRenderers.set(customType, renderer);
+		appendEntry: (customType: string, data: unknown) => {
+			host.entries.push({ type: "custom", customType, data });
 		},
-		registerMessageRenderer: () => {},
-		appendEntry: (customType: string, data?: unknown) => {
-			host.entries.push({ type: "custom", customType, data, id: `entry-${++entryCounter}` });
+		sendMessage: (message: SentMessage["message"], options?: SentMessage["options"]) => {
+			host.sent.push({ message, options });
 		},
-		sendMessage: (
-			message: { customType: string; content: string; display: boolean },
-			options?: { deliverAs?: string; triggerTurn?: boolean },
-		) => {
-			host.sentMessages.push({ ...message, options });
-		},
-		sendUserMessage: (content: string, options?: { deliverAs?: string }) => {
-			host.sentUserMessages.push({ content, options });
-		},
-		getActiveTools: () => [...host.activeTools],
-		setActiveTools: (names: string[]) => {
-			host.activeTools = [...names];
-		},
-		events: {
-			emit: (channel: string, data: unknown) => {
-				host.emitted.push({ channel, data });
+	};
+	host.pi = pi;
+	defaultExport(pi as unknown as ExtensionAPI);
+
+	host.makeCtx = (overrides) => {
+		const ctx: FakeCtx = {
+			hasUI: false,
+			isIdle: () => true,
+			hasPendingMessages: () => false,
+			sessionManager: { getBranch: () => host.entries, getSessionId: () => "session-1" },
+			ui: {
+				notify: (text, severity) => host.notifications.push({ text, severity }),
+				confirm: async () => true,
+				editor: async () => undefined,
+				setStatus: (key, value) => host.statuses.set(key, value),
+				theme: { fg: (_color, text) => text },
 			},
-			on: (channel: string, handler: (data: unknown) => void) => {
-				const list = host.busHandlers.get(channel) ?? [];
-				list.push(handler);
-				host.busHandlers.set(channel, list);
-				return () => {};
-			},
-		},
-	} as unknown as ExtensionAPI;
+		};
+		return { ...ctx, ...overrides, ui: { ...ctx.ui, ...overrides?.ui } };
+	};
+
+	host.fire = async (event, ev, ctx) => {
+		for (const handler of host.handlers.get(event) ?? []) {
+			await handler(ev, ctx ?? host.makeCtx());
+		}
+	};
+
 	return host;
 }
 
-function createContext(
-	host: FakeHost,
-	overrides: { entries?: unknown[]; pending?: boolean; idle?: boolean; mode?: string } = {},
-) {
+function goalEntry(action: string, goal: Record<string, unknown> | null): CapturedEntry {
 	return {
-		ui: {
-			notify: (text: string) => {
-				host.notifications.push(text);
-			},
-			setStatus: (key: string, text: string | undefined) => {
-				if (text === undefined) host.statuses.delete(key);
-				else host.statuses.set(key, text);
-			},
-			confirm: async () => true,
-			select: async () => undefined,
-			input: async () => undefined,
-			editor: async () => undefined,
-		},
-		hasUI: true,
-		mode: overrides.mode ?? "tui",
-		cwd: "/tmp",
-		isIdle: () => overrides.idle ?? true,
-		hasPendingMessages: () => overrides.pending ?? false,
-		sessionManager: {
-			getEntries: () => overrides.entries ?? host.entries,
-			getBranch: () => overrides.entries ?? host.entries,
-		},
+		type: "custom",
+		customType: "goal",
+		data: { version: 2, action, goal },
 	};
 }
 
-async function fire(host: FakeHost, event: string, payload: unknown, ctx?: unknown): Promise<void> {
-	const list = host.handlers.get(event) ?? [];
-	for (const handler of list) {
-		await handler(payload, ctx ?? createContext(host));
-	}
+function assistantMessage(usage: { input?: number; cacheRead?: number; output?: number; totalTokens?: number }, extra?: Record<string, unknown>) {
+	return { role: "assistant", usage, stopReason: "stop", ...extra };
 }
 
-/** Fire agent_before_settle and return its boundary result. */
-function fireBeforeSettle(
-	host: FakeHost,
-	ctx?: unknown,
-): { continue?: boolean; entries?: Array<{ type: string; customType?: string; details?: unknown }> } | undefined {
-	const list = host.handlers.get("agent_before_settle") ?? [];
-	let result: unknown;
-	for (const handler of list) {
-		result = handler({ type: "agent_before_settle" }, ctx ?? createContext(host));
-	}
-	return result as { continue?: boolean; entries?: Array<{ type: string; customType?: string; details?: unknown }> } | undefined;
+async function runTool(host: FakeHost, name: string, params: unknown = {}, ctx?: FakeCtx) {
+	const tool = host.tools.get(name);
+	if (!tool) throw new Error(`tool ${name} not registered`);
+	return await tool.execute("call-1", params, undefined, undefined, ctx ?? host.makeCtx());
 }
 
-function fireBus(host: FakeHost, channel: string, data: unknown): void {
-	for (const handler of host.busHandlers.get(channel) ?? []) {
-		handler(data);
-	}
+async function runCommand(host: FakeHost, args: string, ctx?: FakeCtx) {
+	const command = host.commands.get("goal");
+	if (!command) throw new Error("command goal not registered");
+	await command.handler(args, ctx ?? host.makeCtx());
 }
 
-function goalTool(host: FakeHost): Record<string, unknown> {
-	const tool = host.tools.find((t) => t.name === "goal");
-	if (!tool) throw new Error("goal tool not registered");
-	return tool;
+function lastPersisted(host: FakeHost): CapturedEntry | undefined {
+	return [...host.entries].reverse().find((entry) => entry.customType === "goal");
 }
 
-async function callGoalTool(
-	host: FakeHost,
-	params: Record<string, unknown>,
-): Promise<{ details: { goal?: Goal | null } }> {
-	const tool = goalTool(host);
-	const execute = tool.execute as (
-		id: string,
-		params: unknown,
-		signal: undefined,
-		onUpdate: undefined,
-		ctx: unknown,
-	) => Promise<{ details: { goal?: Goal | null } }>;
-	return execute("call-1", params, undefined, undefined, createContext(host));
-}
-
-function makeEntries(goal: Goal, enabled: boolean): unknown[] {
-	return [
-		{
-			type: "custom",
-			customType: GOAL_STATE_ENTRY_TYPE,
-			id: "e1",
-			data: { enabled, goal: { ...goal } },
-		},
-	];
-}
-
-const baseGoal: Goal = {
-	id: "g-1",
-	objective: "Make the tests pass",
-	status: "active",
-	tokenBudget: undefined,
-	tokensUsed: 0,
-	timeUsedSeconds: 0,
-	createdAt: 0,
-	updatedAt: 0,
-};
-
-function assistantMessage(stopReason: string): unknown {
-	return { role: "assistant", stopReason, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-}
-
-// ---------------------------------------------------------------------------
-// Wiring
-// ---------------------------------------------------------------------------
-
-describe("pi-goal extension wiring", () => {
-	it("registers the goal tool, /goal, and /guided-goal", () => {
+describe("restore (session_start / session_tree)", () => {
+	it("restores no goal from an empty branch", async () => {
 		const host = fakeHost();
-		defaultExport(host.pi);
-		expect(host.tools.map((t) => t.name)).toContain("goal");
-		expect(host.commands.goal).toBeDefined();
-		expect(host.commands["guided-goal"]).toBeDefined();
+		await host.fire("session_start", {});
+		expect(await runTool(host, "get_goal")).toMatchObject({ details: { goal: null } });
 	});
 
-	it("session_start with no goal removes the goal tool from the active set", async () => {
+	it("restores the latest goal entry on the branch", async () => {
 		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		expect(host.activeTools).not.toContain("goal");
-		expect(host.activeTools).toContain("read");
+		host.entries.push(goalEntry("set", { id: "g1", objective: "ship it", status: "paused", tokensUsed: 10, timeUsedSeconds: 5, createdAt: 1, updatedAt: 2 }));
+		await host.fire("session_start", {});
+		const result = (await runTool(host, "get_goal")) as { details: { goal: { objective: string; status: string } } };
+		expect(result.details.goal.objective).toBe("ship it");
+		expect(result.details.goal.status).toBe("paused");
 	});
 
-	it("session_start keeps the goal tool in non-interactive modes (no slash commands there)", async () => {
+	it("a later clear entry (goal null) removes the goal", async () => {
 		const host = fakeHost();
-		defaultExport(host.pi);
-		const ctx = createContext(host, { mode: "print" });
-		await fire(host, "session_start", { type: "session_start", reason: "startup" }, ctx);
-		expect(host.activeTools).toContain("goal");
-	});
-
-	it("session_start restores a persisted active goal, re-adds the tool, then pauses it (omp onThreadResumed)", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		const ctx = createContext(host, { entries: makeEntries(baseGoal, true) });
-		await fire(host, "session_start", { type: "session_start", reason: "resume" }, ctx);
-
-		expect(host.activeTools).toContain("goal");
-		// Cold resume auto-pauses active goals and persists that.
-		const pauseEntry = [...host.entries].reverse().find((e) => e.customType === GOAL_STATE_ENTRY_TYPE);
-		expect(pauseEntry?.data).toMatchObject({ enabled: false, goal: { status: "paused" } });
-		// omp footer segment: pause icon + usage.
-		expect(host.statuses.get("goal")).toBe("⏸ Goal 0");
-	});
-
-	it("/goal <objective> creates the goal, toggles tools, and submits the objective", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-
-		await host.commands.goal!.handler("Rewrite the docs", createContext(host));
-
-		expect(host.activeTools).toContain("goal");
-		const stateEntry = host.entries.find((e) => e.customType === GOAL_STATE_ENTRY_TYPE);
-		expect(stateEntry?.data).toMatchObject({
-			enabled: true,
-			goal: { objective: "Rewrite the docs", status: "active" },
-		});
-		expect(host.sentUserMessages).toHaveLength(1);
-		expect(host.sentUserMessages[0]?.content).toBe("Rewrite the docs");
-		expect(host.emitted.some((e) => e.channel === "goal_updated")).toBe(true);
-		// omp footer segment: goal icon + usage.
-		expect(host.statuses.get("goal")).toBe("🎯 Goal 0");
-	});
-
-	it("context_with_system injects the goal-mode-context message only while a goal is active", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-
-		const handler = host.handlers.get("context_with_system")?.[0]!;
-		const transcript = [{ role: "user", content: "hi" }];
-		let result = (await handler({ type: "context_with_system", messages: transcript }, createContext(host))) as
-			| { messages: Array<{ customType?: string; content?: string }> }
-			| undefined;
-		expect(result).toBeUndefined();
-
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-		result = (await handler({ type: "context_with_system", messages: transcript }, createContext(host))) as
-			| { messages: Array<{ customType?: string; content?: string }> }
-			| undefined;
-		const contexts = result!.messages.filter((m) => m.customType === "goal-mode-context");
-		expect(contexts).toHaveLength(1);
-		expect(contexts[0]?.content).toContain("<goal_context>");
-		expect(contexts[0]?.content).toContain("Do the thing");
-	});
-
-	it("context_with_system supersedes steer-injected transcript copies (single fresh context)", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-
-		const handler = host.handlers.get("context_with_system")?.[0]!;
-		const transcript = [
-			{ role: "user", content: "hi" },
-			{ role: "custom", customType: "goal-mode-context", content: "stale copy", display: false },
-		];
-		const result = (await handler({ type: "context_with_system", messages: transcript }, createContext(host))) as {
-			messages: Array<{ customType?: string; content?: string }>;
-		};
-		const contexts = result.messages.filter((m) => m.customType === "goal-mode-context");
-		expect(contexts).toHaveLength(1);
-		expect(contexts[0]?.content).not.toBe("stale copy");
-	});
-
-	it("agent_before_settle continues exactly one request when the goal is still active", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-
-		await fire(host, "agent_start", { type: "agent_start" });
-		await fire(host, "tool_execution_end", {
-			type: "tool_execution_end",
-			toolCallId: "t1",
-			toolName: "bash",
-			result: {},
-			isError: false,
-		});
-		await fire(host, "agent_end", { type: "agent_end", messages: [assistantMessage("toolUse")] });
-
-		const result = fireBeforeSettle(host);
-		expect(result?.continue).toBe(true);
-		// The continuation prompt rides as a custom_message draft.
-		const draft = result?.entries?.[0];
-		expect(draft).toMatchObject({ type: "custom_message", customType: "goal-continuation", display: false });
-		// details.goalId keys the context-pruning handler.
-		const goalId = (host.entries.find((e) => e.customType === GOAL_STATE_ENTRY_TYPE)?.data as { goal: Goal }).goal.id;
-		expect(draft?.details).toMatchObject({ goalId });
-		// The boundary path sends no followUp message.
-		expect(host.sentMessages.filter((m) => m.customType === "goal-continuation")).toHaveLength(0);
-	});
-
-	it("suppresses the next continuation when a continuation turn produced no tool calls", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-
-		// Continuation turn: agent replies with no tool calls.
-		await fire(host, "agent_start", { type: "agent_start" });
-		await fire(host, "agent_end", { type: "agent_end", messages: [assistantMessage("stop")] });
-		expect(fireBeforeSettle(host)?.continue).toBe(true);
-
-		// That turn's end marks suppression: the following settle continues nothing.
-		await fire(host, "agent_start", { type: "agent_start" });
-		await fire(host, "agent_end", { type: "agent_end", messages: [assistantMessage("stop")] });
-		expect(fireBeforeSettle(host)?.continue).toBeUndefined();
-
-		// A real user message re-arms the loop.
-		await fire(host, "message_start", { type: "message_start", message: { role: "user" } });
-		await fire(host, "agent_start", { type: "agent_start" });
-		await fire(host, "tool_execution_end", {
-			type: "tool_execution_end",
-			toolCallId: "t1",
-			toolName: "read",
-			result: {},
-			isError: false,
-		});
-		await fire(host, "agent_end", { type: "agent_end", messages: [assistantMessage("stop")] });
-		expect(fireBeforeSettle(host)?.continue).toBe(true);
-	});
-
-	it("interrupt aborts pause the goal instead of continuing", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-		host.sentMessages.length = 0;
-
-		await fire(host, "agent_start", { type: "agent_start" });
-		await fire(host, "agent_end", { type: "agent_end", messages: [assistantMessage("aborted")] });
-
-		expect(fireBeforeSettle(host)?.continue).toBeUndefined();
-		// omp footer segment: pause icon + usage.
-		expect(host.statuses.get("goal")).toBe("⏸ Goal 0");
-		const pauseEntry = [...host.entries].reverse().find((e) => e.customType === GOAL_STATE_ENTRY_TYPE);
-		expect(pauseEntry?.data).toMatchObject({ enabled: false, goal: { status: "paused" } });
-	});
-
-	it("tool-driven complete exits goal mode at agent_end with the completion summary", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-
-		await callGoalTool(host, { op: "complete", evidence: "tests pass" });
-		// Still active toolset until the run ends.
-		expect(host.activeTools).toContain("goal");
-
-		await fire(host, "agent_start", { type: "agent_start" });
-		await fire(host, "agent_end", { type: "agent_end", messages: [assistantMessage("stop")] });
-
-		expect(host.activeTools).not.toContain("goal");
-		expect(host.entries.some((e) => e.customType === GOAL_COMPLETED_ENTRY_TYPE)).toBe(true);
-		expect(host.entries.some((e) => e.customType === GOAL_CLEARED_ENTRY_TYPE)).toBe(true);
-		expect(host.notifications).toContain("Goal mode completed.");
-		expect(host.statuses.has("goal")).toBe(false);
-		expect(fireBeforeSettle(host)?.continue).toBeUndefined();
-	});
-
-	it("budget-limit steering sends one hidden steer message when usage crosses the budget", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-		await host.commands.goal!.handler("budget 10", createContext(host));
-
-		// turn_start snapshots the baseline (no usage entries yet).
-		await fire(host, "turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 });
-		// Usage arrives via an assistant message entry (same shape pi persists).
-		host.entries.push({
-			type: "message",
-			customType: "",
-			id: "m1",
-			data: undefined,
-			message: {
-				role: "assistant",
-				stopReason: "toolUse",
-				usage: { input: 25, output: 0, cacheRead: 0, cacheWrite: 0 },
-			},
-		} as never);
-
-		await fire(host, "tool_execution_end", {
-			type: "tool_execution_end",
-			toolCallId: "t1",
-			toolName: "read",
-			result: {},
-			isError: false,
-		});
-
-		const steer = host.sentMessages.find((m) => m.customType === "goal-budget-limit");
-		expect(steer).toBeDefined();
-		expect(steer?.display).toBe(false);
-		expect(steer?.options).toMatchObject({ deliverAs: "steer" });
-		// omp footer segment: warning icon + used/budget.
-		expect(host.statuses.get("goal")).toBe("⚠ Goal 25/10");
-
-		// A second flush must not steer again (once per goal id).
-		host.sentMessages.length = 0;
-		host.entries.push({
-			type: "message",
-			customType: "",
-			id: "m2",
-			data: undefined,
-			message: {
-				role: "assistant",
-				stopReason: "toolUse",
-				usage: { input: 50, output: 0, cacheRead: 0, cacheWrite: 0 },
-			},
-		} as never);
-		await fire(host, "tool_execution_end", {
-			type: "tool_execution_end",
-			toolCallId: "t2",
-			toolName: "read",
-			result: {},
-			isError: false,
-		});
-		expect(host.sentMessages.filter((m) => m.customType === "goal-budget-limit")).toHaveLength(0);
-	});
-
-	it("budget flip attaches context-slimming drafts when PI_GOAL_SLIM_ON_BUDGET=1", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-		await host.commands.goal!.handler("budget 10", createContext(host));
-
-		const entries: unknown[] = [
-			{ type: "message", id: "t-old", message: { role: "toolResult" } },
-			{ type: "message", id: "u1", message: { role: "user" } },
-			{ type: "message", id: "t-new", message: { role: "toolResult" } },
-		];
-		const ctx = createContext(host, { entries });
-
-		vi.stubEnv("PI_GOAL_SLIM_ON_BUDGET", "1");
-		await fire(host, "turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 }, ctx);
-		entries.push({
-			type: "message",
-			id: "m1",
-			message: { role: "assistant", stopReason: "toolUse", usage: { input: 25, output: 0, cacheRead: 0, cacheWrite: 0 } },
-		});
-		await fire(host, "tool_execution_end", {
-			type: "tool_execution_end",
-			toolCallId: "t1",
-			toolName: "read",
-			result: {},
-			isError: false,
-		}, ctx);
-
-		// Budget flip arms slimming; the boundary attaches the drafts.
-		// Budget-limited goals stop auto-continuing (omp semantics), so the
-		// boundary persists the edits without a next request.
-		const result = fireBeforeSettle(host, ctx);
-		expect(result?.continue).toBeUndefined();
-		const edits = (result?.entries ?? []).filter((e) => e.type === "context_edit");
-		expect(edits).toEqual([{ type: "context_edit", targetId: "t-old", replacement: null }]);
-
-		// Once per goal: the next settle carries no further slimming drafts.
-		entries.push({
-			type: "message",
-			id: "m2",
-			message: { role: "assistant", stopReason: "toolUse", usage: { input: 50, output: 0, cacheRead: 0, cacheWrite: 0 } },
-		});
-		await fire(host, "tool_execution_end", {
-			type: "tool_execution_end",
-			toolCallId: "t2",
-			toolName: "read",
-			result: {},
-			isError: false,
-		}, ctx);
-		expect(fireBeforeSettle(host, ctx)).toBeUndefined();
-		vi.unstubAllEnvs();
-	});
-
-	it("context slimming stays off by default (opt-in via PI_GOAL_SLIM_ON_BUDGET)", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-		await host.commands.goal!.handler("budget 10", createContext(host));
-
-		const entries: unknown[] = [
-			{ type: "message", id: "t-old", message: { role: "toolResult" } },
-			{ type: "message", id: "u1", message: { role: "user" } },
-			{ type: "message", id: "t-new", message: { role: "toolResult" } },
-		];
-		const ctx = createContext(host, { entries });
-
-		// Explicitly opt out (order-independent against leaking stubs).
-		vi.stubEnv("PI_GOAL_SLIM_ON_BUDGET", "");
-		await fire(host, "turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 }, ctx);
-		entries.push({
-			type: "message",
-			id: "m1",
-			message: { role: "assistant", stopReason: "toolUse", usage: { input: 25, output: 0, cacheRead: 0, cacheWrite: 0 } },
-		});
-		await fire(host, "tool_execution_end", {
-			type: "tool_execution_end",
-			toolCallId: "t1",
-			toolName: "read",
-			result: {},
-			isError: false,
-		}, ctx);
-
-		// Budget flip steers but arms no slimming drafts; budget-limited goals
-		// do not auto-continue, so the boundary settles empty.
-		expect(fireBeforeSettle(host, ctx)).toBeUndefined();
-		vi.unstubAllEnvs();
-	});
-
-	it("/guided-goal queues a hidden interview kickoff", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-
-		await host.commands["guided-goal"]!.handler("make a cli", createContext(host));
-		const kickoff = host.sentMessages.find((m) => m.customType === "guided-goal");
-		expect(kickoff).toBeDefined();
-		expect(kickoff?.display).toBe(false);
-		expect(kickoff?.content).toContain("<rough-goal>");
-		expect(kickoff?.content).toContain("make a cli");
-		expect(host.activeTools).toContain("goal");
-	});
-
-	it("/goal pause and /goal resume round-trip through the runtime", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-
-		await host.commands.goal!.handler("pause", createContext(host));
-		expect(host.activeTools).not.toContain("goal");
-		expect(host.notifications).toContain("Goal mode paused.");
-
-		await host.commands.goal!.handler("resume", createContext(host));
-		expect(host.activeTools).toContain("goal");
-		expect(host.notifications).toContain("Goal mode resumed.");
-	});
-
-	it("/goal drop requires confirmation and clears state", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-
-		await host.commands.goal!.handler("drop", createContext(host));
-		expect(host.entries.some((e) => e.customType === GOAL_CLEARED_ENTRY_TYPE)).toBe(true);
-		expect(host.notifications).toContain("Goal dropped.");
-		expect(host.statuses.has("goal")).toBe(false);
-	});
-
-	// ----------------------------------------------------------------
-	// docs/extensions.md conformance: ui_prompt_start/end, agent_settled,
-	// getArgumentCompletions, registerEntryRenderer
-	// ----------------------------------------------------------------
-
-	it("withholds continuation while a blocking UI prompt is open, resumes when it closes while idle", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-		host.sentMessages.length = 0;
-
-		// Agent settles while a dialog (e.g. /goal drop confirm) is open.
-		// omp's footer segment has no dialog state; the status text stays put.
-		await fire(host, "ui_prompt_start", { type: "ui_prompt_start", reason: "ui_prompt", kind: "confirm" });
-		expect(host.statuses.get("goal")).toBe("🎯 Goal 0");
-
-		await fire(host, "agent_start", { type: "agent_start" });
-		await fire(host, "agent_end", { type: "agent_end", messages: [assistantMessage("stop")] });
-		// Modal open at settle: the boundary withholds the continuation.
-		expect(fireBeforeSettle(host)?.continue).toBeUndefined();
-
-		// Dialog closes while idle: the withheld continuation is scheduled now.
-		const idleCtx = createContext(host, { idle: true });
-		await fire(host, "ui_prompt_end", { type: "ui_prompt_end", reason: "ui_prompt", kind: "confirm" }, idleCtx);
-		expect(host.statuses.get("goal")).not.toContain("waiting for user");
-		expect(host.sentMessages.filter((m) => m.customType === "goal-continuation")).toHaveLength(1);
-	});
-
-	it("does not schedule on ui_prompt_end while the agent is still streaming", async () => {
-		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-		host.sentMessages.length = 0;
-
-		// Another extension's ask_user dialog opens mid-run and closes; the run
-		// is still going, so scheduling must wait for its agent_end.
-		await fire(host, "ui_prompt_start", { type: "ui_prompt_start", reason: "ui_prompt", kind: "custom" });
-		await fire(host, "agent_start", { type: "agent_start" });
-		await fire(
-			host,
-			"ui_prompt_end",
-			{ type: "ui_prompt_end", reason: "ui_prompt", kind: "custom" },
-			createContext(host, { idle: false }),
+		host.entries.push(
+			goalEntry("set", { id: "g1", objective: "ship it", status: "complete", tokensUsed: 1, timeUsedSeconds: 1, createdAt: 1, updatedAt: 2 }),
+			goalEntry("clear", null),
 		);
-		expect(host.sentMessages.filter((m) => m.customType === "goal-continuation")).toHaveLength(0);
-
-		await fire(host, "agent_end", { type: "agent_end", messages: [assistantMessage("stop")] });
-		// Modal already closed: the boundary itself continues the run.
-		expect(fireBeforeSettle(host)?.continue).toBe(true);
+		await host.fire("session_start", {});
+		expect(await runTool(host, "get_goal")).toMatchObject({ details: { goal: null } });
 	});
 
-	it("refreshes the status on agent_settled (status integrations per docs)", async () => {
+	it("normalizes legacy statuses and repairs malformed fields", async () => {
 		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-
-		host.statuses.clear();
-		await fire(host, "agent_settled", { type: "agent_settled" });
-		expect(host.statuses.get("goal")).toBe("🎯 Goal 0");
+		host.entries.push(
+			goalEntry("status", {
+				id: "g1",
+				objective: "x & y",
+				status: "usage_limited",
+				tokensUsed: -5,
+				timeUsedSeconds: "bogus",
+				createdAt: 1,
+				updatedAt: 2,
+			}),
+		);
+		await host.fire("session_start", {});
+		const result = (await runTool(host, "get_goal")) as { details: { goal: { status: string; tokensUsed: number; timeUsedSeconds: number; objective: string } } };
+		expect(result.details.goal.status).toBe("usageLimited");
+		expect(result.details.goal.tokensUsed).toBe(0);
+		expect(result.details.goal.timeUsedSeconds).toBe(0);
+		expect(result.details.goal.objective).toBe("x & y");
 	});
 
-	// ------------------------------------------------------------
-	// Footer task progress (pi-todo integration)
-	// ------------------------------------------------------------
-
-	it("shows live pi-todo task progress in the footer (todo_updated event)", async () => {
+	it("an active restored goal re-arms elapsed-time accounting", async () => {
 		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-		expect(host.statuses.get("goal")).toBe("🎯 Goal 0");
-
-		fireBus(host, "todo_updated", {
-			phases: [
-				{
-					name: "P1",
-					tasks: [
-						{ content: "a", status: "completed" },
-						{ content: "b", status: "in_progress" },
-					],
-				},
-			],
-		});
-		expect(host.statuses.get("goal")).toBe("🎯 Goal 0 · 1/2 tasks");
+		host.entries.push(goalEntry("set", { id: "g1", objective: "work", status: "active", tokenBudget: 1_000_000, tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 }));
+		await host.fire("session_start", {});
+		vi.setSystemTime(Date.now() + 10_000);
+		const result = (await runTool(host, "get_goal")) as { details: { goal: { timeUsedSeconds: number } } };
+		expect(result.details.goal.timeUsedSeconds).toBe(10);
 	});
 
-	it("ignores malformed todo_updated payloads (footer keeps the plain segment)", async () => {
+	it("session_tree restores through the same path", async () => {
 		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
+		host.entries.push(goalEntry("set", { id: "g1", objective: "tree", status: "active", tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 }));
+		await host.fire("session_tree", {});
+		const result = (await runTool(host, "get_goal")) as { details: { goal: { objective: string } } };
+		expect(result.details.goal.objective).toBe("tree");
+	});
+});
 
-		fireBus(host, "todo_updated", { phases: "nope" });
-		fireBus(host, "todo_updated", {});
-		fireBus(host, "todo_updated", undefined);
-		expect(host.statuses.get("goal")).toBe("🎯 Goal 0");
+describe("before_agent_start injection", () => {
+	it("appends the active-goal system prompt for an active goal", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship the release");
+		const results = await Promise.all(
+			(host.handlers.get("before_agent_start") ?? []).map((handler) => handler({ systemPrompt: "BASE" }, host.makeCtx())),
+		);
+		const injection = results.find((result) => result !== undefined) as { systemPrompt: string } | undefined;
+		expect(injection?.systemPrompt.startsWith("BASE\n\nActive thread goal:")).toBe(true);
+		expect(injection?.systemPrompt).toContain("<untrusted_objective>\nship the release\n</untrusted_objective>");
 	});
 
-	it("restores footer task progress from todo-phases entries on session_start", async () => {
+	it("returns undefined without an active goal", async () => {
 		const host = fakeHost();
-		defaultExport(host.pi);
-		const entries = [
-			...makeEntries(baseGoal, true),
-			{
-				type: "custom",
-				customType: "todo-phases",
-				id: "t1",
-				data: {
-					phases: [
-						{
-							name: "P1",
-							tasks: [
-								{ content: "a", status: "completed" },
-								{ content: "b", status: "pending" },
-							],
-						},
-					],
-				},
-			},
-		];
-		const ctx = createContext(host, { entries });
-		await fire(host, "session_start", { type: "session_start", reason: "resume" }, ctx);
-		// Cold resume pauses the goal; the restored progress still renders.
-		expect(host.statuses.get("goal")).toBe("⏸ Goal 0 · 1/2 tasks");
+		const results = await Promise.all((host.handlers.get("before_agent_start") ?? []).map((handler) => handler({ systemPrompt: "BASE" }, host.makeCtx())));
+		expect(results.every((result) => result === undefined)).toBe(true);
 	});
 
-	it("registers /goal argument completions (omp buildArgumentCompletions shape)", () => {
+	it("returns undefined for a paused goal", async () => {
 		const host = fakeHost();
-		defaultExport(host.pi);
-		const completions = host.commands.goal!.getArgumentCompletions;
-		expect(completions).toBeDefined();
+		await runCommand(host, "ship the release");
+		await runCommand(host, "pause");
+		const results = await Promise.all((host.handlers.get("before_agent_start") ?? []).map((handler) => handler({ systemPrompt: "BASE" }, host.makeCtx())));
+		expect(results.every((result) => result === undefined)).toBe(true);
+	});
+});
 
-		const subs = completions!("") as Array<{ value: string }>;
-		expect(subs.map((s) => s.value)).toEqual(["set ", "show ", "pause ", "resume ", "drop ", "budget "]);
-		expect(completions!("dr") as Array<{ value: string }>).toEqual([
-			{ value: "drop ", label: "drop", description: "Drop the current goal" },
-		]);
-		// omp: null once the prefix passes the subcommand word.
-		expect(completions!("budget ")).toBeNull();
-		expect(completions!("set some objective")).toBeNull();
+describe("agent_end accounting", () => {
+	it("adds assistant usage tokens (input - cacheRead + output) to the active goal", async () => {
+		const host = fakeHost();
+		await runCommand(host, "work");
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [assistantMessage({ input: 1_000, cacheRead: 200, output: 300 })] });
+		const persisted = lastPersisted(host);
+		expect(persisted).toMatchObject({ customType: "goal", data: { action: "account" } });
+		const goal = (persisted?.data as { goal: { tokensUsed: number } }).goal;
+		expect(goal.tokensUsed).toBe(1_100);
 	});
 
-	it("renders the goal-completed entry persistently (registerEntryRenderer per docs)", () => {
+	it("falls back to totalTokens when the measured usage is zero", async () => {
 		const host = fakeHost();
-		defaultExport(host.pi);
-		const renderer = host.entryRenderers.get(GOAL_COMPLETED_ENTRY_TYPE);
-		expect(renderer).toBeDefined();
-
-		const passthroughTheme = { fg: (_color: string, text: string) => text };
-		const component = renderer!(
-			{
-				type: "custom",
-				customType: GOAL_COMPLETED_ENTRY_TYPE,
-				data: { objective: "Ship it", tokensUsed: 6049, timeUsedSeconds: 20 },
-			},
-			{ expanded: false },
-			passthroughTheme,
-		) as { text: string };
-		expect(component.text).toContain("Goal completed: Ship it");
-		expect(component.text).toContain("6K (no budget) tokens");
-		expect(component.text).toContain("20s");
+		await runCommand(host, "work");
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [assistantMessage({ totalTokens: 700 })] });
+		const goal = (lastPersisted(host)?.data as { goal: { tokensUsed: number } }).goal;
+		expect(goal.tokensUsed).toBe(700);
 	});
 
-	it("pauses the goal instead of continuing when the run ends with a provider error", async () => {
+	it("accounts elapsed wall-clock seconds", async () => {
 		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-		host.sentMessages.length = 0;
-
-		await fire(host, "agent_start", { type: "agent_start" });
-		await fire(host, "agent_end", {
-			type: "agent_end",
-			messages: [
-				{ role: "assistant", stopReason: "error", errorMessage: "429 rate limit exceeded", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
-			],
-		});
-
-		// Paused and persisted, with a classified notice; no continuation queued.
-		const pauseEntry = [...host.entries].reverse().find((e) => e.customType === GOAL_STATE_ENTRY_TYPE);
-		expect(pauseEntry?.data).toMatchObject({ enabled: false, goal: { status: "paused" } });
-		expect(host.notifications.some((n) => n.includes("rate limits"))).toBe(true);
-		expect(fireBeforeSettle(host)?.continue).toBeUndefined();
+		await runCommand(host, "work");
+		vi.setSystemTime(Date.now() + 5_000);
+		await host.fire("agent_start", {});
+		vi.setSystemTime(Date.now() + 4_000);
+		await host.fire("agent_end", { messages: [] });
+		const goal = (lastPersisted(host)?.data as { goal: { timeUsedSeconds: number } }).goal;
+		expect(goal.timeUsedSeconds).toBe(9);
 	});
 
-	it("pauses with a generic notice on non-usage errors", async () => {
+	it("crossing the budget flips to budgetLimited, notifies, and queues no continuation", async () => {
 		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-
-		await fire(host, "agent_start", { type: "agent_start" });
-		await fire(host, "agent_end", {
-			type: "agent_end",
-			messages: [
-				{ role: "assistant", stopReason: "error", errorMessage: "socket hang up", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
-			],
-		});
-
-		expect(host.notifications.some((n) => n.includes("ended with an error"))).toBe(true);
+		await runTool(host, "create_goal", { objective: "work", token_budget: 500 });
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [assistantMessage({ input: 800, output: 100 })] });
+		const persisted = lastPersisted(host);
+		expect((persisted?.data as { goal: { status: string } }).goal.status).toBe("budgetLimited");
+		const notice = host.sent.find((m) => m.message.customType === "goal-ui");
+		expect(notice?.message.content.startsWith("Goal limited by budget")).toBe(true);
+		expect(host.sent.some((m) => m.message.customType === "goal-continuation")).toBe(false);
 	});
 
-	it("context pruning keeps only the newest goal messages and drops stale continuations", async () => {
+	it("a run error with a usage/rate/quota/limit message pauses as usageLimited", async () => {
 		const host = fakeHost();
-		defaultExport(host.pi);
-		await fire(host, "session_start", { type: "session_start", reason: "startup" });
-		await host.commands.goal!.handler("Do the thing", createContext(host));
-		const goalId = (host.entries.find((e) => e.customType === GOAL_STATE_ENTRY_TYPE)?.data as { goal: Goal }).goal.id;
+		await runCommand(host, "work");
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [assistantMessage({ input: 10 }, { stopReason: "error", errorMessage: "rate limit exceeded" })] });
+		const persisted = lastPersisted(host);
+		expect(persisted?.data).toMatchObject({ action: "status", goal: { status: "usageLimited" } });
+	});
 
-		const custom = (customType: string, details?: unknown) => ({ role: "custom", customType, display: false, details });
+	it("a run error with a generic message pauses as blocked", async () => {
+		const host = fakeHost();
+		await runCommand(host, "work");
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [assistantMessage({ input: 10 }, { stopReason: "error", errorMessage: "socket hang up" })] });
+		const persisted = lastPersisted(host);
+		expect(persisted?.data).toMatchObject({ action: "status", goal: { status: "blocked" } });
+	});
+
+	it("an abort in headless mode pauses the goal", async () => {
+		const host = fakeHost();
+		await runCommand(host, "work");
+		host.sent.length = 0;
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [assistantMessage({ input: 10 }, { stopReason: "aborted" })] });
+		const persisted = lastPersisted(host);
+		expect(persisted?.data).toMatchObject({ action: "status", goal: { status: "paused" } });
+		expect(host.sent.some((m) => m.message.customType === "goal-continuation")).toBe(false);
+	});
+
+	it("an abort with a UI confirmation declined keeps the goal and queues a continuation", async () => {
+		const host = fakeHost();
+		await runCommand(host, "work");
+		await host.fire("agent_start", {});
+		await host.fire(
+			"agent_end",
+			{ messages: [assistantMessage({ input: 10 }, { stopReason: "aborted" })] },
+			host.makeCtx({ hasUI: true, ui: { confirm: async () => false } }),
+		);
+		expect(host.sent.some((m) => m.message.customType === "goal-continuation")).toBe(true);
+	});
+});
+
+describe("continuation queueing", () => {
+	it("queues exactly one continuation after a clean agent_end", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it");
+		host.sent.length = 0;
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [assistantMessage({ input: 10 })] });
+		const continuations = host.sent.filter((m) => m.message.customType === "goal-continuation");
+		expect(continuations).toHaveLength(1);
+		expect(continuations[0]?.message.display).toBe(false);
+		expect(continuations[0]?.message.details?.goalId).toBeTruthy();
+		expect(continuations[0]?.options).toMatchObject({ triggerTurn: true });
+		expect(continuations[0]?.message.content).toContain("<untrusted_objective>");
+	});
+
+	it("does not queue while messages are pending", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it");
+		host.sent.length = 0;
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [] }, host.makeCtx({ hasPendingMessages: () => true }));
+		expect(host.sent.some((m) => m.message.customType === "goal-continuation")).toBe(false);
+	});
+
+	it("an idle session sends triggerTurn; a busy session sends followUp", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it");
+		host.sent.length = 0;
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [] }, host.makeCtx({ isIdle: () => false }));
+		const continuation = host.sent.find((m) => m.message.customType === "goal-continuation");
+		expect(continuation?.options).toMatchObject({ triggerTurn: true, deliverAs: "followUp" });
+	});
+});
+
+describe("context pruning", () => {
+	it("keeps only the newest continuation of the active goal and drops goal-ui messages", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it");
+		const goalId = ((lastPersisted(host)?.data as { goal: { id: string } }).goal).id;
 		const messages = [
+			{ role: "custom", customType: "goal-ui", content: "old ui" },
+			{ role: "custom", customType: "goal-continuation", content: "stale", details: { goalId } },
+			{ role: "custom", customType: "goal-continuation", content: "latest", details: { goalId } },
+			{ role: "custom", customType: "goal-continuation", content: "other goal", details: { goalId: "other" } },
 			{ role: "user", content: "hi" },
-			custom("goal-mode-context"), // stale context
-			custom("goal-continuation", { goalId: "old-goal" }), // stale goal id
-			custom("goal-budget-limit", { goalId: "old-goal" }), // stale steer: dropped
-			custom("goal-mode-context"), // newest context: kept
-			custom("goal-continuation", { goalId }), // newest for the active goal: kept
-			custom("goal-budget-limit", { goalId }), // steer for the active goal: kept
-			{ role: "assistant", content: "working" },
-			custom("goal-continuation", { goalId: "old-goal" }), // another stale: dropped
 		];
-
-		const handler = host.handlers.get("context")?.[0]!;
-		const result = (await handler({ type: "context", messages }, createContext(host))) as { messages: unknown[] };
-		const kept = result.messages.filter((m) => (m as { role?: string }).role === "custom");
-		expect(kept.map((m) => (m as { customType: string }).customType)).toEqual([
-			"goal-mode-context",
-			"goal-continuation",
-			"goal-budget-limit",
-		]);
-
-		// Once no goal is live, every continuation and budget-limit steer is dropped.
-		await host.commands.goal!.handler("drop", createContext(host));
-		const result2 = (await handler({ type: "context", messages }, createContext(host))) as { messages: unknown[] };
-		expect(result2.messages.filter((m) => (m as { customType?: string }).customType === "goal-continuation")).toHaveLength(0);
-		expect(result2.messages.filter((m) => (m as { customType?: string }).customType === "goal-budget-limit")).toHaveLength(0);
+		const results = await Promise.all((host.handlers.get("context") ?? []).map((handler) => handler({ messages }, host.makeCtx())));
+		const filtered = (results[0] as { messages: typeof messages }).messages;
+		expect(filtered.map((m) => (m as { content: string }).content)).toEqual(["latest", "hi"]);
 	});
+
+	it("drops all continuations once the goal is complete", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it");
+		const goalId = ((lastPersisted(host)?.data as { goal: { id: string } }).goal).id;
+		await runTool(host, "update_goal", { status: "complete" });
+		const messages = [
+			{ role: "custom", customType: "goal-continuation", content: "c", details: { goalId } },
+			{ role: "user", content: "hi" },
+		];
+		const results = await Promise.all((host.handlers.get("context") ?? []).map((handler) => handler({ messages }, host.makeCtx())));
+		const filtered = (results[0] as { messages: typeof messages }).messages;
+		expect(filtered).toHaveLength(1);
+	});
+});
+
+describe("/goal command", () => {
+	it("without arguments shows the summary of the active goal", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it");
+		await runCommand(host, "");
+		const notice = host.sent.find((m) => m.message.customType === "goal-ui");
+		expect(notice?.message.content).toContain("Status: active");
+		expect(notice?.message.content).toContain("Objective: ship it");
+	});
+
+	it("with no goal set shows usage help", async () => {
+		const host = fakeHost();
+		await runCommand(host, "");
+		const notice = host.sent.find((m) => m.message.customType === "goal-ui");
+		expect(notice?.message.content.startsWith("Usage: /goal <objective>")).toBe(true);
+	});
+
+	it("an objective sets the goal, persists, and queues a continuation", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it");
+		const persisted = lastPersisted(host);
+		expect(persisted).toMatchObject({ customType: "goal", data: { action: "set", goal: { objective: "ship it", status: "active" } } });
+		expect(host.sent.some((m) => m.message.customType === "goal-continuation")).toBe(true);
+	});
+
+	it("clear removes the goal and persists a null snapshot", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it");
+		await runCommand(host, "clear");
+		const persisted = lastPersisted(host);
+		expect(persisted).toMatchObject({ customType: "goal", data: { action: "clear", goal: null } });
+		expect(await runTool(host, "get_goal")).toMatchObject({ details: { goal: null } });
+	});
+
+	it("pause and resume round-trip the status", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it");
+		await runCommand(host, "pause");
+		expect(lastPersisted(host)?.data).toMatchObject({ action: "status", goal: { status: "paused" } });
+		await runCommand(host, "resume");
+		expect(lastPersisted(host)?.data).toMatchObject({ action: "status", goal: { status: "active" } });
+	});
+
+	it("resume of a goal without elapsed time queues a continuation", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it");
+		await runCommand(host, "pause");
+		host.sent.length = 0;
+		await runCommand(host, "resume");
+		expect(host.sent.some((m) => m.message.customType === "goal-continuation")).toBe(true);
+	});
+
+	it("edit requires interactive mode", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it");
+		await runCommand(host, "edit");
+		const notice = host.sent.find((m) => m.message.customType === "goal-ui" && m.message.content.includes("/goal edit requires interactive mode"));
+		expect(notice).toBeDefined();
+	});
+
+	it("edit replaces the objective through the editor", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it");
+		await runCommand(host, "edit", host.makeCtx({ hasUI: true, ui: { editor: async () => "ship it faster" } }));
+		const persisted = lastPersisted(host);
+		expect(persisted).toMatchObject({ customType: "goal", data: { action: "edit", goal: { objective: "ship it faster" } } });
+	});
+
+	it("edit cancelled by the editor notifies and changes nothing", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it");
+		const before = lastPersisted(host);
+		await runCommand(host, "edit", host.makeCtx({ hasUI: true, ui: { editor: async () => undefined } }));
+		expect(lastPersisted(host)).toBe(before);
+		expect(host.notifications.some((n) => n.text === "Goal edit cancelled")).toBe(true);
+	});
+
+	it("an empty objective is rejected by the tools with the validation error", async () => {
+		const host = fakeHost();
+		await expect(runTool(host, "create_goal", { objective: "   " })).rejects.toThrow(
+			"goal objective must not be empty",
+		);
+	});
+
+	it("an oversized objective is rejected", async () => {
+		const host = fakeHost();
+		await runCommand(host, "x".repeat(4_001));
+		const notice = host.sent.find((m) => m.message.customType === "goal-ui");
+		expect(notice?.message.content).toContain("Goal objective is too long");
+	});
+
+	it("replacing an unfinished goal requires confirmation in interactive mode", async () => {
+		const host = fakeHost();
+		await runCommand(host, "first");
+		await runCommand(host, "second");
+		// headless: rejected
+		const notice = host.sent.find((m) => m.message.customType === "goal-ui" && m.message.content.includes("unfinished goal already exists"));
+		expect(notice).toBeDefined();
+	});
+
+	it("the replacement confirm dialog declines keep the original goal", async () => {
+		const host = fakeHost();
+		await runCommand(host, "first");
+		const firstId = ((lastPersisted(host)?.data as { goal: { id: string } }).goal).id;
+		await runCommand(host, "second", host.makeCtx({ hasUI: true, ui: { confirm: async () => false } }));
+		const kept = lastPersisted(host)?.data as { goal: { id: string; objective: string } };
+		expect(kept.goal.id).toBe(firstId);
+		expect(kept.goal.objective).toBe("first");
+	});
+
+	it("argument completions list clear/edit/pause/resume", async () => {
+		const host = fakeHost();
+		const command = host.commands.get("goal");
+		const completions = command?.getArgumentCompletions?.("") ?? [];
+		expect(completions.map((item) => item.value).sort()).toEqual(["clear", "edit", "pause", "resume"]);
+		expect(command?.getArgumentCompletions?.("xyz")).toBeNull();
+	});
+});
+
+describe("tools", () => {
+	it("get_goal reports the wire shape with threadId and budget", async () => {
+		const host = fakeHost();
+		await runTool(host, "create_goal", { objective: "work" });
+		const result = (await runTool(host, "get_goal")) as { details: { goal: Record<string, unknown>; remainingTokens: number } };
+		expect(result.details.goal).toMatchObject({ threadId: "session-1", objective: "work", status: "active", tokenBudget: 2_000_000 });
+		expect(result.details.remainingTokens).toBe(2_000_000);
+	});
+
+	it("each tool returns structuredContent equivalent to the content JSON", async () => {
+		const host = fakeHost();
+		const created = (await runTool(host, "create_goal", { objective: "work", token_budget: 1000 })) as {
+			content: Array<{ type: string; text: string }>;
+			structuredContent: unknown;
+		};
+		expect(created.structuredContent).toEqual(JSON.parse(created.content[0]!.text));
+		const got = (await runTool(host, "get_goal")) as { content: Array<{ type: string; text: string }>; structuredContent: unknown };
+		expect(got.structuredContent).toEqual(JSON.parse(got.content[0]!.text));
+		const updated = (await runTool(host, "update_goal", { status: "complete" })) as {
+			content: Array<{ type: string; text: string }>;
+			structuredContent: unknown;
+		};
+		expect(updated.structuredContent).toEqual(JSON.parse(updated.content[0]!.text));
+		expect(updated.structuredContent).toMatchObject({ goal: { status: "complete" } });
+	});
+
+	it("create_goal persists a set entry and defaults the budget to 2M", async () => {
+		const host = fakeHost();
+		await runTool(host, "create_goal", { objective: "work" });
+		expect(lastPersisted(host)?.data).toMatchObject({ action: "set", goal: { objective: "work", tokenBudget: 2_000_000 } });
+	});
+
+	it("create_goal honors an explicit budget and rejects invalid ones", async () => {
+		const host = fakeHost();
+		await runTool(host, "create_goal", { objective: "work", token_budget: 123 });
+		expect((lastPersisted(host)?.data as { goal: { tokenBudget: number } }).goal.tokenBudget).toBe(123);
+		await runTool(host, "update_goal", { status: "complete" });
+		await expect(runTool(host, "create_goal", { objective: "again", token_budget: 0 })).rejects.toThrow(
+			"goal budgets must be positive integers",
+		);
+	});
+
+	it("create_goal fails while an unfinished goal exists", async () => {
+		const host = fakeHost();
+		await runTool(host, "create_goal", { objective: "work" });
+		await expect(runTool(host, "create_goal", { objective: "another" })).rejects.toThrow("unfinished goal");
+	});
+
+	it("create_goal replaces a completed goal", async () => {
+		const host = fakeHost();
+		await runTool(host, "create_goal", { objective: "first" });
+		await runTool(host, "update_goal", { status: "complete" });
+		await runTool(host, "create_goal", { objective: "second" });
+		expect(lastPersisted(host)?.data).toMatchObject({ action: "set", goal: { objective: "second" } });
+	});
+
+	it("update_goal complete persists the status and includes the completion report", async () => {
+		const host = fakeHost();
+		await runTool(host, "create_goal", { objective: "work", token_budget: 1000 });
+		const result = (await runTool(host, "update_goal", { status: "complete" })) as { details: { goal: { status: string }; completionBudgetReport: string | null } };
+		expect(result.details.goal.status).toBe("complete");
+		expect(result.details.completionBudgetReport).toContain("tokens used: 0 of 1000");
+		expect(lastPersisted(host)?.data).toMatchObject({ action: "status", goal: { status: "complete" } });
+	});
+
+	it("update_goal blocked persists the blocked status without a report", async () => {
+		const host = fakeHost();
+		await runTool(host, "create_goal", { objective: "work" });
+		const result = (await runTool(host, "update_goal", { status: "blocked" })) as { details: { goal: { status: string }; completionBudgetReport: string | null } };
+		expect(result.details.goal.status).toBe("blocked");
+		expect(result.details.completionBudgetReport).toBeNull();
+	});
+});
+
+describe("restore edge cases", () => {
+	it("the later of two goal entries wins", async () => {
+		const host = fakeHost();
+		host.entries.push(
+			goalEntry("set", { id: "g1", objective: "first", status: "active", tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 }),
+			goalEntry("edit", { id: "g1", objective: "second", status: "paused", tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 2 }),
+		);
+		await host.fire("session_start", {});
+		const result = (await runTool(host, "get_goal")) as { details: { goal: { objective: string; status: string } } };
+		expect(result.details.goal.objective).toBe("second");
+		expect(result.details.goal.status).toBe("paused");
+	});
+
+	it("an invalid persisted budget is dropped (budgetless goal)", async () => {
+		const host = fakeHost();
+		host.entries.push(
+			goalEntry("set", { id: "g1", objective: "work", status: "active", tokenBudget: -5, tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 }),
+		);
+		await host.fire("session_start", {});
+		const result = (await runTool(host, "get_goal")) as { details: { goal: { tokenBudget: number | null }; remainingTokens: number | null } };
+		expect(result.details.goal.tokenBudget).toBeNull();
+		expect(result.details.remainingTokens).toBeNull();
+	});
+
+	it("a restored complete goal is replaced by a new objective without confirmation", async () => {
+		const host = fakeHost();
+		host.entries.push(
+			goalEntry("status", { id: "g1", objective: "done", status: "complete", tokensUsed: 1, timeUsedSeconds: 1, createdAt: 1, updatedAt: 2 }),
+		);
+		await host.fire("session_start", {});
+		await runCommand(host, "fresh start");
+		expect(lastPersisted(host)?.data).toMatchObject({ action: "set", goal: { objective: "fresh start", status: "active" } });
+	});
+});
+
+describe("before_agent_start injection details", () => {
+	it("carries usage and budget numbers from the restored goal", async () => {
+		const host = fakeHost();
+		host.entries.push(
+			goalEntry("account", { id: "g1", objective: "work", status: "active", tokenBudget: 1000, tokensUsed: 100, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 }),
+		);
+		await host.fire("session_start", {});
+		const results = await Promise.all(
+			(host.handlers.get("before_agent_start") ?? []).map((handler) => handler({ systemPrompt: "BASE" }, host.makeCtx())),
+		);
+		const injection = results.find((result) => result !== undefined) as { systemPrompt: string } | undefined;
+		expect(injection?.systemPrompt).toContain("Tokens used: 100");
+		expect(injection?.systemPrompt).toContain("Token budget: 1000");
+		expect(injection?.systemPrompt).toContain("Tokens remaining: 900");
+	});
+
+	it("returns undefined for blocked and usageLimited goals", async () => {
+		for (const status of ["blocked", "usageLimited", "budgetLimited", "complete"]) {
+			const host = fakeHost();
+			host.entries.push(
+			goalEntry("status", { id: "g1", objective: "work", status, tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 }),
+		);
+			await host.fire("session_start", {});
+			const results = await Promise.all(
+				(host.handlers.get("before_agent_start") ?? []).map((handler) => handler({ systemPrompt: "BASE" }, host.makeCtx())),
+		);
+			expect(results.every((result) => result === undefined), status).toBe(true);
+		}
+	});
+});
+
+describe("agent_end accounting guards", () => {
+	it("a goal created mid-run (no agent_start) is not accounted", async () => {
+		const host = fakeHost();
+		await runCommand(host, "work");
+		await host.fire("agent_end", { messages: [assistantMessage({ input: 500, output: 100 })] });
+		const result = (await runTool(host, "get_goal")) as { details: { goal: { tokensUsed: number } } };
+		expect(result.details.goal.tokensUsed).toBe(0);
+		expect(lastPersisted(host)?.data).toMatchObject({ action: "set" });
+	});
+
+	it("a goal replaced after agent_start is not accounted to the new goal", async () => {
+		const host = fakeHost();
+		await runCommand(host, "first");
+		await host.fire("agent_start", {});
+		await runCommand(host, "second", host.makeCtx({ hasUI: true, ui: { confirm: async () => true } }));
+		await host.fire("agent_end", { messages: [assistantMessage({ input: 500, output: 100 })] });
+		const result = (await runTool(host, "get_goal")) as { details: { goal: { objective: string; tokensUsed: number } } };
+		expect(result.details.goal.objective).toBe("second");
+		expect(result.details.goal.tokensUsed).toBe(0);
+	});
+
+	it("sums multiple assistant messages and ignores other roles", async () => {
+		const host = fakeHost();
+		await runCommand(host, "work");
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", {
+			messages: [
+				{ role: "user", content: "hi" },
+			{ role: "toolResult", content: "out" },
+			assistantMessage({ input: 100, cacheRead: 0, output: 50 }),
+			assistantMessage({ input: 10, cacheRead: 30, output: 5, totalTokens: 20 }),
+			],
+		});
+		const goal = (lastPersisted(host)?.data as { goal: { tokensUsed: number } }).goal;
+		expect(goal.tokensUsed).toBe(155);
+	});
+
+	it("a zero-usage, zero-elapsed run persists no account entry", async () => {
+		const host = fakeHost();
+		await runCommand(host, "work");
+		host.sent.length = 0;
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [] });
+		expect(host.entries.filter((entry) => entry.customType === "goal" && (entry.data as { action: string }).action === "account")).toHaveLength(0);
+	});
+
+	it("reaching the budget exactly flips to budgetLimited", async () => {
+		const host = fakeHost();
+		await runTool(host, "create_goal", { objective: "work", token_budget: 500 });
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [assistantMessage({ input: 500 })] });
+		expect(lastPersisted(host)?.data).toMatchObject({ goal: { status: "budgetLimited", tokensUsed: 500 } });
+	});
+
+	it("staying under the budget keeps the goal active with a continuation", async () => {
+		const host = fakeHost();
+		await runTool(host, "create_goal", { objective: "work", token_budget: 5000 });
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [assistantMessage({ input: 100 })] });
+		expect(lastPersisted(host)?.data).toMatchObject({ goal: { status: "active", tokensUsed: 100 } });
+		expect(host.sent.some((m) => m.message.customType === "goal-continuation")).toBe(true);
+	});
+
+	it("a paused goal at agent_end persists nothing and queues nothing", async () => {
+		const host = fakeHost();
+		host.entries.push(
+			goalEntry("status", { id: "g1", objective: "work", status: "paused", tokensUsed: 7, timeUsedSeconds: 1, createdAt: 1, updatedAt: 2 }),
+		);
+		await host.fire("session_start", {});
+		const entriesBefore = host.entries.length;
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [assistantMessage({ input: 100 })] });
+		expect(host.entries.length).toBe(entriesBefore);
+		expect(host.sent.some((m) => m.message.customType === "goal-continuation")).toBe(false);
+	});
+});
+
+describe("continuation single-flight and failure", () => {
+	it("a second agent_end without agent_start queues no second continuation", async () => {
+		const host = fakeHost();
+		await runCommand(host, "work");
+		host.sent.length = 0;
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [] });
+		await host.fire("agent_end", { messages: [] });
+		expect(host.sent.filter((m) => m.message.customType === "goal-continuation")).toHaveLength(1);
+	});
+
+	it("a failed sendMessage notifies, and the next run can queue again", async () => {
+		const host = fakeHost();
+		await runCommand(host, "work");
+		host.sent.length = 0;
+		const pi = host.pi as { sendMessage: (message: unknown, options?: unknown) => void };
+		const original = pi.sendMessage;
+		pi.sendMessage = () => {
+			throw new Error("boom");
+		};
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [] });
+		pi.sendMessage = original;
+		expect(host.notifications.some((n) => n.text.startsWith("Failed to queue goal continuation: boom"))).toBe(true);
+		await host.fire("agent_end", { messages: [] });
+		expect(host.sent.filter((m) => m.message.customType === "goal-continuation")).toHaveLength(1);
+	});
+
+	it("the continuation prompt carries the budget numbers", async () => {
+		const host = fakeHost();
+		await runTool(host, "create_goal", { objective: "work", token_budget: 2000 });
+		host.sent.length = 0;
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [assistantMessage({ input: 500 })] });
+		const continuation = host.sent.find((m) => m.message.customType === "goal-continuation");
+		expect(continuation?.message.content).toContain("Tokens used: 500");
+		expect(continuation?.message.content).toContain("Token budget: 2000");
+		expect(continuation?.message.content).toContain("Tokens remaining: 1500");
+	});
+});
+
+describe("context pruning without a goal", () => {
+	it("drops all goal-ui and continuation messages once no goal exists", async () => {
+		const host = fakeHost();
+		const messages = [
+			{ role: "custom", customType: "goal-ui", content: "ui" },
+			{ role: "custom", customType: "goal-continuation", content: "c", details: { goalId: "whatever" } },
+			{ role: "user", content: "hi" },
+		];
+		const results = await Promise.all((host.handlers.get("context") ?? []).map((handler) => handler({ messages }, host.makeCtx())));
+		const filtered = (results[0] as { messages: typeof messages }).messages;
+		expect(filtered).toHaveLength(1);
+		expect((filtered[0] as { content: string }).content).toBe("hi");
+	});
+});
+
+describe("command edge cases", () => {
+	it("subcommands match case-insensitively", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it");
+		await runCommand(host, "PAUSE");
+		expect(lastPersisted(host)?.data).toMatchObject({ action: "status", goal: { status: "paused" } });
+	});
+
+	it("clear without a goal persists a null snapshot and says so", async () => {
+		const host = fakeHost();
+		await runCommand(host, "clear");
+		expect(lastPersisted(host)?.data).toMatchObject({ action: "clear", goal: null });
+		const notice = host.sent.find((m) => m.message.customType === "goal-ui" && m.message.content.includes("No goal to clear"));
+		expect(notice).toBeDefined();
+	});
+
+	it("pause and resume without a goal report the error", async () => {
+		const host = fakeHost();
+		await runCommand(host, "pause");
+		await runCommand(host, "resume");
+		const failures = host.sent.filter(
+			(m) => m.message.customType === "goal-ui" && m.message.content.includes("Failed to update thread goal"),
+		);
+		expect(failures).toHaveLength(2);
+		expect(failures[0]?.message.content).toContain("cannot update goal because no goal exists");
+	});
+
+	it("a confirmed replacement swaps the goal for a new id", async () => {
+		const host = fakeHost();
+		await runCommand(host, "first");
+		const firstId = ((lastPersisted(host)?.data as { goal: { id: string } }).goal).id;
+		await runCommand(host, "second", host.makeCtx({ hasUI: true, ui: { confirm: async () => true } }));
+		const persisted = lastPersisted(host)?.data as { action: string; goal: { id: string; objective: string } };
+		expect(persisted.action).toBe("set");
+		expect(persisted.goal.id).not.toBe(firstId);
+		expect(persisted.goal.objective).toBe("second");
+	});
+
+	it("editing a budgetLimited goal revives it to active and queues a continuation", async () => {
+		const host = fakeHost();
+		await runTool(host, "create_goal", { objective: "work", token_budget: 100 });
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [assistantMessage({ input: 150 })] });
+		host.sent.length = 0;
+		await runCommand(host, "edit", host.makeCtx({ hasUI: true, ui: { editor: async () => "work v2" } }));
+		expect(lastPersisted(host)?.data).toMatchObject({ action: "edit", goal: { objective: "work v2", status: "active" } });
+		expect(host.sent.some((m) => m.message.customType === "goal-continuation")).toBe(true);
+	});
+
+	it("goal-ui messages never trigger a turn", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it");
+		const notice = host.sent.find((m) => m.message.customType === "goal-ui");
+		expect(notice?.options).toMatchObject({ triggerTurn: false });
+	});
+
+	it("the budgetLimited summary offers only edit and clear", async () => {
+		const host = fakeHost();
+		await runTool(host, "create_goal", { objective: "work", token_budget: 100 });
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [assistantMessage({ input: 150 })] });
+		host.sent.length = 0;
+		await runCommand(host, "");
+		const notice = host.sent.find((m) => m.message.customType === "goal-ui");
+		expect(notice?.message.content).toContain("Status: limited by budget");
+		expect(notice?.message.content).toContain("Commands: /goal edit, /goal clear");
+	});
+});
+
+describe("tool edge cases", () => {
+	it("create_goal rejects an oversized objective", async () => {
+		const host = fakeHost();
+		await expect(runTool(host, "create_goal", { objective: "x".repeat(4_001) })).rejects.toThrow(
+			"Goal objective is too long",
+		);
+	});
+
+	it("update_goal without a goal throws", async () => {
+		const host = fakeHost();
+		await expect(runTool(host, "update_goal", { status: "complete" })).rejects.toThrow(
+			"cannot update goal because no goal exists",
+		);
+	});
+
+	it("update_goal complete reports elapsed time", async () => {
+		const host = fakeHost();
+		await runCommand(host, "work");
+		vi.setSystemTime(Date.now() + 3_000);
+		await host.fire("agent_start", {});
+		await host.fire("agent_end", { messages: [] });
+		const result = (await runTool(host, "update_goal", { status: "complete" })) as { details: { completionBudgetReport: string | null } };
+		expect(result.details.completionBudgetReport).toContain("time used: 3s");
+	});
+});
+
+describe("status footer", () => {
+	it("is only written in interactive mode", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it");
+		expect(host.statuses.size).toBe(0);
+	});
+
+	it("renders per-status texts", async () => {
+		const host = fakeHost();
+		await runCommand(host, "ship it", host.makeCtx({ hasUI: true }));
+		expect(host.statuses.get("goal")).toBe("Pursuing goal (0 / 2M)");
+		await runCommand(host, "pause", host.makeCtx({ hasUI: true }));
+		expect(host.statuses.get("goal")).toBe("Goal paused (/goal resume)");
+		await runCommand(host, "resume", host.makeCtx({ hasUI: true }));
+		await runTool(host, "update_goal", { status: "blocked" }, host.makeCtx({ hasUI: true }));
+		expect(host.statuses.get("goal")).toBe("Goal blocked (/goal resume)");
+		await runCommand(host, "clear", host.makeCtx({ hasUI: true }));
+		expect(host.statuses.get("goal")).toBeUndefined();
+	});
+
+	it("budgetLimited and complete render their own texts", async () => {
+		const host = fakeHost();
+		host.entries.push(
+			goalEntry("status", { id: "g1", objective: "work", status: "budgetLimited", tokensUsed: 5, timeUsedSeconds: 0, createdAt: 1, updatedAt: 2 }),
+		);
+		await host.fire("session_start", {}, host.makeCtx({ hasUI: true }));
+		expect(host.statuses.get("goal")).toBe("Goal budget reached");
+	});
+});
+
+describe("time accounting", () => {
+	it("elapsed time freezes while paused", async () => {
+		const host = fakeHost();
+		await runCommand(host, "work");
+		vi.setSystemTime(Date.now() + 5_000);
+		await runCommand(host, "pause");
+		const atPause = ((await runTool(host, "get_goal")) as { details: { goal: { timeUsedSeconds: number } } }).details.goal.timeUsedSeconds;
+		vi.setSystemTime(Date.now() + 10_000);
+		const later = ((await runTool(host, "get_goal")) as { details: { goal: { timeUsedSeconds: number } } }).details.goal.timeUsedSeconds;
+		expect(atPause).toBe(5);
+		expect(later).toBe(5);
+	});
+
+	it("get_goal snapshots live elapsed seconds mid-session", async () => {
+		const host = fakeHost();
+		await runCommand(host, "work");
+		vi.setSystemTime(Date.now() + 4_000);
+		const result = (await runTool(host, "get_goal")) as { details: { goal: { timeUsedSeconds: number } } };
+		expect(result.details.goal.timeUsedSeconds).toBe(4);
+	});
+});
+
+beforeEach(() => {
+	vi.useFakeTimers();
+});
+
+afterEach(() => {
+	vi.useRealTimers();
 });

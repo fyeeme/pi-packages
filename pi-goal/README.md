@@ -1,21 +1,21 @@
 # pi-goal
 
-oh-my-pi's **goal mode** migrated to a [pi](https://github.com/earendil-works/pi-coding-agent) extension: one persistent autonomous objective looped until the agent can *prove* the success criteria — not until it runs out of things to say.
+Goal mode for [pi](https://github.com/earendil-works/pi-coding-agent): one persistent objective that survives across turns — the agent keeps working toward it through automatic continuations until it can prove the objective achieved, or that it is genuinely blocked.
 
-Source: [oh-my-pi](https://github.com/can1357/oh-my-pi) (a fork of badlogic/pi-mono), `packages/coding-agent/src/goals` + the goal wiring in its agent session and interactive mode. The runtime semantics are ported behavior-for-behavior; host-internal surfaces are mapped to pi's extension API (see the adaptation table in `index.ts`). One deliberate deviation, absorbed from Claude Code 2.1.261's goal design (binary-verified 2026-09-07): **completion is gated by an independent evaluator** instead of self-graded — see below.
+Rewritten from [mitsuhiko/agent-stuff](https://github.com/mitsuhiko/agent-stuff) `extensions/goal.ts` (Apache-2.0). The implementation is carried over as-is; single-file `index.ts`, no build step. Earlier releases were a port of oh-my-pi's goal mode — see [CHANGELOG](./CHANGELOG.md) for what changed.
 
 ## What it does
 
-- **`goal` tool** — `create` / `get` / `complete` / `resume` / `impossible` / `drop`. Creating a goal enables goal mode; completing it requires verified evidence of every deliverable (see the evaluator gate below); the runtime refuses double-completes.
-- **Independent evaluator gate (CC 2.1.261 absorption)** — `goal({op:"complete", evidence})` passes the agent's per-deliverable audit to a fresh `pi -p` subprocess that re-verifies the repository itself (it can run the tests — grounded, unlike CC's transcript-only evaluator). Its JSON contract defaults to *insufficient evidence = not met*. A refuted claim keeps the goal active and returns the evaluator's findings; the tool result tells the model to fix the gaps and re-claim with stronger evidence. If the evaluator subprocess cannot run (spawn failure, timeout ≈ 10 min, unparseable output), completion falls back to the omp self-audit behavior, honestly labeled in the result.
-- **`impossible` channel (CC 2.1.261 absorption)** — when the agent believes the goal genuinely cannot be achieved this session, `goal({op:"impossible", reason})` sends the claim to the evaluator, which independently confirms or refutes it ("the claim is evidence, not proof"). Confirmed → the goal pauses (`reason: impossible-confirmed`) and the model must report honestly to the user. Refuted → keep working; after 2 unconfirmed disputes the goal pauses for a human decision (`reason: impossible-disputed`). An unadjudicated claim (evaluator unavailable) changes nothing.
-- **Autonomous continuation** — when the agent yields while the goal is still active, pi-goal re-submits a hidden continuation prompt that restates the objective and the verification checklist, so work continues across turns without user nudges. A continuation turn that produced no tool calls suppresses the next one (no infinite idle loops); a real user message re-arms the loop. While a blocking dialog is open (`/goal` menus, confirmations, or any extension's `ask_user`), continuations are withheld via `ui_prompt_start`/`ui_prompt_end` and resume when the dialog closes.
-- **Budget accounting** — optional `token_budget` per goal. pi-goal counts input + output + cache writes (cache reads are reused prefix, not new work) plus wall-clock seconds. Crossing the budget flips the goal to `budget-limited` and steers the agent once with a wrap-up instruction. Budget exhaustion is explicitly *not* completion.
-- **Interrupt safety** — Esc interrupts pause the goal (never complete it); usage accumulated so far is kept. Resuming a session auto-pauses a still-active goal, since the run that owned it is gone.
-- **`/goal` command** — `set <objective>`, `show`, `pause`, `resume`, `drop`, `budget <N|off>`, or an interactive menu when called without arguments. Typing an objective while a goal is active (or paused) is rejected with omp's status/warning; `/goal drop` and the menu's Drop confirm before discarding.
-- **`/guided-goal [rough objective]`** — the agent interviews you in normal chat (success criteria, verification method, attempt cap, scope boundaries, stop conditions) and then creates the goal itself via `goal create`.
-- **Footer status** — a `<icon> Goal <used/budget>` segment (omp `renderGoalMode` unicode icon set: 🎯 active, ⏸ paused, ⚠ budget-limited) while the goal is enabled or paused. With [pi-todo](../pi-todo) live, a ` · <closed>/<total> tasks` suffix tracks todo progress (live via `todo_updated`, restored from session entries). Completed goals stay visible in the transcript after reloads via a persistent `goal-completed` entry renderer.
-- **pi-todo integration** — when [pi-todo](../pi-todo) is installed, the goal context message includes a live `<todo_context>` block so continuations treat todos as current state, not stale transcript decoration.
+- **Three tools** — `get_goal` (status, budgets, elapsed time, remaining budget), `create_goal` (explicit user requests only; fails while an unfinished goal exists, replaces a completed one), `update_goal` (marks the goal `complete` or `blocked` — nothing else; status changes like pause/resume stay user-controlled).
+- **Strict completion audit** — the continuation and system prompts require per-requirement evidence from current repo state before `complete`; "ran out of things to say" and "budget nearly exhausted" are explicitly not completion.
+- **Blocked audit** — `blocked` requires the same blocking condition to repeat for three consecutive goal turns at a true impasse; resuming resets the audit.
+- **`/goal` command** — `/goal <objective>` sets a goal (replace confirmation when one is unfinished); bare `/goal` shows the current summary; subcommands `clear`, `edit` (interactive objective editor), `pause`, `resume`.
+- **Token budget** — defaults to 2,000,000 tokens; `create_goal` accepts an explicit `token_budget`. Accounting adds `max(0, input - cacheRead) + output` per finished run (falling back to `totalTokens`), plus wall-clock seconds. Crossing the budget flips the goal to `budgetLimited`, posts a summary, and stops queueing continuations — it never silently completes the goal.
+- **Automatic continuation** — after a clean run ends with the goal still active, a hidden `goal-continuation` message restates the objective, budget, and audits and triggers the next turn. One continuation is queued at a time; pending messages suppress queueing.
+- **Run failure handling** — an errored run stops the loop and records `usageLimited` (usage/rate/quota/limit errors) or `blocked` (anything else); an aborted run pauses the goal (headless) or asks (interactive).
+- **Session persistence** — every transition appends a full-snapshot `goal` custom entry (`{ version: 2, action: set|edit|status|clear|account, goal }`). Restore replays the latest entry on the active branch on reload and tree navigation. Objectives are capped at 4,000 characters.
+- **Context hygiene** — a `context` handler drops `goal-ui` messages and all but the newest continuation of the active goal from the model view.
+- **Footer status** — `Pursuing goal (<tokens> / <budget>)` while active, plus per-status hints (`Goal paused (/goal resume)`, `Goal budget reached`, `Goal complete`, …).
 
 ## Install
 
@@ -28,32 +28,23 @@ or copy/link this directory into `~/.pi/agent/extensions/` (global) or `.pi/exte
 ## Usage
 
 ```
-/goal Ship the parser rewrite with all tests passing    # start working
-/goal show                                              # objective, status, tokens, time
-/goal budget 200000                                     # cap the spend
+/goal Ship the parser rewrite with all tests passing   # start working
+/goal                                                   # current goal summary
 /goal pause            # ... later ...  /goal resume
-/goal drop
+/goal edit             # rewrite the objective (interactive)
+/goal clear            # remove the goal
 ```
 
-Status line: a `<icon> Goal <used/budget>` segment appears in the footer while a goal is enabled or paused (omp footer segment semantics); with pi-todo live it becomes `🎯 Goal 12K/399K · 3/10 tasks`.
-
-## Session persistence
-
-Every transition writes a full snapshot entry (`goal-state`, `goal-cleared`, `goal-completed`) to the session. Restore scans the current branch backward, so forks and tree navigation restore branch-local state. Usage totals are derived from the session's own message entries — they survive compaction.
-
-## Integration contract for other extensions
-
-- Emits `goal_updated` on the shared extension event bus (`pi.events`) after every runtime transition: `{ goal: Goal | null, state: GoalModeState | undefined }`.
-- Reads `todo_updated` events and `todo-phases` entries from pi-todo (works without pi-todo installed).
+The model drives completion itself: when the objective is achieved it calls `update_goal` with `status: "complete"` and reports final budget usage; when truly stuck after three consecutive blocked turns it calls `update_goal` with `status: "blocked"`.
 
 ## Development
 
 ```bash
 npm install --ignore-scripts
-npm test        # vitest, 160 tests
+npm test        # vitest, 43 tests
 npm run typecheck
 ```
 
 ## License
 
-MIT
+MIT. Derived from [mitsuhiko/agent-stuff](https://github.com/mitsuhiko/agent-stuff) `extensions/goal.ts` (Apache-2.0).
