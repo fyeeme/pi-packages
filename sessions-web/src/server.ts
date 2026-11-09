@@ -158,7 +158,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
 
 		const sessionMatch = /^\/session\/([^/]+)$/.exec(url.pathname);
 		if (sessionMatch) {
-			const id = decodeURIComponent(sessionMatch[1] ?? "");
+			const id = decodeURIComponent(sessionMatch[1]);
 			// Ids are UUID-shaped; reject anything else before touching the filesystem.
 			if (!/^[a-zA-Z0-9-]{8,64}$/.test(id)) {
 				sendHtml(response, 404, renderErrorPage("Session not found", `Invalid session id: ${id}`));

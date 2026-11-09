@@ -717,7 +717,7 @@ function renderEntryAsChat(entry: SessionEntry): string {
 function renderSubtree(node: SessionTreeNode, mainPath: Set<string>, out: string[]): void {
 	const rendered = renderEntryAsChat(node.entry);
 	if (rendered) out.push(rendered);
-	const children = node.children ?? [];
+	const children = node.children;
 	const mainChild = children.find((child) => mainPath.has(child.entry.id));
 	for (const child of children) {
 		if (child === mainChild) continue;
@@ -738,13 +738,13 @@ function renderSubtree(node: SessionTreeNode, mainPath: Set<string>, out: string
 function renderSubtreeFully(node: SessionTreeNode, out: string[]): void {
 	const rendered = renderEntryAsChat(node.entry);
 	if (rendered) out.push(rendered);
-	for (const child of node.children ?? []) renderSubtreeFully(child, out);
+	for (const child of node.children) renderSubtreeFully(child, out);
 }
 
 function findNode(root: SessionTreeNode, id: string | null): SessionTreeNode | undefined {
 	if (!id) return undefined;
 	if (root.entry.id === id) return root;
-	for (const child of root.children ?? []) {
+	for (const child of root.children) {
 		const found = findNode(child, id);
 		if (found) return found;
 	}
@@ -752,7 +752,7 @@ function findNode(root: SessionTreeNode, id: string | null): SessionTreeNode | u
 }
 
 function findParent(root: SessionTreeNode, childId: string): SessionTreeNode | undefined {
-	for (const child of root.children ?? []) {
+	for (const child of root.children) {
 		if (child.entry.id === childId) return root;
 		const found = findParent(child, childId);
 		if (found) return found;
@@ -928,10 +928,6 @@ function sessionTitleOf(entries: readonly SessionEntry[]): string {
 	return (name && cleanTitle(name)) || cleanTitle(firstUser);
 }
 
-function hasGetTree(manager: SessionManager): manager is SessionManager & { getTree(): SessionTreeNode[] } {
-	return typeof (manager as SessionManager & { getTree?: unknown }).getTree === "function";
-}
-
 export interface StaticScripts {
 	marked: string;
 	highlight: string;
@@ -996,11 +992,7 @@ export function renderSessionPage(
 function renderViewBody(manager: SessionManager, view: "chat" | "trace"): string {
 	const entries = manager.getEntries();
 	const leafId = manager.getLeafId();
-	return hasGetTree(manager)
-		? view === "trace"
-			? renderTraceView(entries)
-			: renderChatView(manager.getTree(), leafId)
-		: renderTraceView(entries);
+	return view === "trace" ? renderTraceView(entries) : renderChatView(manager.getTree(), leafId);
 }
 
 /** Standalone view fragment for the SPA switcher to fetch and inject. */

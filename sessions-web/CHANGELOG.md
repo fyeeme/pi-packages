@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-09
+
+### Added
+
+- npm `files` now includes `CHANGELOG.md`, so published packages ship the changelog and pi 1.5.0 shows it under "Extension Updates" on the first fresh launch after an update (pi reads `CHANGELOG.md` from the package root by default; no `pi.changelogPath` needed).
+
+### Fixed
+
+- Removed defenses against paths the type system already guarantees: the session-id capture is used directly when decoding (`[^/]+` regex capture is never empty, so `?? ""` is gone), the required `SessionTreeNode.children` array is read without `?? []` in the four tree walks, and the `hasGetTree` runtime guard is gone — `renderViewBody` calls `SessionManager.getTree()` directly.
+
+### Changed
+
+- Dev dependencies now pin `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` at 1.5.0 (was 1.3.0), so type-check and tests run against the pi 1.5.0 types.
+
 ## [0.1.0] - 2026-10-29
 
 ### Added
