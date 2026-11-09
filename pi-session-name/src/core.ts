@@ -61,10 +61,11 @@ export function truncateTitleUtf8(input: string, maxBytes: number): string {
 export function normalizeSessionTitle(raw: string, maxBytes: number): string | null {
 	if (!raw) return null;
 	let t = cleanTitleText(raw);
-	t = t.replace(/^["'`\u300C\u300E\uFF08(\[]+|["'`\u300D\u300F\uFF09)\].]+$/g, "").trim();
+	t = t.replace(/^["'`\u201C\u201D\u2018\u2019\u300C\u300E\uFF08(\[]+|["'`\u201C\u201D\u2018\u2019\u300D\u300F\uFF09)\].]+$/g, "").trim();
 	t = t.replace(/\s+/g, " ");
 	t = t.replace(/[.\u3002!\uFF01?\uFF1F]+$/g, "");
 	if (!t) return null;
+	t = Array.from(t).slice(0, TITLE_MAX_CHARS).join("");
 	t = truncateTitleUtf8(t, maxBytes).trimEnd();
 	return t.length > 0 ? t : null;
 }
@@ -199,36 +200,52 @@ export function buildTitleMessages(
 // defaults (deepseek-harness leaves them to deployment configuration).
 // ---------------------------------------------------------------------------
 
-export const TITLE_TARGET_WORDS = 6;
+export const TITLE_TARGET_WORDS = 8;
 export const TITLE_TARGET_CJK_CHARACTERS = 18;
+/** Hard character cap for an accepted title (codex uses 36; 48 keeps room for
+ *  CJK/Latin spacing so the model never needs to drop spaces to fit). */
+export const TITLE_MAX_CHARS = 48;
 
-/** Prompt style: "concise" = deepseek-harness wording (default); "editorial" =
- *  the same architecture plus pi's distinctiveness/concrete-detail rules.
- *  A/B on 50 local sessions (glm-5.3-flash): concise yields 96% titles at
- *  512 output tokens; editorial rules induce longer chain-of-thought on
- *  reasoning models, so its output budget is raised to 1024 tokens. */
+/** Prompt style: "concise" = codex-derived format discipline (default);
+ *  "editorial" = the same discipline plus pi's distinctiveness/concrete-detail
+ *  rules. Both share the 2048-token output budget — reasoning models burn
+ *  tokens on chain-of-thought before the title (512 starved 4% of eval
+ *  scenarios), and editorial's extra rules add ~30% chain-of-thought. */
 export type PromptStyle = "concise" | "editorial";
 
-export const TITLE_MAX_OUTPUT_TOKENS: Record<PromptStyle, number> = { concise: 512, editorial: 1024 };
+export const TITLE_MAX_OUTPUT_TOKENS: Record<PromptStyle, number> = { concise: 2048, editorial: 2048 };
 
-/** Stable language-aware system instruction. "concise" is deepseek-harness
- *  wording; "editorial" keeps the same format discipline and adds pi's
- *  distinctiveness rules (higher information density, higher token cost). */
+/** Stable language-aware system instruction. Codex-derived discipline:
+ *  verb-first phrasing, identifier preservation, user's language, no
+ *  quotes/markdown/trailing punctuation, and "do not answer the request".
+ *  JSON output keeps the shape parseable without a provider-level
+ *  response_format (streamSimple exposes no json_schema option). */
 export function titleSystemPrompt(style: PromptStyle = "concise"): string {
-	const base = [
-		"Create a concise title for an AI coding-assistant session from the supplied human messages.",
-		"Return only the title on one line, **in plain text of natural language**, with no quotes, prefix, explanation, Markdown, XML, or terminal control codes. No code is allowed.",
-		"Use the language of the user's own words: ignore quoted file paths, code, and machine-generated references such as skill blocks; a message with no user-written words does not count for the language. When the user's text mixes languages, follow its dominant language.",
+	const intro = [
+		"Create a concise, single-line title for an AI coding-assistant session from the supplied human messages.",
+		'Return only JSON in the shape {"title": "…"} with one plain-text title string inside. No code is allowed.',
 	];
+	const rules = [
+		'- Start with a verb: imperative in English ("Fix", "Add", "Migrate"); natural verb-first phrasing in the user\'s language.',
+		"- Keep a single space between CJK and Latin segments; never remove spaces to save length.",
+		"- Write in the language of the user's own words: ignore quoted file paths, code, and machine-generated references such as skill blocks; a message with no user-written words does not count for the language.",
+		"- Preserve exact task identifiers: ticket IDs, error codes (e.g. E0502), file names, API paths.",
+		"- In English, capitalize only the first word unless proper nouns, acronyms, or code terms require otherwise.",
+		"- No quotes around the title, no Markdown, no emoji, no trailing punctuation, no terminal control codes.",
+		"- Do not answer the request; only title it.",
+	];
+	const conciseCap = `- At most ${TITLE_MAX_CHARS} characters: roughly ${TITLE_TARGET_CJK_CHARACTERS} CJK characters, or up to ${TITLE_TARGET_WORDS} words otherwise.`;
+	const editorialCap = "- Aim for roughly 15-40 characters in CJK languages, or 5-12 words in other languages.";
 	if (style === "editorial") {
 		return [
-			...base,
+			...intro,
+			editorialCap,
+			...rules,
 			'Distinctiveness first: the title must tell this session apart from other sessions in the list. Generic labels ("bug fix", "problem analysis", "code review") could describe any session — never use them as the headline.',
 			"Carry the concrete detail: name the specific module, error, symptom, or business object involved, and include the single most identifying identifier (ticket, order, class, or file name) when there is one.",
-			"Aim for roughly 15-40 characters in CJK languages, or 5-12 words in other languages.",
 		].join("\n");
 	}
-	return [...base, `Aim for about ${TITLE_TARGET_WORDS} words in non-CJK languages or ${TITLE_TARGET_CJK_CHARACTERS} CJK characters.`].join("\n");
+	return [...intro, conciseCap, ...rules].join("\n");
 }
 
 /** Frame exact messages as JSON so user text cannot break structural delimiters. */
@@ -240,7 +257,8 @@ export function frameTitleMessages(messages: readonly string[]): string {
 export interface TitleRequest {
 	readonly system: string;
 	readonly user: string;
-	/** Style-dependent output budget (concise 512 / editorial 1024 tokens). */
+	/** Style-dependent output token budget (reasoning models burn tokens before
+	 *  the answer; 2048 leaves headroom — 512 starved 4% of eval scenarios). */
 	readonly maxOutputTokens: number;
 }
 
@@ -265,6 +283,8 @@ export function buildVerdictRequest(currentName: string, messages: readonly stri
 		"If it is inaccurate, outdated, or hard to tell apart from other sessions, reply with a NEW title instead:",
 		"- The new title is one line of plain text: no quotes, no Markdown, no code, no explanation.",
 		"- Use the language of the user's own words: ignore quoted file paths, code, and machine-generated references such as skill blocks; a message with no user-written words does not count for the language. When mixed, follow the dominant language of the user's text.",
+		"- Keep a single space between CJK and Latin segments; never remove spaces to save length.",
+		"- Preserve exact task identifiers: ticket IDs, error codes, file names, API paths.",
 		...(style === "editorial"
 			? [
 				'- Distinctiveness first: never use generic labels ("bug fix", "code review") as the headline; carry the concrete module, error, or identifier.',
@@ -276,10 +296,10 @@ export function buildVerdictRequest(currentName: string, messages: readonly stri
 }
 
 // ---------------------------------------------------------------------------
-// Creation-time prefix — pi's session list sorts by last-modified, so an
+// Creation-time suffix — pi's session list sorts by last-modified, so an
 // edited old session resurfaces at the top and its age becomes invisible.
-// Prefixing the creation time (parsed from the session file name) keeps it
-// discoverable: "yyyy-mm-dd hh:mm - <title>".
+// Suffixing the creation time (parsed from the session file name) keeps it
+// discoverable: "<title> - yyyy-mm-dd hh:mm".
 // ---------------------------------------------------------------------------
 
 /** Parse the session's creation timestamp from its file name
@@ -299,13 +319,13 @@ export function formatCreationPrefix(d: Date): string {
 	return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-/** Prefix the creation time: "yyyy-mm-dd hh:mm - title". Best effort: the
+/** Suffix the creation time: "title - yyyy-mm-dd hh:mm". Best effort: the
  *  title is returned unchanged when the stamp is unavailable or disabled. */
 export function withCreationTime(title: string, sessionFile: string | undefined, enabled: boolean): string {
 	if (!enabled) return title;
 	const d = sessionCreationTime(sessionFile);
 	if (!d) return title;
-	return `${formatCreationPrefix(d)} - ${title}`;
+	return `${title} - ${formatCreationPrefix(d)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -318,8 +338,8 @@ export interface SessionNameConfig {
 	 *  "editorial" (adds pi's distinctiveness rules; higher output budget). */
 	prompt: PromptStyle;
 	enabled: boolean;
-	/** Prefix the session's creation time onto every set title
-	 *  ("yyyy-mm-dd hh:mm - title"), because the resume list sorts by
+	/** Suffix the session's creation time onto every set title
+	 *  ("title - yyyy-mm-dd hh:mm"), because the resume list sorts by
 	 *  last-modified. Default true. */
 	appendCreationTime: boolean;
 	/** Maximum UTF-8 bytes in an accepted title (byte budget, deepseek-harness
@@ -437,6 +457,27 @@ const TITLE_TIMEOUT_MS = 20_000;
 /** Asterisk emphasis wrapping a whole line, such as `**Title**`. */
 const EMPHASIS_WRAPPER = /^(?<marker>\*{1,3})(?<inner>\S(?:.*\S)?)\k<marker>$/u;
 
+/** Fenced-code wrapper a model sometimes adds around the JSON reply. */
+const CODE_FENCE = /^```[a-zA-Z]*\n?|\n?```$/g;
+
+/** Take the title from model output. Codex-derived order: try JSON
+ *  {"title": "…"} first (with the fence stripped), then fall back to the
+ *  first non-empty line without whole-line asterisk emphasis. */
+export function parseTitleOutput(text: string): string {
+	const stripped = text.trim().replace(CODE_FENCE, "");
+	if (stripped.startsWith("{")) {
+		try {
+			const parsed: unknown = JSON.parse(stripped);
+			if (parsed && typeof parsed === "object" && typeof (parsed as { title?: unknown }).title === "string") {
+				return (parsed as { title: string }).title;
+			}
+		} catch {
+			// malformed JSON — fall through to the plain-text path
+		}
+	}
+	return titleFromOutput(text);
+}
+
 /** Take the title from model output: the first non-empty line, without
  *  whole-line asterisk emphasis. */
 export function titleFromOutput(text: string): string {
@@ -487,7 +528,7 @@ export async function generateTitle(
 		)
 		.result();
 	if (response.stopReason !== "stop") return "";
-	return titleFromOutput(
+	return parseTitleOutput(
 		response.content
 			.filter((c): c is { type: "text"; text: string } => c.type === "text")
 			.map((c) => c.text)
@@ -503,15 +544,11 @@ type ClassifierLike = Parameters<ExtensionContext["modelRegistry"]["classify"]>[
 
 /** First available classifier model, or null when the host has none. */
 export async function resolveClassifierModel(ctx: ExtensionContext): Promise<ClassifierLike | null> {
-	const registry = ctx.modelRegistry as ExtensionContext["modelRegistry"] & {
-		getAvailableOfType?: (type: "classifier", provider?: string) => Promise<readonly unknown[]>;
-	};
-	if (typeof registry.getAvailableOfType !== "function") return null;
 	try {
-		const available = await registry.getAvailableOfType("classifier");
-		return (available[0] as ClassifierLike | undefined) ?? null;
+		const available = await ctx.modelRegistry.getAvailableOfType("classifier");
+		return available[0] ?? null;
 	} catch {
-		return null;
+		return null; // discovery resolves auth and may reject — no classifier then
 	}
 }
 
@@ -523,30 +560,28 @@ export async function classifyKeep(
 	currentName: string,
 	messages: readonly string[],
 ): Promise<boolean | null> {
-	try {
-		const result = await ctx.modelRegistry.classify(classifier, {
-			state: { currentTitle: currentName },
-			questions: {
-				keep: {
-					type: "bool",
-					instructions:
-						`Decide whether the session title still matches the conversation. Current title: "${currentName}". ` +
-						"It is KEEP (true) only if the title still accurately describes the conversation's current main task.\n\n" +
-						frameTitleMessages(messages),
-					criteria: {
-						true: "The title still accurately describes the conversation's current main task",
-						false: "The title is inaccurate or outdated for the conversation's current main task",
-					},
+	// ModelRegistry.classify never rejects (JSDoc contract); failures arrive
+	// in-band via stopReason, with the answer shape checked below.
+	const result = await ctx.modelRegistry.classify(classifier, {
+		state: { currentTitle: currentName },
+		questions: {
+			keep: {
+				type: "bool",
+				instructions:
+					`Decide whether the session title still matches the conversation. Current title: "${currentName}". ` +
+					"It is KEEP (true) only if the title still accurately describes the conversation's current main task.\n\n" +
+					frameTitleMessages(messages),
+				criteria: {
+					true: "The title still accurately describes the conversation's current main task",
+					false: "The title is inaccurate or outdated for the conversation's current main task",
 				},
 			},
-		});
-		if (result.stopReason !== "stop") return null;
-		const answer = result.answers.keep;
-		if (answer?.type !== "bool") return null;
-		return answer.probability >= 0.5;
-	} catch {
-		return null; // caller falls back to the verdict request
-	}
+		},
+	});
+	if (result.stopReason !== "stop") return null;
+	const answer = result.answers.keep;
+	if (answer?.type !== "bool") return null;
+	return answer.probability >= 0.5;
 }
 
 /** Drop one-line `<skill …/>` reference lines: they are machine context for
@@ -635,11 +670,15 @@ export function sessionNameExtension(pi: ExtensionAPI): void {
 				if (fallback === null) return null;
 				if (!failureWarned) {
 					// Surface the degradation once per session — the silent fallback
-					// was exactly what hid a total generation failure before.
+					// was exactly what hid a total generation failure before. ui.notify
+					// renders in-app (console.error would scribble raw stderr onto the
+					// alternate-screen TUI); it is a no-op without a UI.
 					failureWarned = true;
-					console.error("[pi-session-name] title generation failed; deterministic fallback in use");
+					ctx.ui.notify("[pi-session-name] title generation failed; deterministic fallback in use", "warning");
 				}
-				return fallback;
+				// The fallback keeps pi's always-name guarantee, but its raw
+				// first-words slice can run long for CJK; cap it like a real title.
+				return normalizeSessionTitle(fallback, cfg!.maxLength) ?? fallback;
 			};
 
 			let title: string | null;
@@ -667,7 +706,7 @@ export function sessionNameExtension(pi: ExtensionAPI): void {
 			// may have fired while generateTitle was in flight.
 			if (manuallyLocked || pi.getSessionName() !== currentName) return;
 
-			const named = withCreationTime(title, safeSessionFile(ctx), cfg.appendCreationTime);
+			const named = withCreationTime(title, ctx.sessionManager.getSessionFile(), cfg.appendCreationTime);
 			lastAutoName = named;
 			pi.setSessionName(named);
 		} catch {
@@ -695,7 +734,7 @@ export function sessionNameExtension(pi: ExtensionAPI): void {
 					ctx.ui.notify("Invalid name", "warning");
 					return;
 				}
-				const named = withCreationTime(cleaned, safeSessionFile(ctx), cfg.appendCreationTime);
+				const named = withCreationTime(cleaned, ctx.sessionManager.getSessionFile(), cfg.appendCreationTime);
 				lastAutoName = named;
 				manuallyLocked = true;
 				pi.setSessionName(named);
@@ -728,26 +767,19 @@ export function sessionNameExtension(pi: ExtensionAPI): void {
 			const title = normalizeSessionTitle(generated, cfg.maxLength)
 				?? (() => {
 					const input = fallbackInputOf(messages);
-					return input === null ? null : fallbackSessionTitle(input, 8, cfg.maxLength);
+					if (input === null) return null;
+					const fb = fallbackSessionTitle(input, 8, cfg.maxLength);
+					return fb === null ? null : (normalizeSessionTitle(fb, cfg.maxLength) ?? fb);
 				})();
 			if (!title) {
 				ctx.ui.notify("Could not generate a name from the model response", "warning");
 				return;
 			}
-			const named = withCreationTime(title, safeSessionFile(ctx), cfg.appendCreationTime);
+			const named = withCreationTime(title, ctx.sessionManager.getSessionFile(), cfg.appendCreationTime);
 			lastAutoName = named;
 			manuallyLocked = true;
 			pi.setSessionName(named);
 			ctx.ui.notify(`Renamed to: ${named}`, "info");
 		},
 	});
-}
-
-/** Best-effort session file path (mock hosts may not implement it). */
-function safeSessionFile(ctx: ExtensionContext): string | undefined {
-	try {
-		return ctx.sessionManager.getSessionFile();
-	} catch {
-		return undefined;
-	}
 }

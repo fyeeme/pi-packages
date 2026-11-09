@@ -16,6 +16,7 @@ export {
 	generateTitle,
 	resolveTitleModel,
 	stripInjectedPreamble,
+	parseTitleOutput,
 	titleFromOutput,
 } from "./src/core.ts";
 export type { PromptStyle, SessionEntry, TitleRequest, SessionNameConfig } from "./src/core.ts";

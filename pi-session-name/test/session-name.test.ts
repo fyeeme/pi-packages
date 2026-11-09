@@ -20,9 +20,17 @@ import {
 	generateTitle,
 	resolveTitleModel,
 	stripInjectedPreamble,
+	parseTitleOutput,
 	titleFromOutput,
 	type SessionEntry,
 } from "../src/core.ts";
+
+// Hermetic agent dir for every suite: loadConfig resolves the agent dir at call
+// time, so without this the orchestration/rename tests read the REAL
+// ~/.pi/agent/young.json — a machine with "session-name".appendCreationTime
+// set to false leaks in and fails the creation-suffix assertions.
+const HERMETIC_AGENT_DIR = mkdtempSync(join(tmpdir(), "pisn-agent-"));
+process.env.PI_CODING_AGENT_DIR = HERMETIC_AGENT_DIR;
 
 // ---------------------------------------------------------------------------
 // buildTitleMessages — human-only selection with window + budgets
@@ -200,11 +208,20 @@ describe("normalizeSessionTitle — terminal & spoof-safe normalization", () => 
 		expect(normalizeSessionTitle('"Fix login."', 200)).toBe("Fix login");
 		expect(normalizeSessionTitle("\u300C\u4fee\u590d\u767b\u5f55\u3002", 200)).toBe("\u4fee\u590d\u767b\u5f55");
 	});
-	it("enforces a UTF-8 byte budget (200 bytes ≈ 66 CJK chars)", () => {
-		const t = "\u4f60".repeat(100); // 300 bytes
+	it("strips curly quotes (codex trim_matches set)", () => {
+		expect(normalizeSessionTitle("\u201CFix login\u201D", 200)).toBe("Fix login");
+		expect(normalizeSessionTitle("\u2018Fix login\u2019", 200)).toBe("Fix login");
+	});
+	it("caps output at TITLE_MAX_CHARS characters (48), char-boundary safe", () => {
+		const t = "\u4f60".repeat(60); // 60 CJK chars, well under the byte budget
 		const out = normalizeSessionTitle(t, 200)!;
-		expect(Buffer.byteLength(out, "utf8")).toBeLessThanOrEqual(200);
-		expect(Array.from(out).length).toBe(66);
+		expect(Array.from(out).length).toBe(48);
+	});
+	it("enforces a UTF-8 byte budget below the character cap", () => {
+		const t = "\u4f60".repeat(60); // 180 bytes, 60 chars
+		const out = normalizeSessionTitle(t, 100)!; // 100 bytes binds before the 48-char cap
+		expect(Buffer.byteLength(out, "utf8")).toBeLessThanOrEqual(100);
+		expect(Array.from(out).length).toBe(33);
 	});
 	it("returns null when nothing survives", () => {
 		expect(normalizeSessionTitle("", 200)).toBeNull();
@@ -230,14 +247,17 @@ describe("fallbackSessionTitle — deterministic first-words fallback", () => {
 // ---------------------------------------------------------------------------
 
 describe("prompt layer", () => {
-	it("system prompt carries the deepseek-harness discipline verbatim", () => {
+	it("system prompt carries the codex-derived discipline", () => {
 		const s = titleSystemPrompt();
-		expect(s).toContain("Create a concise title for an AI coding-assistant session from the supplied human messages.");
-		expect(s).toContain("plain text of natural language");
-		expect(s).toContain("no quotes, prefix, explanation, Markdown, XML, or terminal control codes");
-		expect(s).toContain("No code is allowed");
-		expect(s).toContain("Use the language of the user's own words");
-		expect(s).toContain("6 words in non-CJK languages or 18 CJK characters");
+		expect(s).toContain("Create a concise, single-line title for an AI coding-assistant session from the supplied human messages.");
+		expect(s).toContain('Return only JSON in the shape {"title": "\u2026"}');
+		expect(s).toContain("Start with a verb");
+		expect(s).toContain("Keep a single space between CJK and Latin segments");
+		expect(s).toContain("Write in the language of the user's own words");
+		expect(s).toContain("Preserve exact task identifiers: ticket IDs, error codes");
+		expect(s).toContain("Do not answer the request; only title it.");
+		expect(s).toContain("8 words otherwise");
+		expect(s).not.toContain("Distinctiveness");
 	});
 	it("frameTitleMessages JSON-frames the payload", () => {
 		expect(frameTitleMessages(["a", "b"])).toBe('Generate the session title from this JSON array of human messages:\n["a","b"]');
@@ -255,25 +275,25 @@ describe("prompt layer", () => {
 	it("buildTitleRequest rejects an empty message list", () => {
 		expect(() => buildTitleRequest("first", [])).toThrow("at least one");
 	});
-	it("concise style is the deepseek-harness wording with a 512-token budget", () => {
+	it("concise style uses the codex-derived wording with a 2048-token budget", () => {
 		const r = buildTitleRequest("all", ["m1"], "concise");
 		expect(r.system).not.toContain("Distinctiveness");
-		expect(r.maxOutputTokens).toBe(512);
+		expect(r.maxOutputTokens).toBe(2048);
 	});
 
-	it("editorial style adds pi's distinctiveness rules and a 1024-token budget", () => {
+	it("editorial style adds pi's distinctiveness rules over the codex base", () => {
 		const r = buildTitleRequest("all", ["m1"], "editorial");
-		expect(r.system).toContain("plain text of natural language"); // shared discipline
+		expect(r.system).toContain("Do not answer the request; only title it."); // shared codex discipline
 		expect(r.system).toContain("Distinctiveness first");
 		expect(r.system).toContain("single most identifying identifier");
 		expect(r.system).toContain("15-40 characters in CJK languages, or 5-12 words");
-		expect(r.maxOutputTokens).toBe(1024);
+		expect(r.maxOutputTokens).toBe(2048);
 	});
 
 	it("editorial verdict request carries the editorial length target", () => {
 		const r = buildVerdictRequest("Old", ["m1"], "editorial");
 		expect(r.system).toContain("Distinctiveness first");
-		expect(r.maxOutputTokens).toBe(1024);
+		expect(r.maxOutputTokens).toBe(2048);
 	});
 
 	it("buildVerdictRequest keeps the current title out of the payload and in the system", () => {
@@ -296,7 +316,9 @@ describe("loadConfig", () => {
 		process.env.PI_CODING_AGENT_DIR = dir;
 	});
 	afterEach(() => {
-		delete process.env.PI_CODING_AGENT_DIR;
+		// Restore the file-level hermetic dir — deleting it would re-expose the
+		// REAL ~/.pi/agent/young.json to every suite that runs after this one.
+		process.env.PI_CODING_AGENT_DIR = HERMETIC_AGENT_DIR;
 		rmSync(dir, { recursive: true, force: true });
 	});
 
@@ -407,6 +429,22 @@ describe("generateTitle", () => {
 			content: [{ type: "text", text: "**Token 周报**\nHere is why: ..." }],
 		}) as any);
 		expect(await generateTitle({ system: "s", user: "u", maxOutputTokens: 512 }, { id: "m" } as any, ctx)).toBe("Token 周报");
+	});
+});
+
+describe("parseTitleOutput — JSON-first (codex parse port), plain-text fallback", () => {
+	it("reads {\"title\": …} JSON directly", () => {
+		expect(parseTitleOutput('{"title":"Fix login timeout"}')).toBe("Fix login timeout");
+	});
+	it("strips a fenced code wrapper before parsing", () => {
+		expect(parseTitleOutput("```json\n{\"title\":\"修复登录超时\"}\n```")).toBe("修复登录超时");
+	});
+	it("falls back to the first non-empty line when JSON is malformed or absent", () => {
+		expect(parseTitleOutput('{"title": ')).toBe('{"title":');
+		expect(parseTitleOutput("Fix login timeout\nmore text")).toBe("Fix login timeout");
+	});
+	it("ignores JSON whose title is not a string", () => {
+		expect(parseTitleOutput('{"title": 42}')).toBe('{"title": 42}');
 	});
 });
 
@@ -545,13 +583,13 @@ describe("classifyKeep", () => {
 		expect(seen.questions.keep.instructions).toContain("Old title");
 		expect(seen.questions.keep.instructions).toContain('["fix login"]');
 	});
-	it("returns null on non-stop results and throws (fallback signal)", async () => {
+	it("returns null on contract-internal failures (non-stop result, malformed answer shape)", async () => {
+		// ModelRegistry.classify never rejects (JSDoc contract); failure paths are
+		// in-band: a non-stop finish or an answer without a bool verdict.
 		const errCtx = mkClassifierCtx(() => ({ stopReason: "error", answers: {} }));
 		expect(await classifyKeep(errCtx, { id: "jev" } as any, "t", ["m"])).toBeNull();
-		const throwCtx = mkClassifierCtx(() => {
-			throw new Error("provider 500");
-		});
-		expect(await classifyKeep(throwCtx, { id: "jev" } as any, "t", ["m"])).toBeNull();
+		const shapeCtx = mkClassifierCtx(() => ({ stopReason: "stop", answers: { keep: { type: "label", value: "x" } } }));
+		expect(await classifyKeep(shapeCtx, { id: "jev" } as any, "t", ["m"])).toBeNull();
 	});
 });
 
@@ -609,10 +647,10 @@ const branch = (texts: string[]) =>
 
 import { sessionNameExtension as setup } from "../src/core.ts";
 
-const CREATION_PREFIX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} - /;
-const stripPrefix = (s: string): string => s.replace(CREATION_PREFIX, "");
+const CREATION_SUFFIX = / - \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/;
+const stripSuffix = (s: string): string => s.replace(CREATION_SUFFIX, "");
 
-describe("creation-time prefix", () => {
+describe("creation-time suffix", () => {
 	it("parses the creation stamp from a session file name", () => {
 		const d = sessionCreationTime("/x/2026-10-01T10-06-10-085Z_u.jsonl")!;
 		expect(d).toBeInstanceOf(Date);
@@ -624,9 +662,9 @@ describe("creation-time prefix", () => {
 		expect(formatCreationPrefix(new Date(2026, 9, 1, 9, 5))).toBe("2026-10-01 09:05");
 		expect(formatCreationPrefix(new Date(2026, 0, 31, 23, 59))).toBe("2026-01-31 23:59");
 	});
-	it("prefixes when enabled and the stamp is available; passes through otherwise", () => {
+	it("suffixes when enabled and the stamp is available; passes through otherwise", () => {
 		const f = "/x/2026-10-01T10-06-10-085Z_u.jsonl";
-		expect(withCreationTime("t", f, true)).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} - t$/);
+		expect(withCreationTime("t", f, true)).toMatch(/^t - \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
 		expect(withCreationTime("t", f, false)).toBe("t");
 		expect(withCreationTime("t", undefined, true)).toBe("t");
 		expect(withCreationTime("t", "plain.jsonl", true)).toBe("t");
@@ -646,8 +684,8 @@ describe("extension orchestration", () => {
 		const ctx = mkCtxOrch(branch(["help me debug", "ok"]));
 		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
 		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
-		expect(setCalls.map(stripPrefix)).toEqual(["Auto Title"]);
-		expect(setCalls[0]!).toMatch(CREATION_PREFIX);
+		expect(setCalls.map(stripSuffix)).toEqual(["Auto Title"]);
+		expect(setCalls[0]!).toMatch(CREATION_SUFFIX);
 	});
 
 	it("LLM failure falls back to the first message with user words (skill reference lines excluded)", async () => {
@@ -665,22 +703,18 @@ describe("extension orchestration", () => {
 				},
 			},
 		];
-		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-		try {
-			const ctx = mkCtxOrch(branchEntries as any, async () => ({ stopReason: "error", content: [] }));
-			await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
-			// Fallback derives from the user's own words after the reference line, not from `<skill …/>`.
-			expect(setCalls.map(stripPrefix)).toEqual(["上周"]);
-			expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("title generation failed"));
-			// Warned once per session: a second failing turn re-sets the same
-			// fallback title but stays silent.
-			errSpy.mockClear();
-			await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
-			expect(setCalls.map(stripPrefix)).toEqual(["上周", "上周"]);
-			expect(errSpy).not.toHaveBeenCalled();
-		} finally {
-			errSpy.mockRestore();
-		}
+		const ctx = mkCtxOrch(branchEntries as any, async () => ({ stopReason: "error", content: [] }));
+		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
+		// Fallback derives from the user's own words after the reference line, not from `<skill …/>`.
+		expect(setCalls.map(stripSuffix)).toEqual(["上周"]);
+		// Degradation surfaces via ui.notify (in-app), not raw stderr.
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("title generation failed"), "warning");
+		// Warned once per session: a second failing turn re-sets the same
+		// fallback title but stays silent.
+		ctx.ui.notify.mockClear();
+		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
+		expect(setCalls.map(stripSuffix)).toEqual(["上周", "上周"]);
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
 	});
 
 	it("sets no title when every message strips to a bare reference line and the LLM fails", async () => {
@@ -688,20 +722,15 @@ describe("extension orchestration", () => {
 		const { pi, handlers, setCalls } = mkPi();
 		setup(pi);
 		handlers.session_start?.({ type: "session_start", reason: "new" }, mkCtxOrch([]));
-		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-		try {
-			const branchEntries = [
-				{
-					type: "message",
-					message: { role: "user", content: '<skill name="s" location="/nonexistent/SKILL.md">\nBody\n</skill>' },
-				},
-			];
-			const ctx = mkCtxOrch(branchEntries as any, async () => ({ stopReason: "error", content: [] }));
-			await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
-			expect(setCalls).toEqual([]); // no title beats a garbage title
-		} finally {
-			errSpy.mockRestore();
-		}
+		const branchEntries = [
+			{
+				type: "message",
+				message: { role: "user", content: '<skill name="s" location="/nonexistent/SKILL.md">\nBody\n</skill>' },
+			},
+		];
+		const ctx = mkCtxOrch(branchEntries as any, async () => ({ stopReason: "error", content: [] }));
+		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
+		expect(setCalls).toEqual([]); // no title beats a garbage title
 	});
 
 	it("virtual model selection resolves to the provider's first physical model (glm-5.3-auto regression)", async () => {
@@ -720,7 +749,7 @@ describe("extension orchestration", () => {
 			modelRegistry: { streamSimple, getAvailableOfType: vi.fn(async () => [physical]) },
 		};
 		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
-		expect(setCalls.map(stripPrefix)).toEqual(["Routed Title"]);
+		expect(setCalls.map(stripSuffix)).toEqual(["Routed Title"]);
 		// The nested title call ran on the resolved physical model, not the virtual one.
 		expect(streamSimple).toHaveBeenCalled();
 		expect(streamSimple.mock.calls[0]![0]).toBe(physical);
@@ -757,7 +786,7 @@ describe("extension orchestration", () => {
 		const ctx = mkCtxOrch(branch(["q", "a", "more", "done"]), completeSequence("T1", "T2"));
 		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
 		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
-		expect(setCalls.map(stripPrefix)).toEqual(["T1", "T2"]);
+		expect(setCalls.map(stripSuffix)).toEqual(["T1", "T2"]);
 	});
 
 	it("follow mode: regenerates every settled turn (no KEEP/NEW verdict)", async () => {
@@ -770,7 +799,7 @@ describe("extension orchestration", () => {
 		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
 		// Turn 2 regenerates instead of KEEPing the early-turn snapshot — the
 		// title tracks the conversation (deepseek-harness all-prompts cadence).
-		expect(setCalls.map(stripPrefix)).toEqual(["Early Title", "Evolved Title"]);
+		expect(setCalls.map(stripSuffix)).toEqual(["Early Title", "Evolved Title"]);
 	});
 
 	it("follow mode: keeps tracking a resumed session's inherited title", async () => {
@@ -780,7 +809,7 @@ describe("extension orchestration", () => {
 		handlers.session_start?.({ type: "session_start", reason: "resume" }, mkCtxOrch([]));
 		await handlers.agent_settled?.({ type: "agent_settled" }, mkCtxOrch(branch(["q", "a"]), completeSequence("Refreshed Title")));
 		// The inherited title is treated as the last revision, not a pin.
-		expect(setCalls.map(stripPrefix)).toEqual(["Refreshed Title"]);
+		expect(setCalls.map(stripSuffix)).toEqual(["Refreshed Title"]);
 	});
 
 	it("auto mode: does not touch a resumed session's inherited title (regression)", async () => {
@@ -802,7 +831,7 @@ describe("extension orchestration", () => {
 		renameExternally("User Named");
 		handlers.session_info_changed?.({ type: "session_info_changed", name: "User Named" }, ctx);
 		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
-		expect(setCalls.map(stripPrefix)).toEqual(["First Title"]);
+		expect(setCalls.map(stripSuffix)).toEqual(["First Title"]);
 	});
 
 	it("auto mode: re-evaluates after auto-naming; KEEP keeps current name", async () => {
@@ -813,7 +842,7 @@ describe("extension orchestration", () => {
 		const ctx = mkCtxOrch(branch(["about topic A", "ok"]), completeSequence("Topic A", "KEEP"));
 		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
 		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
-		expect(setCalls.map(stripPrefix)).toEqual(["Topic A"]);
+		expect(setCalls.map(stripSuffix)).toEqual(["Topic A"]);
 	});
 
 	it("auto mode: topic change renames", async () => {
@@ -824,7 +853,7 @@ describe("extension orchestration", () => {
 		const ctx = mkCtxOrch(branch(["topic A", "ok", "now topic B", "ok"]), completeSequence("Topic A", "Topic B Now"));
 		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
 		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
-		expect(setCalls.map(stripPrefix)).toEqual(["Topic A", "Topic B Now"]);
+		expect(setCalls.map(stripSuffix)).toEqual(["Topic A", "Topic B Now"]);
 	});
 
 	it("auto mode: self-generated session_info_changed does not self-lock", async () => {
@@ -836,7 +865,7 @@ describe("extension orchestration", () => {
 		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
 		handlers.session_info_changed?.({ type: "session_info_changed", name: "T1" }, ctx);
 		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
-		expect(setCalls.map(stripPrefix)).toEqual(["T1"]);
+		expect(setCalls.map(stripSuffix)).toEqual(["T1"]);
 	});
 
 	it("enabled=false skips naming", async () => {
@@ -858,7 +887,7 @@ describe("extension orchestration", () => {
 			throw new Error("provider down");
 		});
 		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
-		expect(setCalls.map(stripPrefix)).toEqual(["fix the login bug please"]); // fallback = first 8 words, byte-capped
+		expect(setCalls.map(stripSuffix)).toEqual(["fix the login bug please"]); // fallback = first 8 words, byte-capped
 	});
 
 	it("falls back when the model returns an empty/stopReason-failed response", async () => {
@@ -869,7 +898,7 @@ describe("extension orchestration", () => {
 		handlers.session_start?.({ type: "session_start", reason: "new" }, mkCtxOrch([]));
 		const ctx = mkCtxOrch(branch(["debug oauth token refresh", "a"]), async () => ({ stopReason: "error", content: [] }));
 		await handlers.agent_settled?.({ type: "agent_settled" }, ctx);
-		expect(setCalls.map(stripPrefix)).toEqual(["debug oauth token refresh"]);
+		expect(setCalls.map(stripSuffix)).toEqual(["debug oauth token refresh"]);
 	});
 });
 
@@ -879,9 +908,9 @@ describe("rename command", () => {
 		setup(pi);
 		handlers.session_start?.({ type: "session_start", reason: "new" }, mkCtxOrch([]));
 		await commands.rename!.handler('  "Fix Login"  ', mkCtxOrch([]));
-		expect(setCalls.map(stripPrefix)).toEqual(["Fix Login"]);
+		expect(setCalls.map(stripSuffix)).toEqual(["Fix Login"]);
 		await handlers.agent_settled?.({ type: "agent_settled" }, mkCtxOrch(branch(["q", "a"])));
-		expect(setCalls.map(stripPrefix)).toEqual(["Fix Login"]);
+		expect(setCalls.map(stripSuffix)).toEqual(["Fix Login"]);
 	});
 
 	it("/rename with empty arg auto-generates from the conversation", async () => {
@@ -889,8 +918,8 @@ describe("rename command", () => {
 		setup(pi);
 		handlers.session_start?.({ type: "session_start", reason: "new" }, mkCtxOrch([]));
 		await commands.rename!.handler("", mkCtxOrch(branch(["fix login", "ok"])));
-		expect(setCalls.map(stripPrefix)).toEqual(["Auto Title"]);
-		expect(setCalls[0]!).toMatch(CREATION_PREFIX);
+		expect(setCalls.map(stripSuffix)).toEqual(["Auto Title"]);
+		expect(setCalls[0]!).toMatch(CREATION_SUFFIX);
 	});
 
 	it("/rename with empty arg and no conversation notifies, does not rename, and leaves auto-naming armed", async () => {
@@ -904,7 +933,7 @@ describe("rename command", () => {
 		// A warning-only /rename must not pin the session: once the user sends
 		// messages, the background auto-namer still works.
 		await handlers.agent_settled?.({ type: "agent_settled" }, mkCtxOrch(branch(["fix login", "ok"])));
-		expect(setCalls.map(stripPrefix)).toEqual(["Auto Title"]);
+		expect(setCalls.map(stripSuffix)).toEqual(["Auto Title"]);
 	});
 
 	it("/rename with empty arg notifies when the model call fails", async () => {
@@ -916,6 +945,6 @@ describe("rename command", () => {
 		});
 		await commands.rename!.handler("", ctx);
 		// deterministic fallback still names it
-		expect(setCalls.map(stripPrefix)).toEqual(["fix login"]);
+		expect(setCalls.map(stripSuffix)).toEqual(["fix login"]);
 	});
 });

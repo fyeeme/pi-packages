@@ -11,7 +11,7 @@ Auto-name [pi](https://pi.dev) sessions with a short LLM-generated title so `--r
 - **First-mode** — names the session once on first agent response, then leaves it alone
 - **Auto-mode** — re-evaluates each turn (KEEP/NEW verdict); the title tracks the current topic
 - **Never overwrites manual names** — detects `/name`, `--name`, the resume picker's rename, or any other extension calling `setSessionName`, and locks itself for the rest of the session
-- **Creation-time prefix** — every title is prefixed `yyyy-mm-dd hh:mm - …` so sessions edited later still show when they were created (the list sorts by last-modified)
+- **Creation-time suffix** — every title is suffixed `… - yyyy-mm-dd hh:mm` so sessions edited later still show when they were created (the list sorts by last-modified)
 - **`/rename [name]`** — rename the current session on demand. With an argument it sets that name; without, it generates one from the conversation
 - **Language-aware** — titles use the same language as your first message
 - **Distinctive titles** — leads with the concrete entity/error/identifier, so similar sessions don't blur together (~15-40 chars)
@@ -84,9 +84,9 @@ Add a `session-name` section to the shared global `~/.pi/agent/young.json`
 |--------|---------|--------------|-------------|
 | `mode` | `"follow"` | `PI_SESSION_NAME_MODE` | `"follow"` — regenerate every turn (all-prompts cadence); `"first"` — name once; `"auto"` — re-evaluate each turn (KEEP/NEW) |
 | `maxLength` | `200` | `PI_SESSION_NAME_MAX_LENGTH` | UTF-8 byte budget for accepted titles (200 bytes ≈ 200 ASCII chars or ~66 CJK chars) |
-| `prompt` | `"concise"` | `PI_SESSION_NAME_PROMPT` | `"concise"` — deepseek-harness wording, 512-token budget (default); `"editorial"` — adds distinctiveness/concrete-detail rules, 1024-token budget |
+| `prompt` | `"concise"` | `PI_SESSION_NAME_PROMPT` | `"concise"` — codex-derived wording, 2048-token budget (default); `"editorial"` — adds distinctiveness/concrete-detail rules on top |
 | `enabled` | `true` | `PI_SESSION_NAME_ENABLED=false` | Master switch to disable auto-naming |
-| `appendCreationTime` | `true` | `PI_SESSION_NAME_TIMESTAMP=false` | Prefix every title with the session's creation time — `yyyy-mm-dd hh:mm - title`. The resume list sorts by last-modified, so an edited old session resurfaces at the top; the prefix keeps its original age visible. Parsed from the session file name (best effort: no stamp, no prefix). |
+| `appendCreationTime` | `true` | `PI_SESSION_NAME_TIMESTAMP=false` | Suffix every title with the session's creation time — `title - yyyy-mm-dd hh:mm`. The resume list sorts by last-modified, so an edited old session resurfaces at the top; the suffix keeps its original age visible. Parsed from the session file name (best effort: no stamp, no suffix). |
 
 Titles are generated with the model you're already chatting with (`ctx.model`) — there is no model override. When the selection is a virtual model (a router such as `glm-5.3-auto`, `api === "pi-virtual"`), it resolves to that provider's first **light-tier** physical chat model (id/name matching `flash|mini|fast|turbo|lite`; registration order otherwise), cached per provider after the first lookup; with no physical model in the provider, the virtual model itself goes through `streamSimple`, which routes it. The light-tier preference matters: registration order is arbitrary, and on `zai-coding-cn` the first entry is `glm-4.6v` — an older vision model whose weaker instruction following produced English titles for Chinese sessions. Model calls go through `ctx.modelRegistry.streamSimple()`, which routes virtual models and resolves authentication at request time — API keys and OAuth subscription logins both work, with no extra API key configuration.
 
@@ -112,10 +112,10 @@ export PI_SESSION_NAME_ENABLED=true
 
 ### Prompt styles
 
-Two system-prompt styles ship (measured A/B on 50 local sessions with a reasoning model, glm-5.3-flash):
+Two system-prompt styles ship. Both share the codex-derived discipline (verb-first phrasing, identifier preservation, user's language, CJK/Latin spacing, JSON `{"title": …}` output, "do not answer the request") and the 2048-token output budget:
 
-- **`concise`** (default) — deepseek-harness wording verbatim: four lines of format discipline, no editorial content rules. 96% title yield, p50 latency 5.1 s, uniform lengths.
-- **`editorial`** — same architecture plus pi's distinctiveness rules (never a generic headline; carry the concrete module/error/identifier). Titles are more information-dense, but the extra rules induce longer chain-of-thought on reasoning models, so the output budget is raised to 1024 tokens and latency runs ~30% higher.
+- **`concise`** (default) — format discipline only: at most 48 characters, roughly 18 CJK characters or 8 words. Uniform lengths, lowest latency.
+- **`editorial`** — adds pi's distinctiveness rules (never a generic headline; carry the concrete module/error/identifier) and its own length target (15-40 CJK characters, 5-12 words). More information-dense; the extra rules induce longer chain-of-thought on reasoning models, so latency runs ~30% higher.
 
 Switch in the young.json `session-name` section (`"prompt": "editorial"`) or via `PI_SESSION_NAME_PROMPT=editorial`.
 

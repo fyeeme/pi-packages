@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-11-09
+
+### Changed
+
+- The creation-time stamp moved from title prefix to suffix: `title - yyyy-mm-dd hh:mm` instead of `yyyy-mm-dd hh:mm - title`. The title (the varying, informative part) now leads the session-list entry; the timestamp still keeps an edited old session's original age visible.
+
+- Title generation adopts the codex thread-title discipline end to end (evaluated head-to-head on 50 scenarios): the system prompt now demands verb-first phrasing, identifier preservation (ticket IDs, error codes, file names, API paths), first-word-only capitalization in English, no quotes/markdown/emoji/trailing punctuation, and "do not answer the request"; output is requested as JSON `{"title": …}` and parsed JSON-first (`parseTitleOutput`, exported) with the first-line plain-text path as fallback; `normalizeSessionTitle` additionally strips curly quotes (U+2018–U+201D) and caps accepted titles at 48 characters (`TITLE_MAX_CHARS`, exported; codex uses 36 — 48 keeps room for CJK/Latin spacing); the output-token budget rises 512/1024 → 2048 (512 starved 4% of eval scenarios on a reasoning model, degrading them to the deterministic fallback); the deterministic fallback result now passes through `normalizeSessionTitle` as well, so a CJK first-words slice no longer becomes a 60+ character "title".
+- Dev dependencies now pin `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` at 1.5.0 (was 1.3.0), so type-check and tests run against the pi 1.5.0 types.
+- Internal: `titleSystemPrompt` builds its concise/editorial variants from named `intro`/`rules`/length arrays instead of slicing one base array by index, so inserting a rule can no longer silently shift the editorial prompt; output is byte-identical.
+
+### Fixed
+
+- Removed defenses against paths pi's types and contracts already guarantee: `resolveClassifierModel` calls `ModelRegistry.getAvailableOfType("classifier")` directly (the `typeof` feature probe and the `unknown[]` cross-casts are gone; the outer try/catch stays because discovery resolves auth and may reject), `classifyKeep` no longer catches rejections from `ModelRegistry.classify` (documented "Never rejects" — failure stays in-band via `stopReason` and answer-shape checks), and the `safeSessionFile` try/catch wrapper was inlined as direct `sessionManager.getSessionFile()` calls at its three call sites.
+
 ## [1.0.8] - 2026-10-29
 
 ### Fixed
