@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.6] - 2026-11-09
+
+### Added
+
+- npm `files` now includes `CHANGELOG.md`, so published packages ship the changelog and pi 1.5.0 shows it under "Extension Updates" on the first fresh launch after an update (pi reads `CHANGELOG.md` from the package root by default; no `pi.changelogPath` needed).
+
+### Changed
+
+- Dev dependencies now pin `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` at 1.5.0 (was 1.3.0), and `@earendil-works/pi-agent-core` at 1.5.0 (was 1.3.0), so type-check and tests run against the pi 1.5.0 types.
+- `tsconfig.json` maps `@earendil-works/pi-ai` to pi-coding-agent's extension view (`dist/core/extensions/pi-ai-extension-view.d.ts`). pi-ai 1.5.0 no longer re-exports TypeBox and its published `StringEnum` returns a pi-schema `Schema<T>`, which broke `Static` inference inside `Type.Object()`; the view is the same module pi maps the import to at run time, so `StringEnum` infers as TypeBox `TUnsafe<T>` again. Source imports are unchanged.
+
 ## [2.1.5] - 2026-10-29
 
 ### Changed

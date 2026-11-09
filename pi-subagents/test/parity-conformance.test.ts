@@ -60,7 +60,9 @@ interface ToolLike {
 /** Load the example's tool definition through its default-export factory. */
 function loadExampleTool(): ToolLike {
 	const captured: ToolLike[] = [];
-	const pi = { registerTool: (tool: ToolLike) => captured.push(tool) };
+	// `on` (and its disposer return) covers host wiring the example registers
+	// (e.g. a tool_result listener) before the tool itself.
+	const pi = { on: () => () => {}, registerTool: (tool: ToolLike) => captured.push(tool) };
 	(exampleFactory as unknown as (pi: unknown) => void)(pi);
 	expect(captured).toHaveLength(1);
 	expect(captured[0]!.name).toBe("subagent");
