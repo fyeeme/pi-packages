@@ -1,5 +1,37 @@
 # Changelog
 
+## [Unreleased]
+
+## [1.0.5] - 2026-11-09
+
+### Breaking Changes
+
+- Rewritten from [mitsuhiko/agent-stuff](https://github.com/mitsuhiko/agent-stuff) `extensions/todos.ts` (Apache-2.0): the file-based todo system replaces the oh-my-pi phased-todo port entirely (single-file `index.ts`, behavior identical to the source). Todos now live as markdown files under `.pi/todos` (or `PI_TODO_PATH`) instead of session entries; sessions written by 1.x restore nothing.
+- Tool surface: the nine phase operations (`init`/`start`/`done`/`rm`/`drop`/`block`/`unblock`/`append`/`view` over `phases`) are replaced by `list`/`list-all`/`get`/`create`/`update`/`append`/`delete`/`claim`/`release` over `TODO-<hex>`-identified file records with session claim/release semantics and per-todo lock files (30-minute TTL, interactive steal of stale locks).
+- Command: the oh-my-pi `/todo` verb set (`edit`/`copy`/`export`/`import`/`append`/`start`/`done`/`drop`/`rm`) is replaced by `/todos` — an interactive todo manager (fuzzy search, actions menu, detail overlay, work/refine editor prefills) in TUI, a grouped plain-text list headless.
+- Garbage collection on session start via `.pi/todos/settings.json` (`gc`, `gcDays`): closed todos older than the threshold are deleted.
+
+### Added
+
+- `outputSchema` on the `todo` tool with matching `structuredContent` on every result: success payloads mirror the JSON text (grouped list / todo record), failures return `{ error }` — codemode scripts now receive structured data instead of text.
+
+### Fixed
+
+- `/todos` guards the interactive manager with `ctx.mode === "tui"` instead of `ctx.hasUI`: in RPC mode `custom()` returns `undefined` (RPC extension UI protocol), so the command silently did nothing; RPC now prints the grouped plain-text list like print/json mode.
+- The `todo` tool description no longer resolves its directory label from `process.cwd()` at registration; it names the session todos dir (`<session cwd>/.pi/todos` or `PI_TODO_PATH`) instead of a possibly-wrong absolute path.
+- The collapsed "to expand" hint now uses `keyHint()` from the tool render context instead of the one imported from `@earendil-works/pi-coding-agent` (pi 1.5.0): the imported copy cannot see the host's keybindings, so the hint rendered without its key.
+
+### Removed
+
+- `todo_updated` event bus and `todo-phases` session entries (the old pi-goal integration contract; pi-goal 2.0 no longer consumes them).
+- `listTodosSync` and `getTodosDirLabel` (zero callers after the rewrite).
+- The `src/` module split (state/tool/render/commands/restore) and its oh-my-pi semantics: phases, batch-atomic duplicate rejection, the single-`in_progress` invariant debates, and markdown export/import round-trips.
+
+### Changed
+
+- Dev dependencies now pin `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` at 1.5.0 (was 1.3.0), so type-check and tests run against the pi 1.5.0 types.
+- `tsconfig.json` maps `@earendil-works/pi-ai` to pi-coding-agent's extension view (`dist/core/extensions/pi-ai-extension-view.d.ts`). pi-ai 1.5.0 no longer re-exports TypeBox and its published `StringEnum` returns a pi-schema `Schema<T>`, which broke `Static` inference inside `Type.Object()`; the view is the same module pi maps the import to at run time, so `StringEnum` infers as TypeBox `TUnsafe<T>` again. Source imports are unchanged.
+
 ## [1.0.4] - 2026-10-16
 
 ### Fixed
@@ -44,6 +76,7 @@
 - `formatSummary` folds its per-task dumps on mutation results once the list exceeds 20 tasks: remaining items capped at the first 10 with a `… N more open — call view` hint plus a single "Full checklist omitted" line. `view` (readOnly) still echoes the whole list. On big lists every `done`/`start` previously re-flooded the model context with the full checklist.
 - `execute` clones phases 4 times per mutation instead of 8 (ownership handoff to the closure; persist/broadcast make their own entry-shaped snapshots); `getCompletionTransitions` generalized to `getStatusTransitions` whose result is now rendered instead of only feeding `completedTasks`.
 - pi-goal's `goal-todo-context.md` no longer references the removed pointer/"stale in_progress" semantics (paired fix in @fyeeme/pi-goal).
+- Internal cleanup: the 15 duplicated three-payload error returns in the `todo` tool's `execute` are now one `todoToolError` helper, the two `/todos` dialog components share a `selectListTheme` factory, and `renderResult` resolves its action label from an `ACTION_LABELS` lookup instead of a seven-branch conditional. No behavior change.
 
 ## [1.0.0] - 2026-09-09
 
