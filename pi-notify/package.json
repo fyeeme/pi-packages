@@ -1,0 +1,59 @@
+{
+	"name": "@fyeeme/pi-notify",
+	"version": "1.0.0",
+	"description": "Desktop notifications for pi — fires a native OSC 777 notification (Ghostty, iTerm2, WezTerm, rxvt-unicode) when the agent finishes and is waiting for input; the last assistant message, markdown-flattened and truncated to 200 characters, becomes the notification body. Rewritten from mitsuhiko/agent-stuff notify.ts.",
+	"type": "module",
+	"license": "MIT",
+	"author": "fyeeme",
+	"publishConfig": {
+		"access": "public"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/fyeeme/pi-packages.git"
+	},
+	"bugs": {
+		"url": "https://github.com/fyeeme/pi-packages/issues"
+	},
+	"homepage": "https://github.com/fyeeme/pi-packages#readme",
+	"engines": {
+		"node": ">=18"
+	},
+	"keywords": [
+		"pi-package",
+		"pi",
+		"extension",
+		"notify",
+		"notification",
+		"desktop",
+		"osc777",
+		"bell"
+	],
+	"files": [
+		"index.ts",
+		"test",
+		"README.md",
+		"LICENSE",
+		"CHANGELOG.md"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"scripts": {
+		"test": "vitest --run",
+		"typecheck": "tsc"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.99.0",
+		"@earendil-works/pi-tui": ">=0.99.0"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "1.5.0",
+		"@earendil-works/pi-tui": "1.5.0",
+		"@types/node": "22.19.19",
+		"typescript": "5.9.3",
+		"vitest": "3.2.7"
+	}
+}
