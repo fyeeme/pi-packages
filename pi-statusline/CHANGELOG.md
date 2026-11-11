@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Stale-extension-ctx crash after session replacement or reload (`/new`, `/fork`, session switch, `/reload`). The module-level captured `lastCtx` kept being used in `agent_end`, `model_select`, `/status-debug`, and the footer render; pi's `assertActive` guard threw `This extension ctx is stale ...` on every `modelRegistry` access and the usage refresh silently failed. Event handlers now use the fresh `ctx` each event delivers, `getCachedUsage` takes a live `modelRegistry` instead of a captured ctx, and the `lastCtx` module state is removed.
+
 ## [1.2.10] - 2026-11-09
 
 ### Fixed

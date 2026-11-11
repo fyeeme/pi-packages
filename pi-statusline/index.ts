@@ -41,7 +41,6 @@ const providers: Record<string, UsageProvider> = {
 // ---------------------------------------------------------------------------
 
 let agentStartMs: number | null = null;
-let lastCtx: ExtensionContext | null = null;
 let lastModel: ExtensionContext["model"] = undefined;
 let agentRunning = false;
 let lastElapsedSec = 0;
@@ -73,7 +72,7 @@ export default function (pi: ExtensionAPI) {
 		agentRunning = true;
 	});
 
-	pi.on("agent_end", (event) => {
+	pi.on("agent_end", (event, ctx) => {
 		agentRunning = false;
 		if (agentStartMs === null) return;
 		const elapsedMs = Date.now() - agentStartMs;
@@ -81,17 +80,19 @@ export default function (pi: ExtensionAPI) {
 		lastElapsedSec += elapsedMs / 1000;
 
 		// tok/s = 本次 agent run 的 output / 本次 run 耗时（即时速度）。用 event.messages
-		// 而非 sessionManager 遍历：不依赖 lastCtx/分支语义，不受 /fork 放弃分支的耗时
-		// 累计影响（分子分母同为本 run 口径），也避开 lastCtx 在 session 切换边界的 staleness。
+		// 而非 sessionManager 遍历：不依赖分支语义，不受 /fork 放弃分支的耗时累计影响
+		//（分子分母同为本 run 口径）。
 		let turnOutput = 0;
 		for (const m of event.messages) {
 			if (m.role === "assistant") turnOutput += (m as AssistantMessage).usage.output;
 		}
 		lastTps = turnOutput > 0 ? turnOutput / (elapsedMs / 1000) : 0;
 
-		// Schedule background refresh to pick up new usage data
-		if (lastCtx && lastModel) {
-			void refreshUsage(providers, lastCtx.modelRegistry, lastModel);
+		// Schedule background refresh to pick up new usage data. Use this handler's
+		// own ctx: a ctx captured from an earlier event goes stale after session
+		// replacement/reload and throws on modelRegistry access (assertActive).
+		if (lastModel) {
+			void refreshUsage(providers, ctx.modelRegistry, lastModel);
 		}
 	});
 
@@ -134,7 +135,7 @@ export default function (pi: ExtensionAPI) {
 
 			// Usage cache dump
 			w(`--- provider usage ---`);
-			const cached = getCachedUsage(providers, lastCtx, lastModel);
+			const cached = getCachedUsage(providers, ctx.modelRegistry, lastModel);
 			if (cached) {
 				w(`  provider: ${cached.provider}`);
 				const dbgProvider = providers[cached.provider];
@@ -195,12 +196,10 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// ---- Model switch: refresh usage when provider changes ----
-	pi.on("model_select", (event) => {
-		if (lastCtx) {
-			lastModel = event.model;
-			deepSeekPricing.applyPricingPatch(lastCtx.modelRegistry);
-			void refreshUsage(providers, lastCtx.modelRegistry, event.model);
-		}
+	pi.on("model_select", (event, ctx) => {
+		lastModel = event.model;
+		deepSeekPricing.applyPricingPatch(ctx.modelRegistry);
+		void refreshUsage(providers, ctx.modelRegistry, event.model);
 	});
 
 	// ---- Session shutdown: drop usage cache so /resume into a different provider
@@ -221,7 +220,6 @@ export default function (pi: ExtensionAPI) {
 		deepSeekPricing.applyPricingPatch(ctx.modelRegistry);
 
 		// Prime usage cache on startup (non-blocking)
-		lastCtx = ctx;
 		lastModel = ctx.model;
 		void refreshUsage(providers, ctx.modelRegistry, ctx.model);
 
@@ -246,7 +244,7 @@ export default function (pi: ExtensionAPI) {
 					const cu = ctx.getContextUsage();
 					const model = ctx.model;
 					const level = pi.getThinkingLevel();
-					const providerResult = getCachedUsage(providers, lastCtx, lastModel);
+					const providerResult = getCachedUsage(providers, ctx.modelRegistry, lastModel);
 					const dim = (s: string) => theme.fg("dim", s);
 					// Quota segments color their paren-inner text by usage level:
 					// below or equal 60% → no color, safety ≤80% → success, warning ≤90% → warning, danger >90% → error.

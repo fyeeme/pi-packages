@@ -58,7 +58,7 @@ export function getUsageCacheAge(): number | null {
 
 export function getCachedUsage(
 	providers: ProviderRegistry,
-	lastCtx: ExtensionContext | null,
+	modelRegistry: ExtensionContext["modelRegistry"] | null,
 	lastModel: ExtensionContext["model"] | undefined,
 ): ProviderUsageResult {
 	if (!usageCache) return null;
@@ -76,9 +76,9 @@ export function getCachedUsage(
 	if (Date.now() - cache.fetchedAt > CACHE_TTL_MS) {
 		// TTL expired: return stale data but trigger background refresh.
 		// Memoize inflight promise so concurrent callers share one fetch.
-		if (lastCtx && lastModel) {
+		if (modelRegistry && lastModel) {
 			if (!refreshInFlight) {
-				const promise = refreshUsage(providers, lastCtx.modelRegistry, lastModel);
+				const promise = refreshUsage(providers, modelRegistry, lastModel);
 				refreshInFlight = promise;
 				promise.finally(() => {
 					if (refreshInFlight === promise) refreshInFlight = null;
